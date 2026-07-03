@@ -26,7 +26,7 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   const branch = slugifyBranch("Add dark mode toggle!");
   expect(branch).toBe("add-dark-mode-toggle");
 
-  const wt = await createWorktree(repo, join(repo, ".worktrees"), branch, "main");
+  const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), branch, "main");
   expect((await stat(wt)).isDirectory()).toBe(true);
   expect((await run(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])).trim()).toBe(branch);
 
@@ -37,11 +37,11 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   // headless launch prompt adds an autonomous-commit instruction
   expect(launchPrompt({ title: "T", branch, prompt: "do it" })).toContain("Commit");
   // attach command drops you into a session continuing the headless run
-  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue`);
+  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {
-  const wt = await createWorktree(repo, join(repo, ".worktrees"), "feat-summary", "main");
+  const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-summary", "main");
   expect(draftState((await changeSummary(wt, "main")).commits.length)).toBe("DRAFTING");
 
   await run(["git", "-C", wt, "commit", "--allow-empty", "-m", "add feature"]);
@@ -57,7 +57,7 @@ test("W2 change-summary: commits produce a summary and flip DRAFTING → READY",
 });
 
 test("W3 promote-to-pr: gh pr create returns number + url", async () => {
-  const wt = await createWorktree(repo, join(repo, ".worktrees"), "feat-pr", "main");
+  const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-pr", "main");
   process.env.ORCA_PR_NUMBER = "42";
   const pr = await createPr(wt, { title: "Feat", body: "b", base: "main", head: "feat-pr" });
   expect(pr.number).toBe(42);
@@ -102,7 +102,7 @@ test("W5 merge-when-green: guarded by canMerge, then worktree is removed", async
   await fixture({ reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
   expect(canMerge(await prStatus(repo, 1))).toBe(false);
 
-  const wt = await createWorktree(repo, join(repo, ".worktrees"), "feat-merge", "main");
+  const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-merge", "main");
   await mergePr(repo, 1); // fake gh exits 0
   await removeWorktree(repo, wt);
   await expect(stat(wt)).rejects.toThrow();
@@ -146,13 +146,13 @@ test("S1 source-of-truth: listWorktrees returns live worktrees under the root", 
 
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   await setPrListFixture([
-    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
-    { number: 11, title: "Add B", headRefName: "feat-b", url: "u11", state: "OPEN", mergeable: "CONFLICTING", reviewDecision: "", statusCheckRollup: [] },
+    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
+    { number: 11, title: "Add B", headRefName: "feat-b", url: "u11", state: "OPEN", isDraft: true, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] },
   ]);
   const prs = await listPrs(repo);
   expect(prs.map((p) => p.branch)).toEqual(["feat-a", "feat-b"]);
   expect(deriveKanbanState(prs[0]!)).toBe("MERGEABLE"); // approved
-  expect(deriveKanbanState(prs[1]!)).toBe("IN_REVIEW"); // unapproved; conflict shows as a badge
+  expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {

@@ -36,12 +36,35 @@ no chat UI and holds no long-lived state of its own beyond the in-memory run map
   PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
 - **GitHub = the `gh` CLI; Slack = a prompt Claude sends.** No OAuth app, no Slack token.
 
+## Multi-repo (aggregated)
+
+`orca.config.ts` holds `repos: RepoConfig[]` (each with repoPath/worktreeRoot/baseBranch/
+previewServices/slackChannel) + global portRange/staleHours. Every repo-scoped API call names
+its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). The board shows
+**all repos aggregated** — the store polls each repo and `useWorkstreams()` builds unified
+rows tagged by repo (each row carries `repo`; actions use `row.repo`). Enrichment is keyed
+`repo::branch`. The New-draft box has a repo **dropdown**; cards show a repo tag.
+
 ## The one board & model
 
-One board (`web/src/views/Board.tsx`), three lanes: **Draft → In Review → Mergeable**.
-A draft is a pre-PR worktree (created + agent launched in the Draft column); Promote runs
-`gh pr create` and the card slides to In Review. Routing: `/` = board, `/prs/:n[/files|/checks]`
-= detail.
+One board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·24h**.
+A workstream is a branch; its lane (`store.laneFor`):
+- **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
+- **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
+  is clean, else In Review). **merged in last 24h** → Done (`gh pr list --state merged`).
+
+Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
+- **Promote** (Local, remote repo) = a dropdown: Create PR ready / draft, ± add preview label.
+  Local repo → plain Promote (sets `promoted`).
+- **Check out** (PR with no worktree) = `git worktree add` from the existing branch → adopts any
+  PR (incl. ones with no Orca history) so it gets the full toolkit.
+- **Follow up** (PR with worktree) = launch an agent in the worktree resuming its session
+  (`claude -p --resume <sessionId>`), sessionId persisted in enrichment.
+- **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
+- **Discard** never deletes a branch that has an open PR (only pre-PR locals).
+
+Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
+them. Routing: `/` = board, `/{repo}/prs/:n[/files|/checks]` = detail.
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 

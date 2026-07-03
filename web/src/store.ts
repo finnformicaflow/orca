@@ -1,171 +1,243 @@
-// Source of truth is the LIVE system: worktrees + running agents (GET /api/agents) and
-// open PRs (GET /api/prs), polled on a timer. localStorage only *enriches* that live data
-// with metadata Orca can't recover from git/gh — prompt, title, preview port, Slack
-// timestamps — keyed by branch. PRs/worktrees with no enrichment still show (backwards compat).
+// Source of truth is the LIVE system across ALL configured repos: worktrees + running
+// agents (GET /api/agents) and open PRs (GET /api/prs) per repo, polled together and
+// aggregated into unified rows tagged by repo. localStorage only *enriches* (prompt, title,
+// local-promote flag, Slack timestamps), keyed by repo+branch.
 import { useSyncExternalStore } from "react";
-import { api, type LiveAgent } from "./api";
-import type { PrSummary } from "../../server/gh";
+import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
+import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  deriveKanbanState, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
-  slackPrompt, titleFromPrompt, type WorkstreamState,
+  deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
+  slackPrompt,
 } from "./workstream";
 
 const KEY = "orca.enrichment";
-const FALLBACK_RANGE: [number, number] = [4173, 4272];
 const now = () => new Date().toISOString();
+const EMPTY_REPOS: RepoInfo[] = [];
 
-// ---- subscriptions ----
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
+const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { portRange: [number, number]; baseBranch: string; staleHours: number; slackChannel?: string } | null = null;
-export const configReady = api
-  .config()
-  .then((c) => { cfg = c; })
-  .catch(() => { cfg = { portRange: FALLBACK_RANGE, baseBranch: "master", staleHours: 24 }; });
-export const baseBranch = () => cfg?.baseBranch ?? "master";
+let cfg: { repos: RepoInfo[]; staleHours: number } | null = null;
+export const configReady = api.config()
+  .then((c) => { cfg = c; notify(); void refresh(); })
+  .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24 }; });
+
+const repoInfo = (repo: string) => cfg?.repos.find((r) => r.name === repo);
+export const useRepos = (): RepoInfo[] => useSyncExternalStore(subscribe, () => cfg?.repos ?? EMPTY_REPOS);
+export const baseBranch = (repo: string) => repoInfo(repo)?.baseBranch ?? "main";
+export const slackChannel = (repo: string) => repoInfo(repo)?.slackChannel;
 export const staleHours = () => cfg?.staleHours ?? 24;
-export const slackChannel = () => cfg?.slackChannel;
 
-// ---- enrichment (branch-keyed metadata, persisted to localStorage) ----
+// ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
-  prompt?: string;
-  title?: string;
-  slackNotifiedAt?: string;
-  slackLastBumpedAt?: string;
-  createdAt?: string;
+  prompt?: string; title?: string; promoted?: boolean; sessionId?: string;
+  slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
-type EnrichMap = Record<string, Enrichment>;
-
-let enrichMap: EnrichMap = load();
-function load(): EnrichMap {
+let enrichMap: Record<string, Enrichment> = load();
+function load(): Record<string, Enrichment> {
   try { return JSON.parse(localStorage.getItem(KEY) ?? "{}"); } catch { return {}; }
 }
-export const enrich = (branch: string): Enrichment => enrichMap[branch] ?? {};
-function patchEnrich(branch: string, fields: Enrichment) {
-  enrichMap = { ...enrichMap, [branch]: { ...enrichMap[branch], ...fields } };
+const ekey = (repo: string, branch: string) => `${repo}::${branch}`;
+const enrichOf = (repo: string, branch: string): Enrichment => enrichMap[ekey(repo, branch)] ?? {};
+function patchEnrich(repo: string, branch: string, fields: Enrichment) {
+  const k = ekey(repo, branch);
+  enrichMap = { ...enrichMap, [k]: { ...enrichMap[k], ...fields } };
   localStorage.setItem(KEY, JSON.stringify(enrichMap));
   notify();
 }
-function deleteEnrich(branch: string) {
-  const { [branch]: _drop, ...rest } = enrichMap;
+function deleteEnrich(repo: string, branch: string) {
+  const { [ekey(repo, branch)]: _drop, ...rest } = enrichMap;
   enrichMap = rest;
   localStorage.setItem(KEY, JSON.stringify(enrichMap));
   notify();
 }
-// ---- live state (the source of truth) ----
-type Live = { agents: LiveAgent[]; prs: PrSummary[] };
-let live: Live = { agents: [], prs: [] };
+
+// ---- live state (all repos) ----
+type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
+let live: RepoLive[] = [];
 
 export async function refresh() {
-  const [agents, prs] = await Promise.all([
-    api.agents().catch(() => live.agents),
-    api.prs().catch(() => live.prs),
-  ]);
-  live = { agents, prs };
+  const repos = cfg?.repos ?? [];
+  live = await Promise.all(repos.map(async (r) => ({
+    repo: r.name,
+    hasRemote: r.hasRemote,
+    agents: await api.agents(r.name).catch(() => [] as LiveAgent[]),
+    prs: await api.prs(r.name).catch(() => [] as PrSummary[]),
+    merged: r.hasRemote ? await api.mergedPrs(r.name).catch(() => [] as MergedPr[]) : [],
+  })));
+  // Persist any fresh session id so "Copy CLI" can resume it after a restart (in-memory only otherwise).
+  for (const rl of live) {
+    for (const a of rl.agents) {
+      if (a.sessionId && enrichOf(rl.repo, a.branch).sessionId !== a.sessionId) patchEnrich(rl.repo, a.branch, { sessionId: a.sessionId });
+    }
+  }
   notify();
 }
-function useLive(): Live {
-  return useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => live);
-}
-void refresh();
 setInterval(() => void refresh(), 8_000);
 
-// ---- assembled view rows (live + enrichment) ----
-export type AgentRow = LiveAgent & { title: string; prompt: string; createdAt?: string };
-export type PrRow = PrSummary & {
-  kanbanState: WorkstreamState;
+// ---- assembled rows ----
+export type Lane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
+export type Row = {
+  isDraft?: boolean;
+  repo: string;
+  hasRemote: boolean;
+  branch: string;
+  title: string;
+  prompt: string;
+  lane: Lane;
   worktreePath?: string;
   agentStatus?: LiveAgent["agentStatus"];
+  agentError?: string;
+  agentResult?: string;
+  agentStartedAt?: number;
+  sessionId?: string;
+  mergeClean?: "clean" | "conflict";
+  promoted?: boolean;
+  prNumber?: number;
+  prUrl?: string;
+  previewUrl?: string;
+  ciStatus?: CiStatus;
+  reviewStatus?: ReviewStatus;
+  mergeable?: Mergeable;
+  mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
 };
 
-export function useAgents(): AgentRow[] {
-  const { agents, prs } = useLive();
-  const promoted = new Set(prs.map((p) => p.branch)); // a branch with an open PR lives in the kanban
-  return agents
-    .filter((a) => !promoted.has(a.branch))
-    .map((a) => {
-      const e = enrich(a.branch);
-      return { ...a, title: e.title ?? a.branch, prompt: e.prompt ?? "", createdAt: e.createdAt };
-    });
+function laneFor(row: Row, pr?: PrSummary): Lane {
+  if (pr) {
+    if (pr.isDraft) return "DRAFT";
+    return deriveKanbanState(pr) === "MERGEABLE" ? "MERGEABLE" : "IN_REVIEW";
+  }
+  if (row.worktreePath && row.promoted) return row.mergeClean === "clean" ? "MERGEABLE" : "IN_REVIEW";
+  return "LOCAL"; // pre-PR worktree
 }
 
-export function usePrs(): PrRow[] {
-  const { agents, prs } = useLive();
-  const agentOf = new Map(agents.map((a) => [a.branch, a]));
-  return prs.map((pr) => {
-    const e = enrich(pr.branch);
-    const a = agentOf.get(pr.branch);
-    return {
-      ...pr,
-      kanbanState: deriveKanbanState(pr),
-      worktreePath: a?.worktreePath,
-      agentStatus: a?.agentStatus,
-      slackNotifiedAt: e.slackNotifiedAt,
-      slackLastBumpedAt: e.slackLastBumpedAt,
-    };
-  });
+export function useWorkstreams(): Row[] {
+  const snapshot = useSyncExternalStore(subscribe, () => live);
+  const rows: Row[] = [];
+  for (const rl of snapshot) {
+    const prByBranch = new Map(rl.prs.map((p) => [p.branch, p]));
+    const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
+    for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
+      const pr = prByBranch.get(branch);
+      const wt = wtByBranch.get(branch);
+      const e = enrichOf(rl.repo, branch);
+      const row: Row = {
+        repo: rl.repo, hasRemote: rl.hasRemote, branch,
+        title: pr?.title ?? e.title ?? branch,
+        prompt: e.prompt ?? "",
+        worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
+        agentResult: wt?.agentResult, agentStartedAt: wt?.agentStartedAt,
+        sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
+        mergeClean: wt?.mergeClean, promoted: e.promoted,
+        prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
+        ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable,
+        slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
+        lane: "DRAFT",
+      };
+      row.lane = laneFor(row, pr);
+      rows.push(row);
+    }
+    for (const m of rl.merged) {
+      rows.push({
+        repo: rl.repo, hasRemote: rl.hasRemote, branch: m.branch, title: m.title, prompt: "",
+        lane: "DONE", prNumber: m.number, prUrl: m.url, mergedAt: m.mergedAt,
+      });
+    }
+  }
+  return rows;
 }
 
-// ---- actions ----
-export async function createWorkstream(prompt: string): Promise<string> {
-  const title = titleFromPrompt(prompt);
-  const { branch, worktreePath } = await api.createWorktree(title);
-  patchEnrich(branch, { prompt, title, createdAt: now() });
-  void api.runAgent(worktreePath, launchPrompt({ title, branch, prompt })).catch(() => {});
-  await refresh();
-  return branch;
-}
-
-export function rerunAgent(branch: string, worktreePath: string) {
-  const e = enrich(branch);
-  return api.runAgent(worktreePath, launchPrompt({ title: e.title ?? branch, branch, prompt: e.prompt ?? "" })).then(refresh);
-}
-
-export async function promote(branch: string, worktreePath: string, title: string) {
-  await api.promote({ worktreePath, branch, title });
-  await refresh();
-}
-
-export async function merge(pr: number, worktreePath?: string) {
-  await api.merge(pr, worktreePath);
-  await refresh();
-}
-
-export const startPreview = (branch: string, worktreePath: string) => api.preview(branch, worktreePath);
-export const stopPreview = (branch: string) => api.previewStop(branch);
-export const previewStatus = (branch: string) => api.previewStatus(branch);
-export const summary = (worktreePath: string) => api.summary(worktreePath);
-
-/** Discard a draft: stop its preview, remove the worktree + branch, drop its enrichment. */
-export async function discardDraft(branch: string, worktreePath: string) {
-  await api.previewStop(branch).catch(() => {});
-  await api.discardWorktree(worktreePath);
-  deleteEnrich(branch);
+// ---- actions (scoped by each row's repo) ----
+export async function createWorkstream(repo: string, prompt: string): Promise<void> {
+  const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
+  patchEnrich(repo, branch, { prompt, title, createdAt: now() });
+  void api.runAgent(worktreePath, launchPrompt({ title, branch, prompt }, baseBranch(repo))).catch(() => {});
   await refresh();
 }
 
-// --- PR actions: each launches Claude to actually do the thing ---
+export function rerunAgent(row: Row) {
+  if (!row.worktreePath) return Promise.resolve();
+  return api.runAgent(row.worktreePath, launchPrompt({ title: row.title, branch: row.branch, prompt: row.prompt }, baseBranch(row.repo))).then(refresh);
+}
 
-/** Ask Claude to post/bump a Slack message about the PR (repo-level run, no worktree). */
-export function sendSlack(row: PrRow, kind: "notify" | "bump") {
-  const prompt = slackPrompt({ title: row.title, prNumber: row.number, prUrl: row.url }, kind, slackChannel());
-  const p = api.claude(`slack:${row.number}`, prompt);
-  patchEnrich(row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
+export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
+  if (!row.worktreePath) return;
+  if (row.hasRemote) {
+    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
+  } else {
+    patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready
+  }
+  await refresh();
+}
+
+/** Ensure a local worktree exists for a row (adopts the branch if needed). Returns its path. */
+export async function ensureWorktree(row: Row): Promise<string> {
+  if (row.worktreePath) return row.worktreePath;
+  const { worktreePath } = await api.adopt(row.repo, row.branch);
+  patchEnrich(row.repo, row.branch, { title: row.title });
+  await refresh();
+  return worktreePath;
+}
+
+/** Check out the branch locally (if needed) and spin up its preview services. */
+export async function testLocally(row: Row): Promise<PreviewSvc[]> {
+  const worktreePath = await ensureWorktree(row);
+  return api.preview(row.repo, worktreePath, worktreePath);
+}
+
+/** Launch a follow-up agent run in the PR's worktree, resuming its session for context. */
+export function followUp(row: Row, instruction: string) {
+  if (!row.worktreePath) return Promise.resolve();
+  return api.claude(row.repo, row.worktreePath, followUpPrompt(instruction), row.worktreePath, row.sessionId).then(refresh);
+}
+
+export async function markReady(row: Row) {
+  if (!row.prNumber) return;
+  await api.markReady(row.repo, row.prNumber);
+  await refresh();
+}
+
+export async function merge(row: Row) {
+  if (row.prNumber) await api.merge(row.repo, row.prNumber, row.worktreePath);
+  else await api.mergeLocal(row.repo, row.branch, row.worktreePath);
+  await refresh();
+}
+
+export function sendSlack(row: Row, kind: "notify" | "bump") {
+  const prompt = slackPrompt({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind, slackChannel(row.repo));
+  const p = api.claude(row.repo, `slack:${row.repo}:${row.branch}`, prompt);
+  patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
   return p;
 }
 
-/** Ask Claude to resolve the PR's merge conflicts in its worktree, then push. */
-export function resolveConflicts(row: PrRow) {
+export function resolveConflicts(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
-  return api.claude(row.worktreePath, resolveConflictsPrompt({ branch: row.branch }, baseBranch()), row.worktreePath).then(refresh);
+  return api.claude(row.repo, row.worktreePath, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), row.worktreePath).then(refresh);
 }
 
-/** Ask Claude to fix failing CI on the PR in its worktree, then push. */
-export function fixCi(row: PrRow) {
+export function addPreviewLabel(row: Row) {
+  if (!row.prNumber) return Promise.resolve();
+  return api.addPreviewLabel(row.repo, row.prNumber);
+}
+
+export function fixCi(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
-  return api.claude(row.worktreePath, resolveCiPrompt({ prNumber: row.number, branch: row.branch }), row.worktreePath).then(refresh);
+  return api.claude(row.repo, row.worktreePath, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }), row.worktreePath).then(refresh);
+}
+
+export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath);
+export const previewStatus = (worktreePath: string) => api.previewStatus(worktreePath);
+export const summary = (repo: string, worktreePath: string) => api.summary(repo, worktreePath);
+
+export async function discardDraft(row: Row) {
+  if (!row.worktreePath) return;
+  await api.previewStop(row.worktreePath).catch(() => {});
+  // Only delete the branch for pre-PR locals; never delete a branch that has an open PR.
+  await api.discardWorktree(row.repo, row.worktreePath, row.branch, !row.prNumber);
+  deleteEnrich(row.repo, row.branch);
+  await refresh();
 }

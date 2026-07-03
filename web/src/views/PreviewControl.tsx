@@ -1,39 +1,83 @@
 import { useEffect, useState } from "react";
+import { ExternalLink } from "lucide-react";
 import type { PreviewSvc } from "../api";
-import { previewStatus, startPreview, stopPreview } from "../store";
+import { previewStatus, stopPreview, testLocally, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 
-/** Start/stop a workstream's preview services and link to them. */
-export function PreviewControl({ branch, worktreePath }: { branch: string; worktreePath: string }) {
+const linkClass = "text-muted-foreground inline-flex items-center gap-0.5 text-xs hover:underline";
+
+// Shared preview lifecycle: start in the background, poll status, expose ready/failed/link.
+function usePreview(row: Row) {
   const [svcs, setSvcs] = useState<PreviewSvc[]>([]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { previewStatus(branch).then(setSvcs).catch(() => {}); }, [branch]);
+  useEffect(() => {
+    if (!row.worktreePath) { setSvcs([]); return; }
+    let cancelled = false;
+    const tick = () => void previewStatus(row.worktreePath!).then((s) => !cancelled && setSvcs(s)).catch(() => {});
+    tick();
+    const t = setInterval(tick, 2500); // reflects "starting → ready" without a manual refresh
+    return () => { cancelled = true; clearInterval(t); };
+  }, [row.worktreePath]);
 
-  const running = svcs.some((s) => s.running);
+  const open = svcs.find((s) => s.open) ?? svcs[0];
   const start = async () => {
-    setBusy(true);
-    try {
-      const s = await startPreview(branch, worktreePath);
-      setSvcs(s);
-      const open = s.find((x) => x.open) ?? s[0];
-      if (open) window.open(open.url, "_blank");
-    } finally { setBusy(false); }
+    setBusy(true); setError(null);
+    try { setSvcs(await testLocally(row)); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); } // don't revert silently
+    finally { setBusy(false); }
   };
-  const stop = async () => {
-    setBusy(true);
-    try { await stopPreview(branch); setSvcs([]); } finally { setBusy(false); }
-  };
+  const stop = async () => { if (!row.worktreePath) return; setBusy(true); try { await stopPreview(row.worktreePath); setSvcs([]); } finally { setBusy(false); } };
 
-  if (running) {
+  return {
+    svcs, busy, open, error,
+    active: svcs.length > 0,
+    ready: Boolean(open?.ready),
+    failed: svcs.length > 0 && svcs.some((s) => !s.running),
+    start, stop,
+  };
+}
+
+/** Compact control on cards: Test locally → starting… → link (or failed), with stop. */
+export function PreviewControl({ row }: { row: Row }) {
+  const { busy, open, active, ready, failed, error, start, stop } = usePreview(row);
+
+  if (!active && !busy) {
     return (
-      <span className="flex flex-wrap items-center gap-1">
-        {svcs.map((s) => (
-          <a key={s.name} href={s.url} target="_blank" rel="noreferrer" className="text-xs hover:underline">{s.name}:{s.port}</a>
-        ))}
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void stop()}>Stop</Button>
+      <span className="inline-flex items-center gap-2 text-xs">
+        <Button variant="link" className={`h-auto p-0 ${linkClass}`} onClick={() => void start()}>
+          Test locally <ExternalLink className="size-3" />
+        </Button>
+        {error && <span className="text-destructive" title={error}>failed</span>}
       </span>
     );
   }
-  return <Button size="sm" variant="outline" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Preview"}</Button>;
+  return (
+    <span className="inline-flex items-center gap-2 text-xs">
+      {ready && open
+        ? <a className={linkClass} href={open.url} target="_blank" rel="noreferrer">preview :{open.port} <ExternalLink className="size-3" /></a>
+        : <span className={failed ? "text-destructive" : "text-muted-foreground"}>{failed ? "failed" : "starting…"}</span>}
+      <Button variant="link" className="text-muted-foreground h-auto p-0 text-xs" disabled={busy} onClick={() => void stop()}>stop</Button>
+    </span>
+  );
+}
+
+/** Full panel for the detail Preview tab: embeds the running frontend once it's ready. */
+export function PreviewPanel({ row }: { row: Row }) {
+  const { open, active, ready, failed, busy, error, start, stop } = usePreview(row);
+
+  return (
+    <div className="space-y-2 pt-3">
+      <div className="flex items-center gap-2">
+        {!active && <Button size="sm" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Start preview"}</Button>}
+        {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
+        {active && !ready && !failed && <span className="text-muted-foreground text-sm">starting the frontend + backend…</span>}
+        {error && <span className="text-destructive text-sm">{error}</span>}
+        {failed && <span className="text-destructive text-sm">a service failed to start — check Postgres is running and backend/.env exists</span>}
+        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={open.url} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
+      </div>
+      {ready && open && <iframe title="preview" src={open.url} className="h-[70vh] w-full rounded-md border" />}
+    </div>
+  );
 }

@@ -1,25 +1,100 @@
-// Launches a headless `claude -p` and tracks its status. No streaming (see the plan) —
-// Orca reports running/done/error; code changes surface via the git change-summary poll.
-// Runs are keyed by an arbitrary string: a worktree path for feature/fix runs, or e.g.
-// `slack:1234` for repo-level actions. So every button is just "run Claude with prompt X".
-export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string };
+// Launches a headless `claude -p` (JSON output) and tracks its status + session id, so the
+// UI can show done/error and "Copy CLI" can resume the exact conversation (mid-run too, since
+// we choose the session id up front). Keyed by an arbitrary string: worktree path for
+// feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
+export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; startedAt?: number; finishedAt?: number };
+type Run = RunState & { proc?: Bun.Subprocess };
 
-const runs = new Map<string, RunState>();
+const runs = new Map<string, Run>();
 
-export function launch(key: string, cwd: string, prompt: string): void {
+export function launch(key: string, cwd: string, prompt: string, resume?: string): void {
+  // Resume an existing session (follow-up) so the agent keeps prior context, else start fresh.
+  const sessionId = resume ?? crypto.randomUUID();
+  const idArgs = resume ? ["--resume", resume] : ["--session-id", sessionId];
+  const startedAt = Date.now();
   const proc = Bun.spawn(
-    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
-    { cwd, env: process.env, stdout: "ignore", stderr: "pipe" },
+    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...idArgs, "--output-format", "json"],
+    { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
-  runs.set(key, { status: "running" });
+  runs.set(key, { status: "running", sessionId, proc, startedAt });
   void (async () => {
-    const err = await new Response(proc.stderr).text();
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     const code = await proc.exited;
-    runs.set(key, code === 0 ? { status: "done" } : { status: "error", error: err.trim().slice(0, 300) });
+    if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
+    let result: string | undefined, isError = false;
+    try {
+      const j = JSON.parse(out.trim());
+      result = j.result;
+      isError = Boolean(j.is_error);
+    } catch { /* non-JSON output (e.g. crash) */ }
+    const finishedAt = Date.now();
+    runs.set(key, code === 0 && !isError
+      ? { status: "done", sessionId, result, startedAt, finishedAt }
+      : { status: "error", sessionId, error: (err.trim() || result || `exit ${code}`).slice(0, 300), startedAt, finishedAt });
   })();
 }
 
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
 export const runAgent = (worktreePath: string, prompt: string) => launch(worktreePath, worktreePath, prompt);
 
-export const status = (key: string): RunState => runs.get(key) ?? { status: "idle" };
+/** Quick Haiku summary of a prompt into a 2–5 word title. Returns null on any failure. */
+export async function summarize(prompt: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(
+      ["claude", "-p", `Give a 2-5 word Title Case name (no punctuation, no quotes) for this task:\n\n${prompt}`, "--model", "haiku", "--output-format", "json"],
+      { env: process.env, stdout: "pipe", stderr: "ignore" },
+    );
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const title = String(JSON.parse(out.trim()).result ?? "")
+      .split("\n")[0]!               // first line only
+      .replace(/[`*_#>[\]]/g, "")     // strip markdown formatting
+      .replace(/["']/g, "")           // strip quotes
+      .replace(/[.:]+$/, "")          // trailing punctuation
+      .replace(/\s+/g, " ")
+      .trim();
+    return title || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Kill and forget a run (e.g. on discard). */
+export function stop(key: string): void {
+  const r = runs.get(key);
+  try { r?.proc?.kill(); } catch { /* already gone */ }
+  runs.delete(key);
+}
+
+/** Kill a running agent by branch (via ps) — works even after a restart lost the handle. */
+export async function killByBranch(branch: string): Promise<void> {
+  try {
+    const proc = Bun.spawn(["ps", "-Ao", "pid=,command="], { env: process.env, stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    for (const line of out.split("\n")) {
+      if (line.includes("claude -p") && line.includes(branch)) {
+        const pid = Number(line.trim().split(/\s+/)[0]);
+        if (pid) try { process.kill(pid); } catch { /* already gone */ }
+      }
+    }
+  } catch { /* ps unavailable */ }
+}
+
+/** Branches that currently have a live `claude -p` process (recovers status lost on restart). */
+export async function detectRunning(branches: string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  try {
+    const proc = Bun.spawn(["ps", "-Ao", "command"], { env: process.env, stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const lines = out.split("\n").filter((l) => l.includes("claude -p"));
+    for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
+  } catch { /* ps unavailable */ }
+  return found;
+}
+
+export const status = (key: string): RunState => {
+  const r = runs.get(key);
+  return r ? { status: r.status, error: r.error, sessionId: r.sessionId, result: r.result, startedAt: r.startedAt, finishedAt: r.finishedAt } : { status: "idle" };
+};

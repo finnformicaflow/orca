@@ -84,14 +84,20 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
   ].join("\n");
 }
 
-/** Prompt used to launch the headless agent — adds an autonomous-commit instruction. */
-export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">): string {
-  return `${promptFor(ws)}\n\nWork autonomously. Commit your changes with clear messages as you go.`;
+/** Prompt used to launch the headless agent — sync-with-base + autonomous-commit instructions. */
+export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">, base = "main"): string {
+  return [
+    promptFor(ws),
+    "",
+    `First, sync with the latest \`${base}\` so you're not working behind it: run \`git fetch origin ${base} && git merge origin/${base}\` and resolve any conflicts before you start.`,
+    "Then work autonomously. Commit your changes with clear messages as you go.",
+  ].join("\n");
 }
 
-/** Terminal command to jump into an interactive session continuing the headless run. */
-export function attachCommand(ws: Pick<Workstream, "worktreePath">): string {
-  return `cd "${ws.worktreePath}" && claude --continue`;
+/** Terminal command to open Claude in the worktree, resuming the headless run's session. */
+export function attachCommand(ws: { worktreePath: string; sessionId?: string }): string {
+  const base = `cd "${ws.worktreePath}" && claude`;
+  return ws.sessionId ? `${base} --resume ${ws.sessionId}` : base;
 }
 
 /** Instruction for Claude to send a Slack message about a PR (Claude has Slack access). */
@@ -104,6 +110,11 @@ export function slackPrompt(
   const content = kind === "bump" ? `Bump:\n${link}` : link;
   const where = channel ? ` to the ${channel} channel` : "";
   return `Post a new Slack message${where} with exactly this content and nothing else — no emojis, no extra text, and do not reply in a thread:\n\n${content}`;
+}
+
+/** Follow-up instruction for an agent already working a branch (resumes its session). */
+export function followUpPrompt(instruction: string): string {
+  return `${instruction}\n\nWork autonomously. Commit and push your changes.`;
 }
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */

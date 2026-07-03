@@ -2,46 +2,49 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
+import { ArrowLeft, Check, Clock, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
-import { usePrs } from "../store";
+import { useWorkstreams } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
 import { PrActions } from "./PrActions";
+import { PreviewPanel } from "./PreviewControl";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-export function PrDetail({ number, sub }: { number: number; sub: PrTab }) {
+export function PrDetail({ repo, number, sub }: { repo: string; number: number; sub: PrTab }) {
   const [pr, setPr] = useState<PrDetailData | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const row = usePrs().find((r) => r.number === number); // live row for actions (worktree, enrichment)
+  const row = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // live row for actions
 
   useEffect(() => {
     setPr(null);
     setError(null);
-    api.prDetail(number).then(setPr).catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [number]);
+    api.prDetail(repo, number).then(setPr).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [repo, number]);
 
   useEffect(() => {
-    if (sub === "files" && diff === null) api.prDiff(number).then((d) => setDiff(d.diff)).catch(() => setDiff(""));
-  }, [sub, number, diff]);
+    if (sub === "files" && diff === null) api.prDiff(repo, number).then((d) => setDiff(d.diff)).catch(() => setDiff(""));
+  }, [sub, repo, number, diff]);
 
-  const go = (t: PrTab) => navigate(t === "overview" ? `/prs/${number}` : `/prs/${number}/${t}`);
+  const go = (t: PrTab) => navigate(t === "overview" ? `/${repo}/prs/${number}` : `/${repo}/prs/${number}/${t}`);
+  const back = `/${repo}`;
 
-  if (error) return <div className="space-y-4"><Back /><p className="text-destructive text-sm">{error}</p></div>;
-  if (!pr) return <div className="space-y-4"><Back /><p className="text-muted-foreground text-sm">Loading PR #{number}…</p></div>;
+  if (error) return <div className="space-y-4"><Back to={back} /><p className="text-destructive text-sm">{error}</p></div>;
+  if (!pr) return <div className="space-y-4"><Back to={back} /><p className="text-muted-foreground text-sm">Loading PR #{number}…</p></div>;
 
   return (
     <div className="space-y-4">
-      <Back />
+      <Back to={back} />
       <div className="space-y-2">
         <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
           <span className="text-muted-foreground">#{pr.number}</span>
           {pr.title}
-          <a className="text-muted-foreground text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
-            View on GitHub ↗
+          <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
+            View on GitHub <ExternalLink className="size-3.5" />
           </a>
         </h2>
         <p className="text-muted-foreground text-sm">
@@ -52,9 +55,9 @@ export function PrDetail({ number, sub }: { number: number; sub: PrTab }) {
           {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">changes requested</Badge>}
           {pr.reviewStatus === "approved" && <Badge variant="success">approved</Badge>}
           {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
-          {pr.ciStatus === "passing" && <Badge variant="success">CI ✓</Badge>}
-          {pr.ciStatus === "failing" && <Badge variant="destructive">CI ✗</Badge>}
-          {pr.ciStatus === "pending" && <Badge variant="outline">CI…</Badge>}
+          {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
+          {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
+          {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
         </div>
         {row && <PrActions row={row} />}
       </div>
@@ -64,6 +67,7 @@ export function PrDetail({ number, sub }: { number: number; sub: PrTab }) {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
           <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
+          <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
@@ -96,12 +100,16 @@ export function PrDetail({ number, sub }: { number: number; sub: PrTab }) {
             </div>
           ))}
         </TabsContent>
+
+        <TabsContent value="preview">
+          {row ? <PreviewPanel row={row} /> : <p className="text-muted-foreground pt-3 text-sm">Not tracked locally yet.</p>}
+        </TabsContent>
       </Tabs>
     </div>
   );
 }
 
-const Back = () => <Button variant="ghost" size="sm" onClick={() => navigate("/prs")}>← Back to board</Button>;
+const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to board</Button>;
 
 const Markdown = ({ children }: { children: string }) => (
   <div className="prose prose-sm dark:prose-invert max-w-none">
@@ -147,7 +155,7 @@ function parseDiff(text: string): FileDiff[] {
   return files;
 }
 
-function DiffView({ text }: { text: string }) {
+export function DiffView({ text }: { text: string }) {
   const files = parseDiff(text);
   if (files.length === 0) return <p className="text-muted-foreground text-sm">No diff.</p>;
   return (

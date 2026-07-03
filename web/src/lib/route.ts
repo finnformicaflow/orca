@@ -2,12 +2,23 @@
 // the Bun server and Vite dev do SPA fallback, so these paths serve index.html.
 import { useSyncExternalStore } from "react";
 
-export type PrTab = "overview" | "files" | "checks";
-export type Route = { name: "board" } | { name: "pr"; number: number; sub: PrTab };
+export type PrTab = "overview" | "files" | "checks" | "preview";
+export type LocalTab = "overview" | "files" | "preview";
+export type Route =
+  | { name: "board" }
+  | { name: "pr"; repo: string; number: number; sub: PrTab }
+  | { name: "local"; repo: string; branch: string; sub: LocalTab };
 
 function parse(): Route {
-  const m = location.pathname.match(/^\/prs\/(\d+)(?:\/(files|checks))?$/);
-  if (m) return { name: "pr", number: Number(m[1]), sub: (m[2] as PrTab) ?? "overview" };
+  // board at "/" (all repos); PR detail at /{repo}/prs/{n}[/files|/checks];
+  // local-session detail at /{repo}/local/{branch}[/files|/preview] (branch is URI-encoded — may contain "/")
+  const parts = location.pathname.split("/").filter(Boolean);
+  if (parts[1] === "prs" && parts[2]) {
+    return { name: "pr", repo: parts[0]!, number: Number(parts[2]), sub: (parts[3] as PrTab) ?? "overview" };
+  }
+  if (parts[1] === "local" && parts[2]) {
+    return { name: "local", repo: parts[0]!, branch: decodeURIComponent(parts[2]), sub: (parts[3] as LocalTab) ?? "overview" };
+  }
   return { name: "board" };
 }
 
@@ -16,9 +27,10 @@ let current: Route = parse(); // cached so getSnapshot returns a stable referenc
 const update = () => { current = parse(); listeners.forEach((l) => l()); };
 window.addEventListener("popstate", update);
 
-export function navigate(path: string) {
+export function navigate(path: string, replace = false) {
   if (location.pathname === path) return;
-  history.pushState(null, "", path);
+  if (replace) history.replaceState(null, "", path);
+  else history.pushState(null, "", path);
   update();
 }
 
