@@ -1,15 +1,18 @@
 # 🐳 Orca
 
 A local control plane for the seam between **managing Claude agents** and **managing PRs**.
-Two views over one lifecycle:
+One kanban board over one lifecycle:
 
-- **Agents** — create a git worktree per feature, see what changed, copy a prompt into your
-  own Claude session, then promote to a PR.
-- **PRs** — a kanban of open PRs with CI/review status and one-click actions: Slack
-  notify/bump, copy a rebase prompt for conflicts, and merge-when-green.
+- **Local / Draft** — create a git worktree per feature; Orca launches a headless `claude -p`
+  in it with your prompt, shows what changed, then promotes to a PR.
+- **PRs** — open PRs with CI/review status and one-click actions: Slack notify/bump, resolve
+  conflicts, fix CI, follow up, and merge-when-green.
 
-Orca does **not** run Claude — you do. It automates everything around it. See `CLAUDE.md`
-for the design and rationale.
+Every agent action **runs Claude headless for you** (`claude -p`, using your existing Claude
+login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
+run in the branch's worktree, **adopting one automatically if the PR doesn't have one locally**.
+"Copy CLI" is the escape hatch to continue a run interactively. See `CLAUDE.md` for the design
+and rationale.
 
 ## Prerequisites
 
@@ -49,10 +52,11 @@ bun run check    # typecheck + tests — run this before every commit
 
 | You used to… | Now |
 | --- | --- |
-| spin up a worktree by hand | **New agent** → worktree created, prompt ready to copy |
-| eyeball `git diff` | change summary on the card |
+| spin up a worktree by hand | **New** → worktree created + `claude -p` launched with your prompt |
+| eyeball `git diff` | change summary on the card; full diff on the detail page |
 | `gh pr create` | **Promote to PR** |
 | watch CI/comments | kanban card auto-polls status |
-| ask Claude to rebase | **Copy rebase prompt** on a conflicted card |
+| ask Claude to rebase | **Resolve conflicts** — runs Claude in the worktree (adopts one if needed) |
+| ask Claude to fix a red build | **Fix CI** — same, headless |
 | Slack the team, then bump | **Slack notify** → **Bump** (highlighted when stale) |
 | merge when green | **Merge** (enabled only when mergeable + green) |

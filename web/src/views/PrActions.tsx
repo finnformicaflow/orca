@@ -22,9 +22,9 @@ export function PrActions({ row }: { row: Row }) {
         ) : (
           <ActionButton variant={bumpDue ? "default" : "outline"} onRun={() => sendSlack(row, "bump")}>Bump Slack</ActionButton>
         )}
-        {row.worktreePath && <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>}
-        {row.mergeable === "CONFLICTING" && row.worktreePath && <ActionButton onRun={() => resolveConflicts(row)}>Resolve conflicts</ActionButton>}
-        {row.ciStatus === "failing" && row.worktreePath && <ActionButton onRun={() => fixCi(row)}>Fix CI</ActionButton>}
+        <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>
+        {row.mergeable === "CONFLICTING" && <ActionButton onRun={() => resolveConflicts(row)}>Resolve conflicts</ActionButton>}
+        {row.ciStatus === "failing" && <ActionButton onRun={() => fixCi(row)}>Fix CI</ActionButton>}
         {!row.previewUrl && <ActionButton onRun={() => addPreviewLabel(row)}>Add preview</ActionButton>}
         {row.lane === "MERGEABLE" && (
           <ActionButton variant="default" disabled={!canMerge(mergeable)} confirm={`Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`} onRun={() => merge(row)}>Merge</ActionButton>

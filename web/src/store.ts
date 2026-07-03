@@ -189,10 +189,11 @@ export async function testLocally(row: Row): Promise<PreviewSvc[]> {
   return api.preview(row.repo, worktreePath, worktreePath);
 }
 
-/** Launch a follow-up agent run in the PR's worktree, resuming its session for context. */
-export function followUp(row: Row, instruction: string) {
-  if (!row.worktreePath) return Promise.resolve();
-  return api.claude(row.repo, row.worktreePath, followUpPrompt(instruction), row.worktreePath, row.sessionId).then(refresh);
+/** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */
+export async function followUp(row: Row, instruction: string) {
+  const wt = await ensureWorktree(row);
+  await api.claude(row.repo, wt, followUpPrompt(instruction), wt, row.sessionId);
+  await refresh();
 }
 
 export async function markReady(row: Row) {
@@ -214,9 +215,10 @@ export function sendSlack(row: Row, kind: "notify" | "bump") {
   return p;
 }
 
-export function resolveConflicts(row: Row) {
-  if (!row.worktreePath) return Promise.resolve();
-  return api.claude(row.repo, row.worktreePath, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), row.worktreePath).then(refresh);
+export async function resolveConflicts(row: Row) {
+  const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
+  await api.claude(row.repo, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), wt);
+  await refresh();
 }
 
 export function addPreviewLabel(row: Row) {
@@ -224,9 +226,10 @@ export function addPreviewLabel(row: Row) {
   return api.addPreviewLabel(row.repo, row.prNumber);
 }
 
-export function fixCi(row: Row) {
-  if (!row.worktreePath) return Promise.resolve();
-  return api.claude(row.repo, row.worktreePath, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }), row.worktreePath).then(refresh);
+export async function fixCi(row: Row) {
+  const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
+  await api.claude(row.repo, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }), wt);
+  await refresh();
 }
 
 export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath);
