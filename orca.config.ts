@@ -20,7 +20,10 @@ const config: OrcaConfig = {
         // pending migrations), mirroring a coworker's `mup && rbe`. Without it, DB-backed features
         // (e.g. integrations) break when the previewed branch adds migrations master lacks.
         { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && bash scripts/dev-local-watch.sh" },
-        { name: "frontend", command: "cd frontend && FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
+        // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
+        // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
+        // unavailable. `-n` never clobbers a real .env.
+        { name: "frontend", command: "cd frontend && cp -n .env.template .env && FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
       // provider/AWS keys. Copied on create + checkout.
