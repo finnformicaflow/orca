@@ -16,12 +16,18 @@ const config: OrcaConfig = {
       // running, and backend/.env present). Backend runs on its default port; only the frontend
       // gets an assigned port (the one we open).
       previewServices: [
-        { name: "backend", command: "cd backend && bash scripts/dev-local-watch.sh" },
+        // Migrate the shared local DB to this branch's schema first (idempotent — applies only
+        // pending migrations), mirroring a coworker's `mup && rbe`. Without it, DB-backed features
+        // (e.g. integrations) break when the previewed branch adds migrations master lacks.
+        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && bash scripts/dev-local-watch.sh" },
         { name: "frontend", command: "cd frontend && FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
-      // OPENAI/AWS keys ("AI agent unavailable", "no integrations"). Copied on create + checkout.
+      // provider/AWS keys. Copied on create + checkout.
       copyToWorktree: ["backend/.env"],
+      // A fresh checkout has no node_modules; symlink the main repo's so nest/vite/ts-node resolve
+      // without a slow per-worktree install. (Re-install in the worktree if a branch bumps deps.)
+      linkToWorktree: ["backend/node_modules", "frontend/node_modules"],
     },
     {
       name: "orca",

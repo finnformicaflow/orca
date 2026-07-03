@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { cp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, rm, symlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { run } from "./run";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
@@ -89,6 +89,20 @@ export async function adoptWorktree(
 export async function copyToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
   await Promise.all(paths.map((rel) =>
     cp(join(repoPath, rel), join(worktreePath, rel), { recursive: true }).catch(() => {})));
+}
+
+/**
+ * Symlink heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
+ * checkout has none, and a per-worktree install is slow + disk-heavy. Deps resolve through the
+ * link; safe while the branch hasn't changed its lockfile. Best-effort per path.
+ */
+export async function linkToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
+  await Promise.all(paths.map(async (rel) => {
+    const link = join(worktreePath, rel);
+    await mkdir(dirname(link), { recursive: true }).catch(() => {});
+    await rm(link, { recursive: true, force: true }).catch(() => {}); // replace any stale entry
+    await symlink(join(repoPath, rel), link).catch(() => {});
+  }));
 }
 
 /** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). */

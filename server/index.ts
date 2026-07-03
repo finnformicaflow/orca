@@ -30,6 +30,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const branch = `${slugifyBranch(title)}-${crypto.randomUUID().slice(0, 6)}`;
     const wt = await git.createWorktree(repo.repoPath, repo.worktreeRoot, branch, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
+    await git.linkToWorktree(repo.repoPath, wt.worktreePath, repo.linkToWorktree);
     return json({ ...wt, title });
   }
   if (req.method === "GET" && p === "/api/summary") {
@@ -85,6 +86,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/worktrees/adopt") {
     const wt = await git.adoptWorktree(repo.repoPath, repo.worktreeRoot, body.branch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
+    await git.linkToWorktree(repo.repoPath, wt.worktreePath, repo.linkToWorktree);
     return json(wt);
   }
   if (req.method === "POST" && p === "/api/worktrees/remove") {

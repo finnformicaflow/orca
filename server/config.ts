@@ -22,6 +22,13 @@ export type RepoConfig = {
    * missing ones are skipped.
    */
   copyToWorktree?: string[];
+  /**
+   * Heavy shared dirs to symlink (not copy) from the main repo into each worktree — a fresh
+   * checkout has no `node_modules`, and installing per-worktree is slow/huge. Repo-relative paths.
+   * Deps resolve through the link as if in the main repo; safe as long as the branch hasn't
+   * changed its lockfile (else run a real install in the worktree).
+   */
+  linkToWorktree?: string[];
 };
 
 export type OrcaConfig = {
