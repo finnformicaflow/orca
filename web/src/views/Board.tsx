@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { draftPromptAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   baseBranch, createWorkstream, discardDraft, rerunAgent, summary as fetchSummary, useRepos, useWorkstreams,
@@ -119,7 +119,6 @@ function ConditionBadges({ row }: { row: Row }) {
 function NewDraft() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(draftRepoAtom);
-  const [prompt, setPrompt] = useAtom(draftPromptAtom);
   const active = repo || repos[0]?.name || "";
   // After a send we keep the created row for ~6s so a mis-sent draft (wrong repo) can be undone —
   // Undo just discards it (kills the run, removes the worktree + branch). See CLAUDE.md / discardDraft.
@@ -132,8 +131,7 @@ function NewDraft() {
 
   return (
     <ChatComposer
-      value={prompt}
-      onChange={setPrompt}
+      persistKey="orca.newDraft"
       placeholder="Describe a feature…  (⌘+Enter)"
       onSubmit={async (text, images) => setUndoable(await createWorkstream(active, text, images))}
       footer={undoable && (

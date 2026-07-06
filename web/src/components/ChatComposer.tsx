@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 
 // The one chat input, shared by the new-draft box and the follow-up box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts images by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
+// Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 export function ChatComposer({
-  value, onChange, onSubmit, placeholder, leading, footer, onCancel, autoFocus,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus,
 }: {
-  value: string;
-  onChange: (v: string) => void;
+  persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
   placeholder?: string;
   leading?: ReactNode; // e.g. the repo selector, sits bottom-left inside the box
@@ -18,10 +19,27 @@ export function ChatComposer({
   onCancel?: () => void;
   autoFocus?: boolean;
 }) {
+  const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
   const [images, setImages] = useState<File[]>([]);
+  const [hydrated, setHydrated] = useState(!persistKey);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Rehydrate persisted attachments (stored as data URLs) into File objects on mount. Only once
+  // this resolves do we start persisting — otherwise the empty initial `images` would overwrite
+  // the stored attachments before they load back.
+  useEffect(() => {
+    if (!persistKey) return;
+    let live = true;
+    void draftFiles(persistKey).then((fs) => { if (live) { if (fs.length) setImages(fs); setHydrated(true); } });
+    return () => { live = false; };
+  }, [persistKey]);
+
+  // Persist on every edit so a reload mid-compose loses nothing.
+  useEffect(() => {
+    if (persistKey && hydrated) void saveDraft(persistKey, value, images);
+  }, [persistKey, hydrated, value, images]);
 
   const addImages = (files: Iterable<File>) => {
     const imgs = [...files].filter((f) => f.type.startsWith("image/"));
@@ -46,8 +64,9 @@ export function ChatComposer({
     setError(null);
     try {
       await onSubmit(value.trim(), images);
-      onChange("");
+      setValue("");
       setImages([]);
+      if (persistKey) clearDraft(persistKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
@@ -55,6 +74,9 @@ export function ChatComposer({
   const onKey = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void submit(); }
   };
+  // Cancel is an explicit dismissal, so drop the persisted draft too — otherwise it would
+  // reopen on the next reload (open-state is derived from whether a draft exists).
+  const cancel = () => { if (persistKey) clearDraft(persistKey); onCancel?.(); };
 
   return (
     <div>
@@ -74,7 +96,7 @@ export function ChatComposer({
           className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
           placeholder={placeholder}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
         />
@@ -85,7 +107,7 @@ export function ChatComposer({
             <Paperclip className="size-4" />
           </Button>
           <div className="ml-auto flex items-center gap-1">
-            {onCancel && <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>}
+            {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
             <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (⌘+Enter)" onClick={() => void submit()}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
             </Button>

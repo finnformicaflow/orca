@@ -6,6 +6,7 @@ import {
 } from "../store";
 import { attachCommand, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
+import { hasDraft } from "@/lib/composerDraft";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,8 +18,13 @@ import {
 // grouped: lifecycle ops (promote / mark ready / merge / preview) at top, then an Agent submenu
 // (Claude-driven work + Copy CLI) and a Slack submenu. Keeps the card header uncluttered — the
 // contextual state lives in badges, so the menu doesn't need per-item spinners.
+// localStorage key for a row's in-progress follow-up draft; whether one exists also drives
+// whether the composer auto-reopens after a reload (see FollowUpComposer).
+const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
+
 export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?: boolean }) {
-  const [composing, setComposing] = useState(false);
+  // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
+  const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
   const [err, setErr] = useState<string | null>(null);
   // Menu items are fire-and-forget, so without this a failed promote/merge/etc. would vanish
   // silently (e.g. "promote did nothing" when the branch couldn't be pushed). Surface it.
@@ -148,12 +154,10 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
 }
 
 export function FollowUpComposer({ row, onDone }: { row: Row; onDone: () => void }) {
-  const [text, setText] = useState("");
   return (
     <ChatComposer
       autoFocus
-      value={text}
-      onChange={setText}
+      persistKey={followUpDraftKey(row)}
       placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
       onSubmit={async (instruction, images) => { await followUp(row, instruction, images); onDone(); }}
       onCancel={onDone}
