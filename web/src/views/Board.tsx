@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { draftPromptAtom, draftRepoAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
@@ -12,7 +12,7 @@ import { Check, CircleStop, Clock, GitPullRequest, Globe, Loader2, X } from "luc
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { ChatComposer } from "@/components/ChatComposer";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 
@@ -93,40 +93,23 @@ function NewDraft() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(draftRepoAtom);
   const [prompt, setPrompt] = useAtom(draftPromptAtom);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const active = repo || repos[0]?.name || "";
 
-  const submit = async (e?: FormEvent) => {
-    e?.preventDefault();
-    if (!prompt.trim() || !active || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createWorkstream(active, prompt.trim());
-      setPrompt("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally { setBusy(false); }
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void submit(); }
-  };
-
   return (
-    <form onSubmit={submit} className="bg-card space-y-2 rounded-md border p-2 shadow-sm">
-      <Textarea placeholder="Describe a feature…  (⌘+Enter)" value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={onKey} rows={3} />
-      <div className="flex items-center gap-2">
+    <ChatComposer
+      value={prompt}
+      onChange={setPrompt}
+      placeholder="Describe a feature…  (⌘+Enter)"
+      onSubmit={(text, images) => createWorkstream(active, text, images)}
+      leading={
         <Select value={active} onValueChange={setRepo}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
           <SelectContent>
             {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Button type="submit" size="sm" disabled={busy || !prompt.trim()}>{busy ? "Creating…" : "New"}</Button>
-        {error && <span className="text-destructive text-xs">{error}</span>}
-      </div>
-    </form>
+      }
+    />
   );
 }
 

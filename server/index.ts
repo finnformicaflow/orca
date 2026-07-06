@@ -1,3 +1,4 @@
+import { tmpdir } from "os";
 import { API_PORT, loadConfig, repoOf } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
@@ -12,6 +13,20 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
+  // Pasted/dropped images: save each to a temp dir and hand back absolute paths the agent can Read.
+  // Handled before the JSON body parse below — this is the one multipart route.
+  if (req.method === "POST" && p === "/api/attachments") {
+    const dir = `${tmpdir()}/orca-attachments`;
+    const paths: string[] = [];
+    for (const f of (await req.formData()).getAll("files")) {
+      if (typeof f === "string") continue;
+      const ext = f.name.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
+      const file = `${dir}/${crypto.randomUUID()}${ext}`;
+      await Bun.write(file, f); // Bun.write creates the parent dir
+      paths.push(file);
+    }
+    return json({ paths });
+  }
   const body: any = req.method === "POST" ? await req.json().catch(() => ({})) : {};
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);

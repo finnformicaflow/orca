@@ -55,4 +55,9 @@ export const api = {
     post("/api/agents/run", { worktreePath, prompt }),
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>
     post("/api/claude", { repo, key, prompt, worktree, resume }),
+  uploadAttachments: async (files: File[]): Promise<string[]> => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    return (await fetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
+  },
 };
