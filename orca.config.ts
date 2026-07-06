@@ -25,10 +25,12 @@ const config: OrcaConfig = {
         // Then RE-SEED the test-auth user in the background: the test user + its org memberships are
         // manual seed data (scripts/invite-user-local.sh), and any previewed branch whose migrations
         // rebuild the public user/permissions tables wipes it — so access to orgs kept regressing.
-        // Re-inviting on every start (idempotent, backgrounded so it never blocks the preview,
-        // best-effort per org so a not-yet-provisioned tenant like `flow` fails harmlessly) makes it
-        // self-heal. Edit the org list to match the tenants you test.
-        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && { (for org in demo jeremiah flow; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done >/dev/null 2>&1 &) ; PORT={port} bash scripts/dev-local-watch.sh; }" },
+        // Re-inviting on every start makes it self-heal — idempotent, best-effort per org (a
+        // not-yet-provisioned tenant like `flow` fails harmlessly), and deferred until the backend
+        // is actually answering so the invite's MikroORM/cache work doesn't race the backend's own
+        // boot (a concurrent metadata regen breaks MikroORM init — see invite-user-aws.sh). Edit the
+        // org list to match the tenants you test.
+        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && { ( until curl -s -o /dev/null http://localhost:{port} 2>/dev/null; do sleep 2; done; for org in demo jeremiah flow; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which

@@ -105,7 +105,9 @@ export async function start(key: string, cwd: string, services: PreviewService[]
 
 async function portReady(port: number): Promise<boolean> {
   try {
-    await fetch(`http://localhost:${port}`, { signal: AbortSignal.timeout(700) });
+    // 2s (not 700ms): under boot load a healthy dev server can be slow to answer the first request,
+    // and a too-tight timeout makes "ready" flap on/off — which reads as flakiness.
+    await fetch(`http://localhost:${port}`, { signal: AbortSignal.timeout(2000) });
     return true; // any HTTP response means the server is up
   } catch {
     return false; // connection refused / timeout — not up yet
