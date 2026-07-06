@@ -103,7 +103,7 @@ function NewDraft() {
       onSubmit={(text, images) => createWorkstream(active, text, images)}
       leading={
         <Select value={active} onValueChange={setRepo}>
-          <SelectTrigger className="text-muted-foreground h-8 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
           <SelectContent>
             {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
           </SelectContent>

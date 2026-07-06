@@ -58,7 +58,7 @@ export function ChatComposer({
   return (
     <div>
       <div
-        className="bg-card focus-within:border-ring focus-within:ring-ring/50 rounded-xl border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]"
+        className="bg-card focus-within:border-ring focus-within:ring-ring/50 rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]"
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
       >
