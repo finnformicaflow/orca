@@ -90,16 +90,16 @@ function timeAgo(iso?: string): string {
 function elapsed(startedMs?: number): string {
   if (!startedMs) return "";
   const s = Math.floor((Date.now() - startedMs) / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
-  if (s === "running") return <Badge variant="secondary"><Loader2 className="animate-spin" /> running {elapsed(row.agentStartedAt)}</Badge>;
-  if (s === "done") return <Badge variant="success"><Check /> done</Badge>;
-  if (s === "error") return <Badge variant="destructive" title={row.agentError}><X /> error</Badge>;
+  if (s === "running") return <Badge variant="secondary"><Loader2 className="animate-spin" /> Running {elapsed(row.agentStartedAt)}</Badge>;
+  if (s === "done") return <Badge variant="success"><Check /> Done</Badge>;
+  if (s === "error") return <Badge variant="destructive" title={row.agentError}><X /> Error</Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
-  return hasWork ? <Badge variant="success"><Check /> completed</Badge> : <Badge variant="destructive"><CircleStop /> stopped</Badge>;
+  return hasWork ? <Badge variant="success"><Check /> Completed</Badge> : <Badge variant="destructive"><CircleStop /> Stopped</Badge>;
 }
 
 function ConditionBadges({ row }: { row: Row }) {
