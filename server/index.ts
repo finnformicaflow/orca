@@ -201,6 +201,9 @@ async function serveStatic(url: URL): Promise<Response> {
 
 Bun.serve({
   port: API_PORT,
+  // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
+  // slow response completes instead of timing out to a confusing empty/errored page.
+  idleTimeout: 60,
   async fetch(req) {
     const url = new URL(req.url);
     try {

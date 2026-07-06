@@ -170,15 +170,17 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
 });
 
-test("R1 review-queue: listReviewPrs maps coworker json (author + updated), newest first, with preview URL", async () => {
+test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no comments", async () => {
   await setPrListFixture([
-    { number: 20, title: "Older", headRefName: "feat-old", url: "u20", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [{ conclusion: "SUCCESS" }], comments: [], author: { login: "alex", name: "Alex Atack" }, updatedAt: "2026-07-01T10:00:00Z" },
-    { number: 21, title: "Newer", headRefName: "feat-new", url: "u21", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [], comments: [{ body: "deploy: https://feat-new.preview.example.com ready" }], author: { login: "sam" }, updatedAt: "2026-07-05T10:00:00Z" },
+    { number: 20, title: "Older", headRefName: "feat-old", url: "u20", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex", name: "Alex Atack" }, updatedAt: "2026-07-01T10:00:00Z" },
+    { number: 21, title: "Newer", headRefName: "feat-new", url: "u21", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "sam" }, updatedAt: "2026-07-05T10:00:00Z" },
   ]);
   const prs = await listReviewPrs(repo);
   expect(prs.map((p) => p.number)).toEqual([21, 20]); // newest-updated first
-  expect(prs[0]).toMatchObject({ author: "sam", authorName: "sam", previewUrl: "https://feat-new.preview.example.com" });
-  expect(prs[1]).toMatchObject({ author: "alex", authorName: "Alex Atack", ciStatus: "passing" }); // name preferred over login
+  expect(prs[0]).toMatchObject({ author: "sam", authorName: "sam", reviewStatus: "approved" });
+  expect(prs[0]!.previewUrl).toBeUndefined(); // meta list skips comments — the preview URL is a detail-only field
+  expect(prs[0]!.ciStatus).toBe("none"); // and skips CI (statusCheckRollup) — that's a detail-only, slow fetch
+  expect(prs[1]).toMatchObject({ author: "alex", authorName: "Alex Atack" }); // name preferred over login
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {
@@ -188,7 +190,7 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
     additions: 10, deletions: 2, changedFiles: 1,
     files: [{ path: "a.ts", additions: 10, deletions: 2 }],
     reviews: [{ author: { login: "bob" }, state: "APPROVED" }],
-    comments: [{ author: { login: "carol" }, body: "nice" }],
+    comments: [{ author: { login: "carol" }, body: "nice" }, { author: { login: "bot" }, body: "Deploy preview: https://feat-a.preview.example.com is ready" }],
     mergeable: "MERGEABLE", reviewDecision: "APPROVED",
     statusCheckRollup: [{ name: "build", conclusion: "SUCCESS" }, { name: "lint", conclusion: "FAILURE" }],
   });
@@ -199,6 +201,7 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
   expect(d.reviews[0]).toEqual({ author: "bob", state: "APPROVED" });
   expect(d.checks).toEqual([{ name: "build", status: "passing" }, { name: "lint", status: "failing" }]);
   expect(d.ciStatus).toBe("failing"); // any failing check fails the rollup
+  expect(d.previewUrl).toBe("https://feat-a.preview.example.com"); // deep fetch surfaces the deploy preview
 });
 
 test("D2 pr-diff: returns the raw unified diff", async () => {

@@ -46,6 +46,11 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
             View on GitHub <ExternalLink className="size-3.5" />
           </a>
+          {pr.previewUrl && (
+            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
+              PR preview <ExternalLink className="size-3.5" />
+            </a>
+          )}
         </h2>
         <p className="text-muted-foreground text-sm">
           <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files

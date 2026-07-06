@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
-import { Check, Clock, ExternalLink, X } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { api } from "../api";
 import type { ReviewPr } from "../../../server/gh";
 import { addPreviewLabel, reviewRow, useRepos, useWorkstreams, type Row } from "../store";
@@ -27,26 +27,35 @@ export function Review() {
   useEffect(() => {
     const active = repos.filter((r) => r.hasRemote && (filter === "all" || r.name === filter));
     let cancelled = false;
-    const load = () =>
-      Promise.all(active.map((r) => api.reviewPrs(r.name).then((list) => list.map((p) => ({ ...p, repo: r.name }))).catch(() => [] as Item[])))
-        .then((all) => { if (!cancelled) { setItems(all.flat().sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))); setError(null); } })
-        .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
+    // Fetch per-repo independently: a repo that errors (e.g. a stale bridge missing the route)
+    // shows its error rather than silently blanking the whole page as "no PRs".
+    const load = async () => {
+      const results = await Promise.all(active.map(async (r): Promise<{ list?: Item[]; err?: string }> => {
+        try { return { list: (await api.reviewPrs(r.name)).map((p) => ({ ...p, repo: r.name })) }; }
+        catch (e) { return { err: `${r.name}: ${e instanceof Error ? e.message : String(e)}` }; }
+      }));
+      if (cancelled) return;
+      setItems(results.flatMap((x) => x.list ?? []).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)));
+      setError(results.map((x) => x.err).filter(Boolean).join(" · ") || null);
+    };
     setItems(null);
-    load();
-    const t = setInterval(load, 15_000); // coworker PRs change slowly — poll gently
+    void load();
+    const t = setInterval(() => void load(), 15_000); // coworker PRs change slowly — poll gently
     return () => { cancelled = true; clearInterval(t); };
   }, [filter, repos]);
 
-  if (error) return <p className="text-destructive text-sm">{error}</p>;
   if (!items) return <p className="text-muted-foreground text-sm">Loading review queue…</p>;
-  if (items.length === 0) return <p className="text-muted-foreground text-sm">No open PRs from your coworkers right now. 🎉</p>;
 
   return (
-    <ol className="space-y-3 border-l pl-5">
-      {items.map((pr) => (
-        <ReviewItem key={`${pr.repo}::${pr.number}`} pr={pr} row={reviewRow(pr.repo, pr, liveByBranch.get(`${pr.repo}::${pr.branch}`))} multiRepo={repos.length > 1} />
-      ))}
-    </ol>
+    <div className="space-y-3">
+      {error && <p className="text-destructive text-sm">{error}</p>}
+      {items.length === 0 && !error && <p className="text-muted-foreground text-sm">No open PRs from your coworkers right now. 🎉</p>}
+      <ol className="space-y-3 border-l pl-5">
+        {items.map((pr) => (
+          <ReviewItem key={`${pr.repo}::${pr.number}`} pr={pr} row={reviewRow(pr.repo, pr, liveByBranch.get(`${pr.repo}::${pr.branch}`))} multiRepo={repos.length > 1} />
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -60,27 +69,19 @@ function ReviewItem({ pr, row, multiRepo }: { pr: Item; row: Row; multiRepo: boo
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <button className="text-left font-medium hover:underline" onClick={() => navigate(detail)}>{pr.title}</button>
           <a className="text-muted-foreground hover:text-foreground" href={pr.url} target="_blank" rel="noreferrer" title="View on GitHub"><ExternalLink className="size-3.5" /></a>
+          {/* CI status isn't in the meta list (it's a slow per-PR fetch) — see it on the detail page. */}
           <div className="ml-auto flex flex-wrap gap-1">
             {pr.isDraft && <Badge variant="outline">draft</Badge>}
             {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">changes requested</Badge>}
             {pr.reviewStatus === "approved" && <Badge variant="success">approved</Badge>}
             {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
-            {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-            {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-            {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
           </div>
         </div>
         <p className="text-muted-foreground mt-1 text-xs">
           #{pr.number} · {pr.authorName || pr.author || "?"}{multiRepo && <> · <span className="font-medium">{pr.repo}</span></>} · updated {timeAgo(pr.updatedAt)}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {pr.previewUrl ? (
-            <a className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
-              <ExternalLink className="size-3.5" /> PR preview
-            </a>
-          ) : (
-            <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
-          )}
+          <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
           <div className="w-44"><PreviewControl row={row} /></div>
         </div>
       </div>
