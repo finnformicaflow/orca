@@ -41,6 +41,7 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size="sm" variant="outline">Actions <ChevronDown className="size-3.5" /></Button>
@@ -64,7 +65,6 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                <DropdownMenuItem onSelect={() => setComposing(true)}>Follow up…</DropdownMenuItem>
                 {!isPr && row.worktreePath && row.agentStatus !== "running" && <DropdownMenuItem onSelect={() => void rerunAgent(row)}>Run</DropdownMenuItem>}
                 {conflicting && <DropdownMenuItem onSelect={() => void resolveConflicts(row)}>Resolve conflicts</DropdownMenuItem>}
                 {isPr && ciFailing && <DropdownMenuItem onSelect={() => void fixCi(row)}>Fix CI</DropdownMenuItem>}
