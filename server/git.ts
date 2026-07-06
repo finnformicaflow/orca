@@ -29,6 +29,22 @@ export async function uniqueBranch(repoPath: string, branch: string): Promise<st
   }
 }
 
+/**
+ * Resolve the base ref to diff/merge against. Prefers the remote-tracking `origin/<base>` over the
+ * local branch, which is frequently stale (behind origin) and would make change summaries include
+ * commits already merged upstream — the exact "why are there 6 commits?" surprise. Falls back to
+ * the local ref for local-only repos (no origin).
+ */
+export async function resolveBase(repoPath: string, base: string): Promise<string> {
+  const remote = `origin/${base}`;
+  try {
+    await git(repoPath, "rev-parse", "--verify", "--quiet", remote);
+    return remote;
+  } catch {
+    return base;
+  }
+}
+
 /** Create a new branch + worktree off `base`. Branch name is made unique on collision. */
 export async function createWorktree(
   repoPath: string,

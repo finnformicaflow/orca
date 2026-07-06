@@ -36,12 +36,12 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/summary") {
     const wt = url.searchParams.get("worktree");
     if (!wt) return json({ error: "worktree required" }, 400);
-    return json(await git.changeSummary(wt, repo.baseBranch));
+    return json(await git.changeSummary(wt, await git.resolveBase(repo.repoPath, repo.baseBranch)));
   }
   if (req.method === "GET" && p === "/api/diff") {
     const wt = url.searchParams.get("worktree");
     if (!wt) return json({ error: "worktree required" }, 400);
-    return json({ diff: await git.worktreeDiff(wt, repo.baseBranch) });
+    return json({ diff: await git.worktreeDiff(wt, await git.resolveBase(repo.repoPath, repo.baseBranch)) });
   }
   if (req.method === "POST" && p === "/api/promote") {
     const pr = await gh.createPr(body.worktreePath, {
@@ -101,6 +101,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // source of truth for the Draft lane: live worktrees + run status + local mergeability
     const wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
+    const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
     return json(await Promise.all(wts.map(async (w) => {
       const run = agent.status(w.worktreePath);
       const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
@@ -111,7 +112,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         agentResult: run.result,
         agentStartedAt: run.startedAt,
         sessionId: run.sessionId,
-        mergeClean: await git.mergeClean(repo.repoPath, repo.baseBranch, w.branch),
+        mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
       };
     })));
   }
