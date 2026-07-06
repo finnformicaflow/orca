@@ -8,7 +8,7 @@ import { createPr, listPrs, mergePr, prDetail, prDiff, prStatus } from "../serve
 import { run } from "../server/run";
 import {
   attachCommand, canMerge, deriveKanbanState, draftState, launchPrompt, promptFor, readyForReview,
-  resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, type WorkstreamState,
+  resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -36,6 +36,9 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
 
   // headless launch prompt adds an autonomous-commit instruction
   expect(launchPrompt({ title: "T", branch, prompt: "do it" })).toContain("Commit");
+  // pasted-image paths are appended for the agent to Read; no images = prompt unchanged
+  expect(withAttachments("go", [])).toBe("go");
+  expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");
   // attach command drops you into a session continuing the headless run
   expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
 });

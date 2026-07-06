@@ -1,14 +1,13 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   addPreviewLabel, baseBranch, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
   rerunAgent, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
 import { attachCommand, shouldBump } from "../workstream";
-import { ActionButton } from "@/components/ActionButton";
+import { ChatComposer } from "@/components/ChatComposer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -138,20 +137,14 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
 
 export function FollowUpComposer({ row, onDone }: { row: Row; onDone: () => void }) {
   const [text, setText] = useState("");
-  const sendRef = useRef<HTMLSpanElement>(null);
-  // ⌘/Ctrl+Enter submits by clicking Send — reuses its spinner/✓/✗ and disabled-when-empty guard.
-  const onKey = (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendRef.current?.querySelector("button")?.click(); }
-  };
   return (
-    <div className="space-y-1">
-      <Textarea rows={2} placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
-      <div className="flex gap-1">
-        <span ref={sendRef}>
-          <ActionButton variant="default" disabled={!text.trim()} onRun={async () => { await followUp(row, text.trim()); onDone(); }}>Send</ActionButton>
-        </span>
-        <Button size="sm" variant="ghost" onClick={onDone}>Cancel</Button>
-      </div>
-    </div>
+    <ChatComposer
+      autoFocus
+      value={text}
+      onChange={setText}
+      placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter · paste images)"
+      onSubmit={async (instruction, images) => { await followUp(row, instruction, images); onDone(); }}
+      onCancel={onDone}
+    />
   );
 }

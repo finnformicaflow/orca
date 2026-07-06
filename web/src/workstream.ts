@@ -125,6 +125,13 @@ export function followUpPrompt(instruction: string): string {
   return `${instruction}\n\nWork autonomously. Commit and push your changes.`;
 }
 
+/** Point the agent at pasted/dropped image files (absolute paths) for extra visual context. */
+export function withAttachments(prompt: string, imagePaths: string[]): string {
+  if (!imagePaths.length) return prompt;
+  const list = imagePaths.map((p) => `- ${p}`).join("\n");
+  return `${prompt}\n\nAttached images (Read these files for visual context):\n${list}`;
+}
+
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
 export function resolveConflictsPrompt(ws: Pick<Workstream, "branch">, base: string): string {
   return [

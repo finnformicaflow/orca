@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
-  slackPrompt,
+  slackPrompt, withAttachments,
 } from "./workstream";
 
 const KEY = "orca.enrichment";
@@ -152,10 +152,11 @@ export function useWorkstreams(): Row[] {
 }
 
 // ---- actions (scoped by each row's repo) ----
-export async function createWorkstream(repo: string, prompt: string): Promise<void> {
+export async function createWorkstream(repo: string, prompt: string, images: File[] = []): Promise<void> {
+  const paths = images.length ? await api.uploadAttachments(images) : [];
   const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
   patchEnrich(repo, branch, { prompt, title, createdAt: now() });
-  void api.runAgent(worktreePath, launchPrompt({ title, branch, prompt }, baseBranch(repo))).catch(() => {});
+  void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths)).catch(() => {});
   await refresh();
 }
 
@@ -190,9 +191,10 @@ export async function testLocally(row: Row): Promise<PreviewSvc[]> {
 }
 
 /** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */
-export async function followUp(row: Row, instruction: string) {
+export async function followUp(row: Row, instruction: string, images: File[] = []) {
+  const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
-  await api.claude(row.repo, wt, followUpPrompt(instruction), wt, row.sessionId);
+  await api.claude(row.repo, wt, withAttachments(followUpPrompt(instruction), paths), wt, row.sessionId);
   await refresh();
 }
 
