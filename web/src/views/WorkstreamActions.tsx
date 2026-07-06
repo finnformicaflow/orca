@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
-  addPreviewLabel, baseBranch, closePr, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
-  resolveConflicts, sendSlack, staleHours, type Row,
+  addPreviewLabel, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
+  merge, promote, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
 import { attachCommand, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -77,6 +77,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
           <DropdownMenuContent align="start" className="min-w-[12rem]">
             {/* Lifecycle */}
             {row.isDraft && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
+            {isPr && !row.isDraft && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
             {isLocalLane && (row.hasRemote
               ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
               : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}

@@ -145,6 +145,9 @@ export const addLabel = (cwd: string, pr: number, label: string) =>
 /** Mark a draft PR ready for review. */
 export const markReady = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr));
 
+/** Convert an open PR back to a draft. */
+export const convertToDraft = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr), "--undo");
+
 export async function mergePr(cwd: string, pr: number): Promise<void> {
   await gh(cwd, "pr", "merge", String(pr), "--squash");
 }

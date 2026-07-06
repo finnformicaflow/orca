@@ -24,6 +24,7 @@ case "$1 $2" in
   "pr list") cat "$ORCA_PRLIST_FIXTURE" ;;
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
   "pr merge") exit 0 ;;
+  "pr ready") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
 esac
 `;

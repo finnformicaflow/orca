@@ -73,7 +73,8 @@ function portFree(port: number): Promise<boolean> {
     const srv = createServer();
     srv.once("error", () => resolve(false));
     srv.once("listening", () => srv.close(() => resolve(true)));
-    srv.listen(port, "0.0.0.0");
+    // listen() throws synchronously for out-of-range ports (>65535) — treat as "not free", re-roll.
+    try { srv.listen(port, "0.0.0.0"); } catch { resolve(false); }
   });
 }
 
