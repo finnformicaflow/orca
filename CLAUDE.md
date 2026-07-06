@@ -91,6 +91,14 @@ Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Eve
 - **Node is blocked behind an unset asdf** — always run Node-based tools through Bun:
   `bunx --bun tsc`, `bunx --bun vite`. Plain `bunx`/`npm` will fail.
 
+## Committing (do this without being asked)
+
+**Commit and push after every request, no matter how small — don't wait to be told.** The loop
+for each task: make the change → `bun run check` (must be green) → `git commit` → `git push`.
+One focused commit per request, each with a clear message. Never leave the working tree dirty at
+the end of a turn. If on the default branch and the change warrants a PR, branch first; otherwise
+commit straight to `main` and push. End commit messages with the `Co-Authored-By` trailer.
+
 ## Run & test
 
 ```
