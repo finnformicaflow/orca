@@ -95,11 +95,11 @@ function elapsed(startedMs?: number): string {
 
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
-  if (s === "running") return <Badge variant="secondary"><Loader2 className="animate-spin" /> Running {elapsed(row.agentStartedAt)}</Badge>;
-  if (s === "done") return <Badge variant="success"><Check /> Done</Badge>;
-  if (s === "error") return <Badge variant="destructive" title={row.agentError}><X /> Error</Badge>;
+  if (s === "running") return <Badge variant="secondary">Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
+  if (s === "done") return <Badge variant="success">Done <Check /></Badge>;
+  if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
-  return hasWork ? <Badge variant="success"><Check /> Completed</Badge> : <Badge variant="destructive"><CircleStop /> Stopped</Badge>;
+  return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;
 }
 
 function ConditionBadges({ row }: { row: Row }) {
