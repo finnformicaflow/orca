@@ -213,10 +213,11 @@ function WorkstreamCard({ row }: { row: Row }) {
         {row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
       </div>
 
-      {/* State: badges scan left-to-right; Run sits by the status tag (re-launch a stopped session). */}
+      {/* State: agent status leads (standardised across lanes), then Run, then condition badges.
+          Local cards always show it (each is an agent session); PR cards only when a run is live/recent. */}
       {!isDone && (
         <div className="flex flex-wrap items-center gap-1">
-          {isLocal && <AgentBadge row={row} hasWork={hasWork} />}
+          {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
