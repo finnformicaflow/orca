@@ -66,6 +66,31 @@ export function readyForReview(s: PrStatusLike): boolean {
   return s.reviewStatus !== "approved" && s.reviewStatus !== "changes_requested" && ciOk(s.ciStatus);
 }
 
+// The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
+// place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
+export type PrMenuAction = "markReady" | "moveToDraft" | "resolveConflicts" | "fixCi" | "addPreview" | "copyLink";
+export type PrMenuRow = {
+  prNumber?: number;
+  isDraft?: boolean;
+  mergeable?: Mergeable;
+  mergeClean?: "clean" | "conflict";
+  ciStatus?: CiStatus;
+  previewUrl?: string;
+  prUrl?: string;
+};
+
+/** Ordered PR-scoped actions available for a row — the contents of the "PR" submenu. Empty for
+ *  a branch with no PR (those live in the top-level menu / Agent submenu instead). */
+export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
+  if (!row.prNumber) return [];
+  const actions: PrMenuAction[] = [row.isDraft ? "markReady" : "moveToDraft"];
+  if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") actions.push("resolveConflicts");
+  if (row.ciStatus === "failing") actions.push("fixCi");
+  if (!row.previewUrl) actions.push("addPreview");
+  if (row.prUrl) actions.push("copyLink");
+  return actions;
+}
+
 /** Pre-PR state: a workstream is READY once its branch has commits. */
 export function draftState(commitCount: number): Extract<WorkstreamState, "DRAFTING" | "READY"> {
   return commitCount > 0 ? "READY" : "DRAFTING";

@@ -4,7 +4,7 @@ import {
   addPreviewLabel, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
   merge, promote, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
-import { attachCommand, shouldBump } from "../workstream";
+import { attachCommand, prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 // One organised action menu for every actionable workstream (open PR or local branch). Actions are
-// grouped: lifecycle ops (promote / mark ready / merge / preview) at top, then an Agent submenu
+// grouped: promote/merge at top, then a PR submenu (every PR-scoped action — draft toggle, resolve
+// conflicts, fix CI, add preview, copy link — see workstream.prMenuActions), an Agent submenu
 // (Claude-driven work + Copy CLI) and a Slack submenu. Keeps the card header uncluttered — the
 // contextual state lives in badges, so the menu doesn't need per-item spinners.
 // localStorage key for a row's in-progress follow-up draft; whether one exists also drives
@@ -51,6 +52,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
     const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
     try { await navigator.clipboard.writeText(cmd); } catch { window.prompt("Copy the CLI command:", cmd); }
   };
+  const copyLink = async () => {
+    if (!row.prUrl) return;
+    try { await navigator.clipboard.writeText(row.prUrl); } catch { window.prompt("Copy the PR link:", row.prUrl); }
+  };
+  const prActions = prMenuActions(row);
   const mergeConfirm = isPr
     ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
     : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`;
@@ -75,9 +81,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
             <Button size="sm" variant="ghost">Actions <ChevronDown className="size-3.5" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[12rem]">
-            {/* Lifecycle */}
-            {row.isDraft && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
-            {isPr && !row.isDraft && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+            {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
             {isLocalLane && (row.hasRemote
               ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
               : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
@@ -86,16 +90,29 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
                 Merge{unreviewed ? " (unreviewed)" : ""}
               </DropdownMenuItem>
             )}
-            {isPr && !row.previewUrl && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
+
+            {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
+            {isPr && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>PR</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
+                  {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+                  {prActions.includes("resolveConflicts") && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
+                  {prActions.includes("fixCi") && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
+                  {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
+                  {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run(copyLink)}>Copy link</DropdownMenuItem></>}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
 
             <DropdownMenuSeparator />
 
-            {/* Agent */}
+            {/* Agent — Claude-driven work; resolve conflicts lives here only for a local branch (no PR) */}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                {isPr && ciFailing && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
+                {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
                 <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
