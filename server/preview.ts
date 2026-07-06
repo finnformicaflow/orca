@@ -34,6 +34,17 @@ function persist(): void {
   try { writeFileSync(REG, JSON.stringify(data)); } catch { /* best effort */ }
 }
 
+/** cwd of the process listening on `port`, via lsof — used to verify a re-adopted server is really
+ *  the one we think it is (not a different worktree's server that reused the port). */
+function listenerCwd(port: number): string | null {
+  try {
+    const pid = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim().split("\n").filter(Boolean)[0];
+    if (!pid) return null;
+    const line = Bun.spawnSync(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"]).stdout.toString().split("\n").find((l) => l.startsWith("n"));
+    return line ? line.slice(1) : null;
+  } catch { return null; }
+}
+
 /** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
  *  dead. Call once on boot, before serving. */
 export async function reattach(): Promise<void> {
@@ -41,10 +52,18 @@ export async function reattach(): Promise<void> {
   try { data = JSON.parse(readFileSync(REG, "utf8")); } catch { return; } // no registry yet / unreadable
   for (const [key, svcs] of Object.entries(data)) {
     const live: Svc[] = [];
-    for (const s of svcs) if (await portReady(s.port)) live.push({ ...s, exited: false });
+    for (const s of svcs) {
+      if (!(await portReady(s.port))) continue; // dead → drop
+      // Only re-adopt if the server on that port is actually running IN this worktree. Ports get
+      // reassigned across restarts, so a responding port may now be a DIFFERENT worktree's server —
+      // adopting it would make this card serve someone else's code ("none of my changes"). If it's
+      // foreign, leave it alone (its own key will re-adopt it) rather than adopt or kill it.
+      const cwd = listenerCwd(s.port);
+      if (cwd && cwd.startsWith(key)) live.push({ ...s, exited: false });
+    }
     if (live.length) previews.set(key, live);
   }
-  persist(); // rewrite pruned of the dead
+  persist(); // rewrite pruned of the dead / foreign
 }
 
 /** True if nothing is currently bound to `port`, checked against the OS (so an orphaned server from
