@@ -7,7 +7,7 @@ import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "..
 import { createPr, listPrs, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { run } from "../server/run";
 import {
-  attachCommand, canMerge, deriveKanbanState, draftState, launchPrompt, promptFor, readyForReview,
+  attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, promptFor, readyForReview,
   resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
@@ -34,8 +34,12 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(prompt).toContain(branch);
   expect(prompt).toContain("Use CSS vars.");
 
-  // headless launch prompt adds an autonomous-commit instruction
-  expect(launchPrompt({ title: "T", branch, prompt: "do it" })).toContain("Commit");
+  // headless launch prompt adds an autonomous-commit instruction, and forbids opening a PR itself
+  // (Orca owns Promote — otherwise the agent proactively opens a PR and the card jumps to In Review)
+  const launch = launchPrompt({ title: "T", branch, prompt: "do it" });
+  expect(launch).toContain("Commit");
+  expect(launch).toContain("Do NOT open a pull request");
+  expect(followUpPrompt("tweak the copy")).toContain("Do NOT open a pull request");
   // pasted-image paths are appended for the agent to Read; no images = prompt unchanged
   expect(withAttachments("go", [])).toBe("go");
   expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");

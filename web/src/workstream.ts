@@ -92,6 +92,11 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
   ].join("\n");
 }
 
+// Orca owns the create-PR step (the human clicks Promote). Left to itself in bypassPermissions mode
+// the agent will sometimes open a ready-for-review PR on its own, which yanks the card into In
+// Review — so every launch/follow-up prompt explicitly forbids it.
+const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
+
 /** Prompt used to launch the headless agent — sync-with-base + autonomous-commit instructions. */
 export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">, base = "main"): string {
   return [
@@ -99,6 +104,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     "",
     `First, sync with the latest \`${base}\` so you're not working behind it: run \`git fetch origin ${base} && git merge origin/${base}\` and resolve any conflicts before you start.`,
     "Then work autonomously. Commit your changes with clear messages as you go.",
+    NO_PR,
   ].join("\n");
 }
 
@@ -122,7 +128,7 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return `${instruction}\n\nWork autonomously. Commit and push your changes.`;
+  return `${instruction}\n\nWork autonomously. Commit and push your changes.\n${NO_PR}`;
 }
 
 /** Point the agent at pasted/dropped image files (absolute paths) for extra visual context. */
