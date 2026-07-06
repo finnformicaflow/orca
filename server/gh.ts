@@ -129,6 +129,15 @@ export async function listMerged(cwd: string): Promise<MergedPr[]> {
     .map((j) => ({ number: j.number, title: j.title, branch: j.headRefName, url: j.url, mergedAt: j.mergedAt }));
 }
 
+/** Branch names of the user's merged PRs (not date-filtered) — used to reap their leftover worktrees. */
+export async function mergedBranches(cwd: string): Promise<Set<string>> {
+  const raw = await gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50", "--json", "headRefName");
+  return new Set((JSON.parse(raw) as Array<{ headRefName: string }>).map((j) => j.headRefName));
+}
+
+/** Close a PR without merging (best-effort). */
+export const closePr = (cwd: string, pr: number) => gh(cwd, "pr", "close", String(pr));
+
 /** Add a label to a PR (e.g. to trigger the deploy-preview action). */
 export const addLabel = (cwd: string, pr: number, label: string) =>
   gh(cwd, "pr", "edit", String(pr), "--add-label", label);

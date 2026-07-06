@@ -4,9 +4,6 @@ import type { PreviewSvc } from "../api";
 import { previewStatus, stopPreview, testLocally, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 
-// Icon-toolbar style shared with the card header links (see Board.tsx `iconLink`).
-const iconBtn = "text-muted-foreground hover:text-foreground inline-flex items-center text-xs disabled:opacity-50";
-
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link.
 function usePreview(row: Row) {
   const [svcs, setSvcs] = useState<PreviewSvc[]>([]);
@@ -32,39 +29,58 @@ function usePreview(row: Row) {
   const stop = async () => { if (!row.worktreePath) return; setBusy(true); try { await stopPreview(row.worktreePath); setSvcs([]); } finally { setBusy(false); } };
 
   const crashed = svcs.find((s) => !s.running);
+  const ready = svcs.length > 0 && svcs.every((s) => s.ready); // whole stack up (frontend AND backend)
+  const failed = Boolean(crashed);
+  const starting = svcs.length > 0 && !ready && !failed;
+
+  // Tick once a second while starting so the elapsed timer updates (shows if a boot is hanging).
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!starting) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [starting]);
+  const startedAt = svcs.reduce((min, s) => Math.min(min, s.startedAt || Infinity), Infinity);
+  const elapsed = starting && Number.isFinite(startedAt) ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+
   return {
-    svcs, busy, open,
+    svcs, busy, open, ready, failed, starting, elapsed,
     error: error ?? crashed?.error, // start-time error, else the failed service's captured log tail
     active: svcs.length > 0,
-    ready: svcs.length > 0 && svcs.every((s) => s.ready), // whole stack up (frontend AND backend)
-    failed: Boolean(crashed),
     start, stop,
   };
 }
 
-/** Compact icon control on cards: Test locally → starting… → open link (or failed), with stop. */
+/** Compact "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). */
 export function PreviewControl({ row }: { row: Row }) {
-  const { busy, open, active, ready, failed, error, start, stop } = usePreview(row);
+  const { busy, open, active, ready, failed, starting, elapsed, error, start, stop } = usePreview(row);
 
   if (!active && !busy) {
     return (
-      <span className="inline-flex items-center gap-1.5">
-        <button type="button" className={iconBtn} onClick={() => void start()} title="Test locally (start preview)"><FlaskConical className="size-3.5" /></button>
-        {error && <span title={`Preview failed: ${error}`}><TriangleAlert className="text-destructive size-3.5" /></span>}
-      </span>
+      <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? `Preview failed: ${error}` : "Spin up a local preview of this branch"}>
+        {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+        {error ? "Retry local test" : "Test locally"}
+      </Button>
     );
   }
+  // Connected button group: the state button + Stop read as one control.
   return (
-    <span className="inline-flex items-center gap-2">
+    <div className="inline-flex w-full">
       {ready && open ? (
-        <a className={iconBtn} href={open.url} target="_blank" rel="noreferrer" title={`Open local preview :${open.port}`}><ExternalLink className="size-3.5" /></a>
+        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open local preview on :${open.port}`}>
+          <ExternalLink className="size-3.5" /> Open local
+        </Button>
       ) : failed ? (
-        <span title={error ?? "preview failed"}><TriangleAlert className="text-destructive size-3.5" /></span>
+        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => void start()} title={error ?? "preview failed"}>
+          <TriangleAlert className="text-destructive size-3.5" /> Retry local test
+        </Button>
       ) : (
-        <span title="Starting preview…"><Loader2 className="text-muted-foreground size-3.5 animate-spin" /></span>
+        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
+          <Loader2 className="size-3.5 animate-spin" /> Starting local… {starting && elapsed > 0 ? `${elapsed}s` : ""}
+        </Button>
       )}
-      <button type="button" className={iconBtn} disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></button>
-    </span>
+      <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+    </div>
   );
 }
 

@@ -54,6 +54,15 @@ function deleteEnrich(repo: string, branch: string) {
   notify();
 }
 
+// Branches mid-removal (close/discard) — optimistically hidden so a poll that lands between "PR
+// closed" and "worktree removed" doesn't flash the row back as a bare Local worktree.
+const hiding = new Set<string>();
+async function withHidden(repo: string, branch: string, op: () => Promise<void>) {
+  const k = ekey(repo, branch);
+  hiding.add(k); notify();
+  try { await op(); } finally { hiding.delete(k); notify(); }
+}
+
 // ---- live state (all repos) ----
 type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
 let live: RepoLive[] = [];
@@ -121,7 +130,11 @@ export function useWorkstreams(): Row[] {
   for (const rl of snapshot) {
     const prByBranch = new Map(rl.prs.map((p) => [p.branch, p]));
     const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
+    const mergedBranches = new Set(rl.merged.map((m) => m.branch));
     for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
+      if (hiding.has(ekey(rl.repo, branch))) continue; // being closed/discarded — don't flash it back
+      if (mergedBranches.has(branch)) continue; // merged PR → its Done row wins; skip the lingering worktree
+
       const pr = prByBranch.get(branch);
       const wt = wtByBranch.get(branch);
       const e = enrichOf(rl.repo, branch);
@@ -210,6 +223,16 @@ export async function merge(row: Row) {
   await refresh();
 }
 
+/** Close a PR without merging and clean up its worktree + local branch + enrichment. */
+export async function closePr(row: Row) {
+  if (!row.prNumber) return;
+  await withHidden(row.repo, row.branch, async () => {
+    await api.closePr(row.repo, row.prNumber!, row.worktreePath, row.branch);
+    deleteEnrich(row.repo, row.branch);
+    await refresh();
+  });
+}
+
 export function sendSlack(row: Row, kind: "notify" | "bump") {
   const prompt = slackPrompt({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind, slackChannel(row.repo));
   const p = api.claude(row.repo, `slack:${row.repo}:${row.branch}`, prompt);
@@ -240,9 +263,11 @@ export const summary = (repo: string, worktreePath: string) => api.summary(repo,
 
 export async function discardDraft(row: Row) {
   if (!row.worktreePath) return;
-  await api.previewStop(row.worktreePath).catch(() => {});
-  // Only delete the branch for pre-PR locals; never delete a branch that has an open PR.
-  await api.discardWorktree(row.repo, row.worktreePath, row.branch, !row.prNumber);
-  deleteEnrich(row.repo, row.branch);
-  await refresh();
+  await withHidden(row.repo, row.branch, async () => {
+    await api.previewStop(row.worktreePath!).catch(() => {});
+    // Only delete the branch for pre-PR locals; never delete a branch that has an open PR.
+    await api.discardWorktree(row.repo, row.worktreePath!, row.branch, !row.prNumber);
+    deleteEnrich(row.repo, row.branch);
+    await refresh();
+  });
 }

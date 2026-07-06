@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
-  addPreviewLabel, baseBranch, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
-  rerunAgent, resolveConflicts, sendSlack, staleHours, type Row,
+  addPreviewLabel, baseBranch, closePr, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
+  resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
 import { attachCommand, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -35,9 +35,6 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
   // it's the promoted+clean Mergeable lane.
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
-  // A local session that isn't currently running can be (re)launched. First-class so a "stopped"
-  // session always has an obvious way to run again, not buried in the Agent submenu.
-  const canRun = !isPr && Boolean(row.worktreePath) && row.agentStatus !== "running";
 
   const copyCli = async () => {
     const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
@@ -50,11 +47,21 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        {canRun && <Button size="sm" variant="outline" onClick={run(() => rerunAgent(row))}>Run</Button>}
-        <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>
+        <Button size="sm" variant="soft" onClick={() => setComposing((v) => !v)}>Follow up</Button>
+        {/* Second-class, lane-contextual action right after Follow up. */}
+        {row.lane === "IN_REVIEW" && (
+          <Button size="sm" variant={bumpDue ? "default" : "outline"} onClick={run(() => sendSlack(row, notified ? "bump" : "notify"))}>
+            {notified ? "Bump Slack" : "Notify Slack"}
+          </Button>
+        )}
+        {row.lane === "MERGEABLE" && (
+          <Button size="sm" variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
+            Merge{unreviewed ? " (unreviewed)" : ""}
+          </Button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="outline">Actions <ChevronDown className="size-3.5" /></Button>
+            <Button size="sm" variant="ghost">Actions <ChevronDown className="size-3.5" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[12rem]">
             {/* Lifecycle */}
@@ -62,7 +69,7 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
             {isLocalLane && (row.hasRemote
               ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
               : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
-            {canMergeNow && (
+            {canMergeNow && row.lane !== "MERGEABLE" && (
               <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
                 Merge{unreviewed ? " (unreviewed)" : ""}
               </DropdownMenuItem>
@@ -92,17 +99,22 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
               </DropdownMenuSub>
             )}
 
-            {/* Discard — never deletes a branch that has an open PR (only pre-PR locals) */}
-            {!isPr && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
-                >
-                  Discard
-                </DropdownMenuItem>
-              </>
+            {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
+            <DropdownMenuSeparator />
+            {isPr ? (
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run(() => closePr(row))(); }}
+              >
+                Close PR
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
+              >
+                Discard
+              </DropdownMenuItem>
             )}
           </DropdownMenuContent>
         </DropdownMenu>

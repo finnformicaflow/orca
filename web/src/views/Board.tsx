@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react";
-import { useAtom } from "jotai";
-import { draftPromptAtom, draftRepoAtom } from "@/lib/atoms";
+import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useAtom, useAtomValue } from "jotai";
+import { draftPromptAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, summary as fetchSummary, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, useRepos, useWorkstreams,
   type Lane, type Row,
 } from "../store";
 import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, GitPullRequest, Globe, Loader2, X } from "lucide-react";
+import { Check, CircleStop, Clock, Copy, ExternalLink, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -25,7 +25,9 @@ const LANES: { lane: Lane; title: string }[] = [
 ];
 
 export function Board() {
-  const rows = useWorkstreams();
+  const all = useWorkstreams();
+  const filter = useAtomValue(repoFilterAtom);
+  const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
   return (
     <div className="grid grid-cols-1 gap-3 md:h-[calc(100dvh-6.5rem)] md:grid-cols-3 xl:grid-cols-5">
       {LANES.map(({ lane, title }) => {
@@ -35,6 +37,7 @@ export function Board() {
           <div key={lane} className="bg-muted/30 flex flex-col overflow-hidden rounded-lg border">
             <h3 className="text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs font-semibold tracking-wide uppercase">
               {title} <span className="opacity-60">{cards.length}</span>
+              {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
               {lane === "LOCAL" && <NewDraft />}
@@ -47,17 +50,41 @@ export function Board() {
   );
 }
 
+// Copies today's completed work as a shareable markdown list (scoped by the active repo filter,
+// since `cards` is already filtered). Handy for standups / status posts.
+function CopyDone({ cards }: { cards: Row[] }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    const text = cards.map((c) => `- ${c.title}${c.prNumber ? ` (#${c.prNumber})` : ""}${c.prUrl ? ` — ${c.prUrl}` : ""}`).join("\n");
+    void navigator.clipboard.writeText(`Completed today:\n${text}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button type="button" onClick={copy} title="Copy completed work (respects the repo filter)" className="hover:text-foreground ml-auto inline-flex items-center gap-1 normal-case">
+      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+    </button>
+  );
+}
+
 const Eyebrow = ({ repo }: { repo: string }) => (
   <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
 );
 
-// Shared style for the compact icon toolbar in each card header (preview / PR links).
-const iconLink = "text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs";
+// External destination link (opens elsewhere) — labelled + trailing arrow so it reads as "go there",
+// distinct from the action buttons in the footer.
+const DestLink = ({ href, children }: { href?: string; children: ReactNode }) => (
+  <a className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-xs" href={href} target="_blank" rel="noreferrer">
+    {children} <ExternalLink className="size-3" />
+  </a>
+);
 
 function timeAgo(iso?: string): string {
   if (!iso) return "";
-  const h = Math.floor((Date.now() - Date.parse(iso)) / 3_600_000);
-  return h < 1 ? "just now" : h === 1 ? "1h ago" : `${h}h ago`;
+  const m = Math.floor((Date.now() - Date.parse(iso)) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
 }
 
 function elapsed(startedMs?: number): string {
@@ -130,45 +157,49 @@ function WorkstreamCard({ row }: { row: Row }) {
   }, [isLocal, row.repo, row.worktreePath]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
+  // The title links to this workstream's detail view (PR or local session).
+  const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
+    : isLocal ? `/${row.repo}/local/${encodeURIComponent(row.branch)}`
+    : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
+
   return (
-    <div className="bg-card space-y-2 rounded-md border px-3 pt-1.5 pb-3 shadow-sm">
-      <div>
-        <div className="flex items-center justify-between gap-2">
-          <Eyebrow repo={row.repo} />
-          <div className="flex shrink-0 items-center gap-3">
-            {!isDone && <PreviewControl row={row} />}
-            {row.previewUrl && (
-              <a className={iconLink} href={row.previewUrl} target="_blank" rel="noreferrer" title="Open preview deployment">
-                <Globe className="size-3.5" />
-              </a>
-            )}
-            {row.prNumber && (
-              <a className={iconLink} href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`}>
-                <GitPullRequest className="size-3.5" />#{row.prNumber}
-              </a>
-            )}
-          </div>
+    <div className="bg-card flex flex-col gap-2 rounded-md border p-3 shadow-sm">
+      {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
+      <div className="flex items-center justify-between gap-2">
+        <Eyebrow repo={row.repo} />
+        <div className="flex shrink-0 items-center gap-3">
+          {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
+          {row.prNumber && <DestLink href={row.prUrl}>PR #{row.prNumber}</DestLink>}
         </div>
-        {isOpenPr ? (
-          <Button variant="link" className="text-foreground h-auto w-full justify-start p-0 text-sm font-medium" onClick={() => navigate(`/${row.repo}/prs/${row.prNumber}`)}>
-            <span className="min-w-0 truncate">{row.title}</span>
-          </Button>
-        ) : isLocal ? (
-          <Button variant="link" className="text-foreground h-auto w-full justify-start p-0 text-sm font-medium" onClick={() => navigate(`/${row.repo}/local/${encodeURIComponent(row.branch)}`)}>
-            <span className="min-w-0 truncate">{row.title}</span>
-          </Button>
+      </div>
+
+      {/* Identity: the title anchors the card; prompt is supporting context. */}
+      <div className="space-y-0.5">
+        {titleTo ? (
+          <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
+            {row.title}
+          </button>
         ) : (
           <div className="truncate text-sm font-medium">{row.title}</div>
         )}
-        {row.prompt && <p className="text-muted-foreground mt-0.5 line-clamp-3 text-xs">{row.prompt}</p>}
+        {row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
       </div>
 
-      <div className="flex flex-wrap items-center gap-1">
-        {isLocal && <AgentBadge row={row} hasWork={hasWork} />}
-        {isOpenPr && <ConditionBadges row={row} />}
-        {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">conflicts with {baseBranch(row.repo)}</Badge>}
-      </div>
+      {/* State: badges scan left-to-right; Run sits by the status tag (re-launch a stopped session). */}
+      {!isDone && (
+        <div className="flex flex-wrap items-center gap-1">
+          {isLocal && <AgentBadge row={row} hasWork={hasWork} />}
+          {isLocal && row.worktreePath && row.agentStatus !== "running" && (
+            <button type="button" onClick={() => void rerunAgent(row)} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
+              <Play className="size-3" />
+            </button>
+          )}
+          {isOpenPr && <ConditionBadges row={row} />}
+          {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">conflicts with {baseBranch(row.repo)}</Badge>}
+        </div>
+      )}
 
+      {/* Detail line: branch + diffstat / agent result / merged-when. */}
       {isLocal && (
         <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs">
           <code className="truncate">{row.branch}</code>
@@ -180,7 +211,15 @@ function WorkstreamCard({ row }: { row: Row }) {
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
-      {(isOpenPr || isLocal) && <WorkstreamActions row={row} hasWork={hasWork} />}
+      {/* Local preview: its own full-width row, sitting between the session context and the actions. */}
+      {!isDone && <PreviewControl row={row} />}
+
+      {/* Actions: PR/agent verbs, below a divider — separated from the info + preview above. */}
+      {!isDone && (
+        <div className="border-t pt-2.5">
+          <WorkstreamActions row={row} hasWork={hasWork} />
+        </div>
+      )}
     </div>
   );
 }

@@ -87,6 +87,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/prs/close") {
+    await gh.closePr(repo.repoPath, body.pr); // abandon without merging
+    if (body.worktreePath) {
+      agent.stop(body.worktreePath);
+      if (body.branch) await agent.killByBranch(body.branch);
+      preview.stop(body.worktreePath);
+      await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
+    }
+    if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/preview") {
     await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
     return json(await preview.status(body.key));
@@ -115,7 +126,17 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/agents") {
     // source of truth for the Draft lane: live worktrees + run status + local mergeability
-    const wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
+    let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
+    // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
+    const merged = await gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()); // empty for local-only repos
+    for (const w of wts.filter((w) => merged.has(w.branch))) {
+      agent.stop(w.worktreePath);
+      await agent.killByBranch(w.branch);
+      preview.stop(w.worktreePath);
+      await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
+      await git.deleteBranch(repo.repoPath, w.branch);
+    }
+    wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
     return json(await Promise.all(wts.map(async (w) => {

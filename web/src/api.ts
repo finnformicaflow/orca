@@ -12,7 +12,7 @@ export type LiveAgent = {
   mergeClean?: "clean" | "conflict";
 };
 
-export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string };
+export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
   fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
@@ -44,6 +44,8 @@ export const api = {
   localDiff: (repo: string, worktree: string): Promise<{ diff: string }> =>
     fetch(`/api/diff${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
   merge: (repo: string, pr: number, worktreePath?: string): Promise<{ ok: true }> => post("/api/merge", { repo, pr, worktreePath }),
+  closePr: (repo: string, pr: number, worktreePath?: string, branch?: string): Promise<{ ok: true }> =>
+    post("/api/prs/close", { repo, pr, worktreePath, branch }),
   mergeLocal: (repo: string, branch: string, worktreePath?: string): Promise<{ ok: true }> => post("/api/merge-local", { repo, branch, worktreePath }),
   addPreviewLabel: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/label", { repo, pr }),
   preview: (repo: string, key: string, worktree: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree }),

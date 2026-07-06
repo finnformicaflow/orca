@@ -17,8 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PreviewService } from "./config";
 
-type Svc = { name: string; port: number; open: boolean; proc: Bun.Subprocess; logPath: string; logFd: number; exited: boolean };
-export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string };
+type Svc = { name: string; port: number; open: boolean; proc: Bun.Subprocess; logPath: string; logFd: number; exited: boolean; startedAt: number };
+export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
 
@@ -40,11 +40,22 @@ async function freePort(range: [number, number], taken: Set<number>): Promise<nu
   throw new Error(`no free port in ${range[0]}–${range[1]}`);
 }
 
-/** Reap any process still running inside this worktree (nest/vite from a prior preview) — the node
- *  children the sh wrapper's kill misses. Synchronous so it also works during shutdown. Agents run
- *  `claude` without the abs worktree path in argv, so they aren't matched. */
+/** Kill whatever is listening on a port — precise reaping of a tracked service's actual listener
+ *  (the node/bun grandchild the sh wrapper's kill misses), regardless of process tree. */
+function killPort(port: number): void {
+  try {
+    // -sTCP:LISTEN is critical: without it lsof also returns clients *connected* to the port —
+    // including the bridge itself (its readiness fetch), so we'd kill our own server.
+    const out = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim();
+    for (const pid of out.split("\n").filter(Boolean)) { try { process.kill(Number(pid)); } catch { /* gone */ } }
+  } catch { /* lsof missing / nothing listening */ }
+}
+
+/** Reap dev servers left running inside this worktree by a PRIOR run (their ports are unknown after
+ *  a bridge restart). Deliberately narrow — matches only processes launched from the worktree's
+ *  node_modules (vite/nest), NOT a shell/editor/agent that merely has the path in its args. */
 function killWorktree(cwd: string): void {
-  try { Bun.spawnSync(["pkill", "-f", cwd]); } catch { /* pkill exits non-zero when nothing matches */ }
+  try { Bun.spawnSync(["pkill", "-f", `${cwd}.*node_modules`]); } catch { /* nothing matched */ }
 }
 
 export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
@@ -59,7 +70,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
     const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
-    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false };
+    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now() };
     void proc.exited.then(() => { svc.exited = true; });
     return svc;
   });
@@ -87,16 +98,17 @@ export async function status(key: string): Promise<SvcStatus[]> {
     // not just "the process is alive". The link/iframe therefore waits for the full stack (~10s for
     // the backend) instead of appearing the instant the frontend is up.
     const ready = running ? await portReady(s.port) : false;
-    return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath) };
+    return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
 
 export function stop(key: string): void {
   for (const s of previews.get(key) ?? []) {
     try { s.proc.kill(); } catch { /* already gone */ }
+    killPort(s.port); // precise: reap the actual listener the sh-wrapper kill leaves behind
     try { closeSync(s.logFd); } catch { /* already closed */ }
   }
-  killWorktree(key); // key === worktree path; reaps the node children proc.kill() leaves behind
+  killWorktree(key); // key === worktree path; sweeps orphans from a prior run (narrow pattern)
   previews.delete(key);
 }
 
