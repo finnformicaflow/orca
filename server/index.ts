@@ -3,7 +3,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
-import { canMerge, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { mergeSafe, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 
 const cfg = await loadConfig();
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
@@ -44,6 +44,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ diff: await git.worktreeDiff(wt, await git.resolveBase(repo.repoPath, repo.baseBranch)) });
   }
   if (req.method === "POST" && p === "/api/promote") {
+    await git.pushBranch(body.worktreePath, body.branch); // the branch must exist on origin for `gh pr create`
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: body.body ?? "", base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
@@ -66,7 +67,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/merge") {
     const status = await gh.prStatus(repo.repoPath, body.pr);
-    if (!canMerge(status)) return json({ error: "not mergeable/green", status }, 409);
+    if (!mergeSafe(status)) return json({ error: "not mergeable/green", status }, 409);
     await gh.mergePr(repo.repoPath, body.pr);
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });

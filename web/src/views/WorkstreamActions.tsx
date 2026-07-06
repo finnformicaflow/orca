@@ -4,7 +4,7 @@ import {
   addPreviewLabel, baseBranch, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
   rerunAgent, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
-import { attachCommand, canMerge, shouldBump } from "../workstream";
+import { attachCommand, shouldBump } from "../workstream";
 import { ActionButton } from "@/components/ActionButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,15 +20,22 @@ import {
 // contextual state lives in badges, so the menu doesn't need per-item spinners.
 export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?: boolean }) {
   const [composing, setComposing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Menu items are fire-and-forget, so without this a failed promote/merge/etc. would vanish
+  // silently (e.g. "promote did nothing" when the branch couldn't be pushed). Surface it.
+  const run = (fn: () => Promise<unknown>) => () => { setErr(null); void fn().catch((e) => setErr(e instanceof Error ? e.message : String(e))); };
 
   const isPr = Boolean(row.prNumber);
   const isLocalLane = row.lane === "LOCAL";
-  const isMergeable = row.lane === "MERGEABLE";
   const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
   const ciFailing = row.ciStatus === "failing";
   const notified = Boolean(row.slackNotifiedAt);
   const bumpDue = shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, Date.now(), staleHours());
-  const mergeReady = canMerge({ state: "OPEN", mergeable: row.mergeable ?? "UNKNOWN", ciStatus: row.ciStatus ?? "none", reviewStatus: row.reviewStatus ?? "none" });
+  // Offer Merge whenever it's actually mergeable — for a PR that means no conflicts + CI not failing
+  // (approval is a team norm GitHub enforces, and you can't approve your own PR); for a local branch
+  // it's the promoted+clean Mergeable lane.
+  const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
+  const unreviewed = isPr && row.reviewStatus !== "approved";
 
   const copyCli = async () => {
     const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
@@ -48,16 +55,16 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[12rem]">
             {/* Lifecycle */}
-            {row.isDraft && <DropdownMenuItem onSelect={() => void markReady(row)}>Mark ready for review</DropdownMenuItem>}
+            {row.isDraft && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
             {isLocalLane && (row.hasRemote
-              ? <PromoteSubmenu row={row} disabled={!hasWork} />
-              : <DropdownMenuItem disabled={!hasWork} onSelect={() => void promote(row)}>Promote</DropdownMenuItem>)}
-            {isMergeable && (
-              <DropdownMenuItem disabled={isPr && !mergeReady} onSelect={() => { if (window.confirm(mergeConfirm)) void merge(row); }}>
-                Merge{isPr && !mergeReady ? " (not ready)" : ""}
+              ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
+              : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
+            {canMergeNow && (
+              <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
+                Merge{unreviewed ? " (unreviewed)" : ""}
               </DropdownMenuItem>
             )}
-            {isPr && !row.previewUrl && <DropdownMenuItem onSelect={() => void addPreviewLabel(row)}>Add preview</DropdownMenuItem>}
+            {isPr && !row.previewUrl && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
 
             <DropdownMenuSeparator />
 
@@ -65,10 +72,10 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {!isPr && row.worktreePath && row.agentStatus !== "running" && <DropdownMenuItem onSelect={() => void rerunAgent(row)}>Run</DropdownMenuItem>}
-                {conflicting && <DropdownMenuItem onSelect={() => void resolveConflicts(row)}>Resolve conflicts</DropdownMenuItem>}
-                {isPr && ciFailing && <DropdownMenuItem onSelect={() => void fixCi(row)}>Fix CI</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={() => void copyCli()}>Copy CLI</DropdownMenuItem>
+                {!isPr && row.worktreePath && row.agentStatus !== "running" && <DropdownMenuItem onSelect={run(() => rerunAgent(row))}>Run</DropdownMenuItem>}
+                {conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
+                {isPr && ciFailing && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
+                <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
@@ -77,8 +84,8 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuItem onSelect={() => void sendSlack(row, "notify")}>Notify{notified ? " again" : ""}</DropdownMenuItem>
-                  <DropdownMenuItem disabled={!notified} onSelect={() => void sendSlack(row, "bump")}>Bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Notify{notified ? " again" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             )}
@@ -101,13 +108,14 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
         {row.agentStatus === "running" && <Badge variant="secondary">claude working…</Badge>}
         {row.agentStatus === "error" && <Badge variant="destructive" title={row.agentError}>claude error</Badge>}
       </div>
+      {err && <p className="text-destructive text-xs break-words">{err}</p>}
       {composing && <FollowUpComposer row={row} onDone={() => setComposing(false)} />}
     </div>
   );
 }
 
 // Promote a local branch into a PR — choose ready/draft and optionally set the preview label.
-function PromoteSubmenu({ row, disabled }: { row: Row; disabled?: boolean }) {
+function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; run: (fn: () => Promise<unknown>) => () => void }) {
   const [label, setLabel] = useState(false);
   return (
     <DropdownMenuSub>
@@ -118,8 +126,8 @@ function PromoteSubmenu({ row, disabled }: { row: Row; disabled?: boolean }) {
           Add preview label
         </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void promote(row, { draft: false, addPreviewLabel: label })}>Create PR (ready)</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void promote(row, { draft: true, addPreviewLabel: label })}>Create draft PR</DropdownMenuItem>
+        <DropdownMenuItem onSelect={run(() => promote(row, { draft: false, addPreviewLabel: label }))}>Create PR (ready)</DropdownMenuItem>
+        <DropdownMenuItem onSelect={run(() => promote(row, { draft: true, addPreviewLabel: label }))}>Create draft PR</DropdownMenuItem>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );

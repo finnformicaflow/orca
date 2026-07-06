@@ -44,7 +44,15 @@ const ciOk = (ci: CiStatus) => ci === "passing" || ci === "none";
 
 /** Can this PR be merged right now? (mergeable + green + approved) */
 export function canMerge(s: PrStatusLike): boolean {
-  return s.mergeable === "MERGEABLE" && ciOk(s.ciStatus) && s.reviewStatus === "approved";
+  return mergeSafe(s) && s.reviewStatus === "approved";
+}
+
+/** Safe to *attempt* a merge: no conflicts and CI isn't failing. Approval is deliberately NOT
+ *  required here — GitHub branch protection enforces required reviews on its side, so this lets an
+ *  owner merge their own PR (which GitHub won't let them self-approve) on an unprotected repo,
+ *  while a protected team repo still rejects the unapproved `gh pr merge`. */
+export function mergeSafe(s: PrStatusLike): boolean {
+  return s.mergeable === "MERGEABLE" && ciOk(s.ciStatus);
 }
 
 /** Map a freshly-polled PR status onto its kanban lane: open (In Review) vs approved (Mergeable). */

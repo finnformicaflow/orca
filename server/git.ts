@@ -129,6 +129,11 @@ export async function removeWorktree(repoPath: string, worktreePath: string): Pr
 /** Delete a local branch (best-effort). Only call for branches with no open PR. */
 export const deleteBranch = (repoPath: string, branch: string) => git(repoPath, "branch", "-D", branch).catch(() => {});
 
+/** Push a branch to origin (setting upstream) so a PR can be opened against it. A worktree branch
+ *  created/adopted locally isn't on the remote yet, and `gh pr create` needs it there. */
+export const pushBranch = (worktreePath: string, branch: string) =>
+  git(worktreePath, "push", "-u", "origin", branch);
+
 /** Does the repo have any git remote? (Determines PR vs local-only lifecycle.) */
 export async function hasRemote(repoPath: string): Promise<boolean> {
   try { return (await git(repoPath, "remote")).trim().length > 0; } catch { return false; }
