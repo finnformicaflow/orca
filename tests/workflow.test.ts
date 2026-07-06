@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { createPr, listPrs, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { freePort } from "../server/preview";
 import { run } from "../server/run";
 import {
   attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, promptFor, readyForReview,
@@ -186,4 +187,13 @@ test("D2 pr-diff: returns the raw unified diff", async () => {
   const diff = await prDiff(repo, 5);
   expect(diff).toContain("diff --git");
   expect(diff).toContain("added line");
+});
+
+test("D3 preview ports: concurrent allocations never collide", async () => {
+  // Two 'Test locally' clicks close together must NOT get the same port: the first server hasn't
+  // bound yet, so a naive freePort would hand both the same port (both link there; stopping one
+  // hangs the other). Reserving in-flight + re-checking after the async probe prevents it.
+  const range: [number, number] = [49_230, 49_290];
+  const ports = await Promise.all(Array.from({ length: 5 }, () => freePort(range)));
+  expect(new Set(ports).size).toBe(ports.length); // all distinct
 });
