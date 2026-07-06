@@ -12,15 +12,40 @@
 //      (or anything else on the machine) still hold, so the new server crashes on bind. We probe
 //      the OS for a genuinely free port instead.
 import { createServer } from "node:net";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PreviewService } from "./config";
 
-type Svc = { name: string; port: number; open: boolean; proc: Bun.Subprocess; logPath: string; logFd: number; exited: boolean; startedAt: number };
+// Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
+// only know their port, and reap them via killPort. Owned svcs (started this run) have both.
+type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number };
 export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
+
+// Registry sidecar: the port↔service map for each worktree, so a crashed/hard-killed bridge (whose
+// SIGINT/SIGTERM killAll never ran) can re-adopt its still-running dev servers on the next boot
+// instead of orphaning them + forcing a re-spin. Only ports still responding are re-adopted.
+const REG = join(tmpdir(), "orca-previews.json");
+function persist(): void {
+  const data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number }>> = {};
+  for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt }) => ({ name, port, open, logPath, startedAt }));
+  try { writeFileSync(REG, JSON.stringify(data)); } catch { /* best effort */ }
+}
+
+/** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
+ *  dead. Call once on boot, before serving. */
+export async function reattach(): Promise<void> {
+  let data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number }>>;
+  try { data = JSON.parse(readFileSync(REG, "utf8")); } catch { return; } // no registry yet / unreadable
+  for (const [key, svcs] of Object.entries(data)) {
+    const live: Svc[] = [];
+    for (const s of svcs) if (await portReady(s.port)) live.push({ ...s, exited: false });
+    if (live.length) previews.set(key, live);
+  }
+  persist(); // rewrite pruned of the dead
+}
 
 /** True if nothing is currently bound to `port`, checked against the OS (so an orphaned server from
  *  a prior run counts as taken — the in-memory map can't know about it after a restart). */
@@ -75,6 +100,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
     return svc;
   });
   previews.set(key, svcs);
+  persist();
 }
 
 async function portReady(port: number): Promise<boolean> {
@@ -93,23 +119,26 @@ const tail = async (path: string): Promise<string> => {
 export async function status(key: string): Promise<SvcStatus[]> {
   const svcs = previews.get(key) ?? [];
   return Promise.all(svcs.map(async (s) => {
-    const running = !s.exited;
+    const up = await portReady(s.port);
     // Every service binds a port, so readiness = the port actually responds — for the backend too,
     // not just "the process is alive". The link/iframe therefore waits for the full stack (~10s for
-    // the backend) instead of appearing the instant the frontend is up.
-    const ready = running ? await portReady(s.port) : false;
+    // the backend) instead of appearing the instant the frontend is up. Adopted svcs have no proc
+    // handle, so their liveness IS the port responding.
+    const running = s.proc ? !s.exited : up;
+    const ready = running && up;
     return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
 
 export function stop(key: string): void {
   for (const s of previews.get(key) ?? []) {
-    try { s.proc.kill(); } catch { /* already gone */ }
-    killPort(s.port); // precise: reap the actual listener the sh-wrapper kill leaves behind
-    try { closeSync(s.logFd); } catch { /* already closed */ }
+    try { s.proc?.kill(); } catch { /* already gone / adopted, no handle */ }
+    killPort(s.port); // precise: reap the actual listener the sh-wrapper kill (or adoption) leaves behind
+    if (s.logFd !== undefined) { try { closeSync(s.logFd); } catch { /* already closed */ } }
   }
   killWorktree(key); // key === worktree path; sweeps orphans from a prior run (narrow pattern)
   previews.delete(key);
+  persist();
 }
 
 /** Kill all preview services — call on server shutdown. */

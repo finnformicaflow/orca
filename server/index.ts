@@ -7,6 +7,7 @@ import * as preview from "./preview";
 import { mergeSafe, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 
 const cfg = await loadConfig();
+await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
