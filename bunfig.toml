@@ -1,0 +1,3 @@
+[test]
+# Register a DOM (happy-dom) before component tests run. Server tests ignore it.
+preload = ["./tests/happydom.ts"]

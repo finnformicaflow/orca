@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowUp, Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -25,6 +25,15 @@ export function ChatComposer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
+  // whole box behaves like one input. preventDefault keeps the existing caret/selection intact.
+  const focusText = (e: MouseEvent) => {
+    if (e.target instanceof HTMLElement && e.target.closest("button, input, textarea, [role='combobox']")) return;
+    e.preventDefault();
+    textRef.current?.focus();
+  };
 
   // Rehydrate persisted attachments (stored as data URLs) into File objects on mount. Only once
   // this resolves do we start persisting — otherwise the empty initial `images` would overwrite
@@ -81,7 +90,8 @@ export function ChatComposer({
   return (
     <div>
       <div
-        className="bg-card focus-within:border-ring focus-within:ring-ring/50 rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]"
+        className="bg-card focus-within:border-ring focus-within:ring-ring/50 cursor-text rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]"
+        onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
       >
@@ -91,6 +101,7 @@ export function ChatComposer({
           </div>
         )}
         <textarea
+          ref={textRef}
           autoFocus={autoFocus}
           rows={2}
           className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"

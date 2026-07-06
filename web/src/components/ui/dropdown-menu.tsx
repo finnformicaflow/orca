@@ -50,7 +50,7 @@ function DropdownMenuContent({ className, sideOffset = 4, ...props }: React.Comp
 function DropdownMenuItem({ className, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Item>) {
   return (
     <DropdownMenuPrimitive.Item
-      className={cn("focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none", className)}
+      className={cn("focus:bg-accent focus:text-accent-foreground relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none", className)}
       {...props}
     />
   );
@@ -59,7 +59,7 @@ function DropdownMenuItem({ className, ...props }: React.ComponentProps<typeof D
 function DropdownMenuCheckboxItem({ className, children, checked, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
   return (
     <DropdownMenuPrimitive.CheckboxItem
-      className={cn("focus:bg-accent focus:text-accent-foreground flex cursor-default items-center justify-between gap-4 rounded-sm px-2 py-1.5 text-sm outline-none select-none", className)}
+      className={cn("focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center justify-between gap-4 rounded-sm px-2 py-1.5 text-sm outline-none select-none", className)}
       checked={checked}
       {...props}
     >
