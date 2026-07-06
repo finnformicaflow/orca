@@ -200,7 +200,7 @@ test("D3 preview ports: a free port in range, never one already bound", async ()
   // A random high port avoids the collision that bit two-quick-previews (both landed on the same
   // low port); the range is wide enough that reservation isn't needed. It must still skip a port
   // that's actually in use, so we never spawn a server onto an occupied port.
-  const p = await freePort([10_000, 65_000]);
+  const p = await freePort([10_000, 65_000]); // matches config portRange; portFree re-rolls any out-of-range port
   expect(p).toBeGreaterThanOrEqual(10_000);
   expect(p).toBeLessThanOrEqual(65_000);
 

@@ -7,7 +7,6 @@ import {
 import { attachCommand, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { hasDraft } from "@/lib/composerDraft";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -131,9 +130,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
             )}
           </DropdownMenuContent>
         </DropdownMenu>
-
-        {row.agentStatus === "running" && <Badge variant="secondary">claude working…</Badge>}
-        {row.agentStatus === "error" && <Badge variant="destructive" title={row.agentError}>claude error</Badge>}
       </div>
       {err && <p className="text-destructive text-xs break-words">{err}</p>}
       {composing && <FollowUpComposer row={row} onDone={() => setComposing(false)} />}
