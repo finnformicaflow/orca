@@ -22,13 +22,19 @@ import {
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
 
-export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?: boolean }) {
+export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
   const [err, setErr] = useState<string | null>(null);
-  // Menu items are fire-and-forget, so without this a failed promote/merge/etc. would vanish
-  // silently (e.g. "promote did nothing" when the branch couldn't be pushed). Surface it.
-  const run = (fn: () => Promise<unknown>) => () => { setErr(null); void fn().catch((e) => setErr(e instanceof Error ? e.message : String(e))); };
+  // Wrap every action so it (a) surfaces errors — menu items are fire-and-forget, so a failed
+  // promote/merge would otherwise vanish silently — and (b) reports busy up to the card, which
+  // shows a loading overlay (actions like promote push + open a PR and take a few seconds).
+  const run = (fn: () => Promise<unknown>) => async () => {
+    setErr(null); onBusy?.(true);
+    try { await fn(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { onBusy?.(false); }
+  };
 
   const isPr = Boolean(row.prNumber);
   const isLocalLane = row.lane === "LOCAL";

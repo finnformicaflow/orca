@@ -175,13 +175,23 @@ function WorkstreamCard({ row }: { row: Row }) {
   }, [isLocal, row.repo, row.worktreePath]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
+  // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
+  // a spinner, so a multi-second op (promote push + PR create, merge, …) doesn't look frozen.
+  const [busy, setBusy] = useState(false);
+  const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
+
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
     : isLocal ? `/${row.repo}/local/${encodeURIComponent(row.branch)}`
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className="bg-card flex flex-col gap-2 rounded-md border p-3 shadow-sm">
+    <div className={`bg-card relative flex flex-col gap-2 rounded-md border p-3 shadow-sm ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
+      {busy && (
+        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-md">
+          <Loader2 className="text-muted-foreground size-5 animate-spin" />
+        </div>
+      )}
       {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
       <div className="flex items-center justify-between gap-2">
         <Eyebrow repo={row.repo} />
@@ -208,7 +218,7 @@ function WorkstreamCard({ row }: { row: Row }) {
         <div className="flex flex-wrap items-center gap-1">
           {isLocal && <AgentBadge row={row} hasWork={hasWork} />}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
-            <button type="button" onClick={() => void rerunAgent(row)} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
+            <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
             </button>
           )}
@@ -235,7 +245,7 @@ function WorkstreamCard({ row }: { row: Row }) {
       {/* Actions: PR/agent verbs, below a divider — separated from the info + preview above. */}
       {!isDone && (
         <div className="border-t pt-2.5">
-          <WorkstreamActions row={row} hasWork={hasWork} />
+          <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
         </div>
       )}
     </div>

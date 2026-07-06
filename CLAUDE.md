@@ -94,10 +94,11 @@ Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Eve
 ## Committing (do this without being asked)
 
 **Commit and push after every request, no matter how small — don't wait to be told.** The loop
-for each task: make the change → `bun run check` (must be green) → `git commit` → `git push`.
-One focused commit per request, each with a clear message. Never leave the working tree dirty at
-the end of a turn. If on the default branch and the change warrants a PR, branch first; otherwise
-commit straight to `main` and push. End commit messages with the `Co-Authored-By` trailer.
+for each task: make the change → **add/update the e2e test that proves it** → `bun run check`
+(must be green) → `git commit` → `git push`. One focused commit per request, each with a clear
+message. Never leave the working tree dirty at the end of a turn. If on the default branch and the
+change warrants a PR, branch first; otherwise commit straight to `main` and push. End commit
+messages with the `Co-Authored-By` trailer.
 
 ## Run & test
 
@@ -110,3 +111,11 @@ bun run check    # tsc --noEmit + bun test — the gate; keep it green on every 
 `tests/workflow.test.ts` encodes the core problem as W1–W7. **It is the north star: if a
 change breaks a W-test, the change is wrong, not the test** (unless the problem itself
 changed). See `QA.md` for the manual equivalent against real GitHub/Slack.
+
+**Every new feature or behaviour change ships with a test that exercises it end-to-end** —
+a new numbered case in `tests/workflow.test.ts` (or a focused sibling), in the same style: drive
+the real adapters (`git` against a scratch repo, `gh` via the PATH shim — see `tests/helpers.ts`),
+no network, no mocks of our own code. When you *change* existing behaviour, **update the test that
+covered it** so it asserts the new contract, don't just make the old one pass. Push pure decision
+logic into `workstream.ts` so most of it is testable without booting anything. A change with a
+runtime surface but no test is incomplete; the exceptions are pure docs/comment/style edits.
