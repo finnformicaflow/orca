@@ -36,6 +36,9 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
   // it's the promoted+clean Mergeable lane.
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
+  // A local session that isn't currently running can be (re)launched. First-class so a "stopped"
+  // session always has an obvious way to run again, not buried in the Agent submenu.
+  const canRun = !isPr && Boolean(row.worktreePath) && row.agentStatus !== "running";
 
   const copyCli = async () => {
     const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
@@ -48,6 +51,7 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
+        {canRun && <Button size="sm" variant="outline" onClick={run(() => rerunAgent(row))}>Run</Button>}
         <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -72,7 +76,6 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {!isPr && row.worktreePath && row.agentStatus !== "running" && <DropdownMenuItem onSelect={run(() => rerunAgent(row))}>Run</DropdownMenuItem>}
                 {conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
                 {isPr && ciFailing && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
                 <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
