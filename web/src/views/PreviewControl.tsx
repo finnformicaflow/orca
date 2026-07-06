@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleStop, ExternalLink, FlaskConical, Loader2, TriangleAlert } from "lucide-react";
+import { ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import type { PreviewSvc } from "../api";
 import { previewStatus, stopPreview, testLocally, type Row } from "../store";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,7 @@ export function PreviewControl({ row }: { row: Row }) {
       ) : (
         <span title="Starting preview…"><Loader2 className="text-muted-foreground size-3.5 animate-spin" /></span>
       )}
-      <button type="button" className={iconBtn} disabled={busy} onClick={() => void stop()} title="Stop preview"><CircleStop className="size-3.5" /></button>
+      <button type="button" className={iconBtn} disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></button>
     </span>
   );
 }
