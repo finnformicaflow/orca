@@ -30,11 +30,13 @@ function usePreview(row: Row) {
   };
   const stop = async () => { if (!row.worktreePath) return; setBusy(true); try { await stopPreview(row.worktreePath); setSvcs([]); } finally { setBusy(false); } };
 
+  const crashed = svcs.find((s) => !s.running);
   return {
-    svcs, busy, open, error,
+    svcs, busy, open,
+    error: error ?? crashed?.error, // start-time error, else the failed service's captured log tail
     active: svcs.length > 0,
-    ready: Boolean(open?.ready),
-    failed: svcs.length > 0 && svcs.some((s) => !s.running),
+    ready: svcs.length > 0 && svcs.every((s) => s.ready), // whole stack up (frontend AND backend)
+    failed: Boolean(crashed),
     start, stop,
   };
 }
@@ -57,7 +59,7 @@ export function PreviewControl({ row }: { row: Row }) {
     <span className="inline-flex items-center gap-2 text-xs">
       {ready && open
         ? <a className={linkClass} href={open.url} target="_blank" rel="noreferrer">preview :{open.port} <ExternalLink className="size-3" /></a>
-        : <span className={failed ? "text-destructive" : "text-muted-foreground"}>{failed ? "failed" : "starting…"}</span>}
+        : <span className={failed ? "text-destructive" : "text-muted-foreground"} title={failed ? error : undefined}>{failed ? "failed" : "starting…"}</span>}
       <Button variant="link" className="text-muted-foreground h-auto p-0 text-xs" disabled={busy} onClick={() => void stop()}>stop</Button>
     </span>
   );
@@ -72,11 +74,12 @@ export function PreviewPanel({ row }: { row: Row }) {
       <div className="flex items-center gap-2">
         {!active && <Button size="sm" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Start preview"}</Button>}
         {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
-        {active && !ready && !failed && <span className="text-muted-foreground text-sm">starting the frontend + backend…</span>}
-        {error && <span className="text-destructive text-sm">{error}</span>}
+        {active && !ready && !failed && <span className="text-muted-foreground text-sm">starting the frontend + backend… (~10s)</span>}
+        {error && !failed && <span className="text-destructive text-sm">{error}</span>}
         {failed && <span className="text-destructive text-sm">a service failed to start — check Postgres is running and backend/.env exists</span>}
         {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={open.url} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
       </div>
+      {failed && error && <pre className="bg-muted max-h-48 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">{error}</pre>}
       {ready && open && <iframe title="preview" src={open.url} className="h-[70vh] w-full rounded-md border" />}
     </div>
   );

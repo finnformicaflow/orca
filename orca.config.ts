@@ -24,9 +24,10 @@ const config: OrcaConfig = {
         { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && PORT={port} bash scripts/dev-local-watch.sh" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
-        // unavailable. `-n` never clobbers a real .env. VITE_BACKEND_URL pins this frontend to its
-        // own backend port (not the default :3000).
-        { name: "frontend", command: "cd frontend && cp -n .env.template .env && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
+        // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
+        // would short-circuit the `&&` chain and stop the frontend from ever starting. VITE_BACKEND_URL
+        // pins this frontend to its own backend port (not the default :3000).
+        { name: "frontend", command: "cd frontend && { [ -f .env ] || cp .env.template .env; } && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
       // provider/AWS keys. Copied on create + checkout.

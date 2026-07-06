@@ -72,7 +72,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/preview") {
-    preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
+    await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
     return json(await preview.status(body.key));
   }
   if (req.method === "GET" && p === "/api/preview") {

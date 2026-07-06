@@ -12,7 +12,7 @@ export type LiveAgent = {
   mergeClean?: "clean" | "conflict";
 };
 
-export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean };
+export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string };
 
 const post = (path: string, body: unknown) =>
   fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
