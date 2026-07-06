@@ -194,9 +194,9 @@ test("D3 preview ports: a free port in range, never one already bound", async ()
   // A random high port avoids the collision that bit two-quick-previews (both landed on the same
   // low port); the range is wide enough that reservation isn't needed. It must still skip a port
   // that's actually in use, so we never spawn a server onto an occupied port.
-  const p = await freePort([10_000, 100_000]);
+  const p = await freePort([10_000, 65_535]); // 65535 is the max valid TCP port — a higher bound rolls unbindable ports
   expect(p).toBeGreaterThanOrEqual(10_000);
-  expect(p).toBeLessThanOrEqual(100_000);
+  expect(p).toBeLessThanOrEqual(65_535);
 
   const srv = createServer().listen(p, "0.0.0.0");
   await new Promise<void>((res) => srv.once("listening", () => res()));
