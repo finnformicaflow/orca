@@ -13,17 +13,20 @@ const config: OrcaConfig = {
       slackChannel: "#v3-engineering",
       previewLabel: "preview",
       // Uses the repo's own dev scripts (test-auth, shared local Postgres on :5432 — must be
-      // running, and backend/.env present). Backend runs on its default port; only the frontend
-      // gets an assigned port (the one we open).
+      // running, and backend/.env present). Each service gets its OWN assigned port: the backend
+      // must not fall back to :3000 (it would collide with your main dev backend / other previews,
+      // crash on bind, and the frontend would silently talk to the wrong backend — so branch
+      // changes wouldn't show). The frontend is pointed at THIS preview's backend via {svc:backend}.
       previewServices: [
         // Migrate the shared local DB to this branch's schema first (idempotent — applies only
         // pending migrations), mirroring a coworker's `mup && rbe`. Without it, DB-backed features
         // (e.g. integrations) break when the previewed branch adds migrations master lacks.
-        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && bash scripts/dev-local-watch.sh" },
+        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && PORT={port} bash scripts/dev-local-watch.sh" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
-        // unavailable. `-n` never clobbers a real .env.
-        { name: "frontend", command: "cd frontend && cp -n .env.template .env && FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
+        // unavailable. `-n` never clobbers a real .env. VITE_BACKEND_URL pins this frontend to its
+        // own backend port (not the default :3000).
+        { name: "frontend", command: "cd frontend && cp -n .env.template .env && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
       // provider/AWS keys. Copied on create + checkout.
