@@ -41,18 +41,24 @@ function load(): Record<string, Enrichment> {
 }
 const ekey = (repo: string, branch: string) => `${repo}::${branch}`;
 const enrichOf = (repo: string, branch: string): Enrichment => enrichMap[ekey(repo, branch)] ?? {};
+// Merge against the FRESHEST localStorage, not the in-memory copy: another Orca tab on the same
+// origin (common while developing Orca itself) polls every 8s and writes the whole blob, so a
+// stale in-memory map would clobber entries that tab just added — the "names lost on refresh" bug.
 function patchEnrich(repo: string, branch: string, fields: Enrichment) {
   const k = ekey(repo, branch);
-  enrichMap = { ...enrichMap, [k]: { ...enrichMap[k], ...fields } };
+  const fresh = load();
+  enrichMap = { ...fresh, [k]: { ...fresh[k], ...fields } };
   localStorage.setItem(KEY, JSON.stringify(enrichMap));
   notify();
 }
 function deleteEnrich(repo: string, branch: string) {
-  const { [ekey(repo, branch)]: _drop, ...rest } = enrichMap;
+  const { [ekey(repo, branch)]: _drop, ...rest } = load();
   enrichMap = rest;
   localStorage.setItem(KEY, JSON.stringify(enrichMap));
   notify();
 }
+// Adopt another tab's writes so our in-memory map (and the board) stay in sync without a refresh.
+window.addEventListener("storage", (e) => { if (e.key === KEY) { enrichMap = load(); notify(); } });
 
 // Branches mid-removal (close/discard) — optimistically hidden so a poll that lands between "PR
 // closed" and "worktree removed" doesn't flash the row back as a bare Local worktree.
