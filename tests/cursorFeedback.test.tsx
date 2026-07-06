@@ -37,9 +37,8 @@ afterEach(() => {
   root = container = undefined;
 });
 
-const noop = () => {};
 const composer = (leading?: React.ReactNode) =>
-  <ChatComposer value="" onChange={noop} onSubmit={async () => {}} leading={leading} />;
+  <ChatComposer onSubmit={async () => {}} leading={leading} />;
 
 describe("chatbox behaves like one text field", () => {
   test("the wrapper carries cursor-text so the caret shows across the whole box", () => {
