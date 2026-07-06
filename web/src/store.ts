@@ -224,6 +224,12 @@ export async function markReady(row: Row) {
   await refresh();
 }
 
+export async function convertToDraft(row: Row) {
+  if (!row.prNumber) return;
+  await api.convertToDraft(row.repo, row.prNumber);
+  await refresh();
+}
+
 export async function merge(row: Row) {
   if (row.prNumber) await api.merge(row.repo, row.prNumber, row.worktreePath);
   else await api.mergeLocal(row.repo, row.branch, row.worktreePath);
