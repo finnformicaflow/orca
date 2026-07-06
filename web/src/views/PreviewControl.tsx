@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { CircleStop, ExternalLink, FlaskConical, Loader2, TriangleAlert } from "lucide-react";
 import type { PreviewSvc } from "../api";
 import { previewStatus, stopPreview, testLocally, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 
-const linkClass = "text-muted-foreground inline-flex items-center gap-0.5 text-xs hover:underline";
+// Icon-toolbar style shared with the card header links (see Board.tsx `iconLink`).
+const iconBtn = "text-muted-foreground hover:text-foreground inline-flex items-center text-xs disabled:opacity-50";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link.
 function usePreview(row: Row) {
@@ -41,26 +42,28 @@ function usePreview(row: Row) {
   };
 }
 
-/** Compact control on cards: Test locally → starting… → link (or failed), with stop. */
+/** Compact icon control on cards: Test locally → starting… → open link (or failed), with stop. */
 export function PreviewControl({ row }: { row: Row }) {
   const { busy, open, active, ready, failed, error, start, stop } = usePreview(row);
 
   if (!active && !busy) {
     return (
-      <span className="inline-flex items-center gap-2 text-xs">
-        <Button variant="link" className={`h-auto p-0 ${linkClass}`} onClick={() => void start()}>
-          Test locally <ExternalLink className="size-3" />
-        </Button>
-        {error && <span className="text-destructive" title={error}>failed</span>}
+      <span className="inline-flex items-center gap-1.5">
+        <button type="button" className={iconBtn} onClick={() => void start()} title="Test locally (start preview)"><FlaskConical className="size-3.5" /></button>
+        {error && <span title={`Preview failed: ${error}`}><TriangleAlert className="text-destructive size-3.5" /></span>}
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-2 text-xs">
-      {ready && open
-        ? <a className={linkClass} href={open.url} target="_blank" rel="noreferrer">preview :{open.port} <ExternalLink className="size-3" /></a>
-        : <span className={failed ? "text-destructive" : "text-muted-foreground"} title={failed ? error : undefined}>{failed ? "failed" : "starting…"}</span>}
-      <Button variant="link" className="text-muted-foreground h-auto p-0 text-xs" disabled={busy} onClick={() => void stop()}>stop</Button>
+    <span className="inline-flex items-center gap-2">
+      {ready && open ? (
+        <a className={iconBtn} href={open.url} target="_blank" rel="noreferrer" title={`Open local preview :${open.port}`}><ExternalLink className="size-3.5" /></a>
+      ) : failed ? (
+        <span title={error ?? "preview failed"}><TriangleAlert className="text-destructive size-3.5" /></span>
+      ) : (
+        <span title="Starting preview…"><Loader2 className="text-muted-foreground size-3.5 animate-spin" /></span>
+      )}
+      <button type="button" className={iconBtn} disabled={busy} onClick={() => void stop()} title="Stop preview"><CircleStop className="size-3.5" /></button>
     </span>
   );
 }

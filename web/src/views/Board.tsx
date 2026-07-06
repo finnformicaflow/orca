@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useAtom } from "jotai";
 import { draftPromptAtom, draftRepoAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
@@ -8,7 +8,7 @@ import {
 } from "../store";
 import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, ExternalLink, Loader2, X } from "lucide-react";
+import { Check, CircleStop, Clock, GitPullRequest, Globe, Loader2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -51,11 +51,8 @@ const Eyebrow = ({ repo }: { repo: string }) => (
   <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
 );
 
-const ExtLink = ({ href, children }: { href?: string; children: ReactNode }) => (
-  <a className="text-muted-foreground inline-flex items-center gap-0.5 text-xs hover:underline" href={href} target="_blank" rel="noreferrer">
-    {children}<ExternalLink className="size-3" />
-  </a>
-);
+// Shared style for the compact icon toolbar in each card header (preview / PR links).
+const iconLink = "text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs";
 
 function timeAgo(iso?: string): string {
   if (!iso) return "";
@@ -155,10 +152,18 @@ function WorkstreamCard({ row }: { row: Row }) {
       <div>
         <div className="flex items-center justify-between gap-2">
           <Eyebrow repo={row.repo} />
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-3">
             {!isDone && <PreviewControl row={row} />}
-            {row.previewUrl && <ExtLink href={row.previewUrl}>preview</ExtLink>}
-            {row.prNumber && <ExtLink href={row.prUrl}>#{row.prNumber}</ExtLink>}
+            {row.previewUrl && (
+              <a className={iconLink} href={row.previewUrl} target="_blank" rel="noreferrer" title="Open preview deployment">
+                <Globe className="size-3.5" />
+              </a>
+            )}
+            {row.prNumber && (
+              <a className={iconLink} href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`}>
+                <GitPullRequest className="size-3.5" />#{row.prNumber}
+              </a>
+            )}
           </div>
         </div>
         {isOpenPr ? (
