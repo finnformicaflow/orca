@@ -9,8 +9,8 @@ import { convertToDraft, createPr, listPrs, markReady, mergePr, prDetail, prDiff
 import { freePort } from "../server/preview";
 import { run } from "../server/run";
 import {
-  attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, promptFor, readyForReview,
-  resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
+  readyForReview, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -208,4 +208,29 @@ test("D3 preview ports: a free port in range, never one already bound", async ()
   await new Promise<void>((res) => srv.once("listening", () => res()));
   await expect(freePort([p, p])).rejects.toThrow(); // only option is the busy port → re-rolls out, then throws
   await new Promise<void>((res) => srv.close(() => res()));
+});
+
+// A1 PR-actions submenu: the "PR" submenu groups exactly the actions that need an open PR, gated by
+// the row's live state. A branch with no PR gets none (those actions live elsewhere in the menu).
+describe("A1 PR-actions submenu (prMenuActions)", () => {
+  test("no PR → no PR-scoped actions", () => {
+    expect(prMenuActions({ prUrl: "x", ciStatus: "failing" })).toEqual([]);
+  });
+
+  test("open ready PR → draft toggle + copy link, plus preview when unlabeled", () => {
+    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "addPreview", "copyLink"]);
+  });
+
+  test("draft PR offers Mark ready instead of Move to draft", () => {
+    expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "copyLink"]);
+  });
+
+  test("conflicts and failing CI add their fix actions, in order", () => {
+    expect(prMenuActions({ prNumber: 5, mergeable: "CONFLICTING", ciStatus: "failing", previewUrl: "p", prUrl: "u" }))
+      .toEqual(["moveToDraft", "resolveConflicts", "fixCi", "copyLink"]);
+  });
+
+  test("no prUrl → no Copy link (nothing to copy)", () => {
+    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft"]);
+  });
 });
