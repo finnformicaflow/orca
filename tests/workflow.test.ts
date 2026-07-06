@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
-import { convertToDraft, createPr, listPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { convertToDraft, createPr, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort } from "../server/preview";
 import { run } from "../server/run";
 import {
@@ -168,6 +168,17 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect(prs.map((p) => p.branch)).toEqual(["feat-a", "feat-b"]);
   expect(deriveKanbanState(prs[0]!)).toBe("MERGEABLE"); // approved
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
+});
+
+test("R1 review-queue: listReviewPrs maps coworker json (author + updated), newest first, with preview URL", async () => {
+  await setPrListFixture([
+    { number: 20, title: "Older", headRefName: "feat-old", url: "u20", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [{ conclusion: "SUCCESS" }], comments: [], author: { login: "alex", name: "Alex Atack" }, updatedAt: "2026-07-01T10:00:00Z" },
+    { number: 21, title: "Newer", headRefName: "feat-new", url: "u21", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [], comments: [{ body: "deploy: https://feat-new.preview.example.com ready" }], author: { login: "sam" }, updatedAt: "2026-07-05T10:00:00Z" },
+  ]);
+  const prs = await listReviewPrs(repo);
+  expect(prs.map((p) => p.number)).toEqual([21, 20]); // newest-updated first
+  expect(prs[0]).toMatchObject({ author: "sam", authorName: "sam", previewUrl: "https://feat-new.preview.example.com" });
+  expect(prs[1]).toMatchObject({ author: "alex", authorName: "Alex Atack", ciStatus: "passing" }); // name preferred over login
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {

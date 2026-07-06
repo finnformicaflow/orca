@@ -73,6 +73,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/prs/merged") {
     return json(await gh.listMerged(repo.repoPath));
   }
+  if (req.method === "GET" && p === "/api/prs/review") {
+    return json(await gh.listReviewPrs(repo.repoPath)); // coworker PRs (the review queue)
+  }
   const detailMatch = p.match(/^\/api\/prs\/(\d+)$/);
   if (req.method === "GET" && detailMatch) {
     return json(await gh.prDetail(repo.repoPath, Number(detailMatch[1])));

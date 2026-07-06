@@ -36,28 +36,44 @@ function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefin
   return urls.find((u) => /\.preview\./.test(u) && !/api\.preview/.test(u) && !/\.(png|jpe?g|gif|svg)(\?|$)/i.test(u));
 }
 
+// The gh --json fields every PR-list view needs, and the shared mapper onto our normalised shape.
+const PR_LIST_FIELDS = "number,title,headRefName,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,comments";
+type RawPr = {
+  number: number; title: string; headRefName: string; url: string;
+  state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
+  statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
+  comments: Array<{ body?: string }>;
+};
+const mapSummary = (j: RawPr): PrSummary => ({
+  number: j.number,
+  title: j.title,
+  branch: j.headRefName,
+  url: j.url,
+  state: j.state,
+  isDraft: Boolean(j.isDraft),
+  ciStatus: rollupCi(j.statusCheckRollup ?? []),
+  reviewStatus: mapReview(j.reviewDecision ?? ""),
+  mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
+  previewUrl: extractPreviewUrl(j.comments ?? []),
+});
+
 /** List the current user's open PRs with status — the source of truth for the kanban. */
 export async function listPrs(cwd: string): Promise<PrSummary[]> {
-  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me",
-    "--json", "number,title,headRefName,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,comments");
-  const arr = JSON.parse(raw) as Array<{
-    number: number; title: string; headRefName: string; url: string;
-    state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
-    statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
-    comments: Array<{ body?: string }>;
-  }>;
-  return arr.map((j) => ({
-    number: j.number,
-    title: j.title,
-    branch: j.headRefName,
-    url: j.url,
-    state: j.state,
-    isDraft: Boolean(j.isDraft),
-    ciStatus: rollupCi(j.statusCheckRollup ?? []),
-    reviewStatus: mapReview(j.reviewDecision ?? ""),
-    mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
-    previewUrl: extractPreviewUrl(j.comments ?? []),
-  }));
+  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", PR_LIST_FIELDS);
+  return (JSON.parse(raw) as RawPr[]).map(mapSummary);
+}
+
+export type ReviewPr = PrSummary & { author: string; authorName: string; updatedAt: string };
+
+/** Open PRs authored by OTHERS — the coworker review queue (a timeline, newest-updated first). */
+export async function listReviewPrs(cwd: string): Promise<ReviewPr[]> {
+  // `-author:@me` (gh expands @me to the authenticated user) excludes your own PRs server-side.
+  const raw = await gh(cwd, "pr", "list", "--state", "open", "--search", "-author:@me", "--limit", "50",
+    "--json", `${PR_LIST_FIELDS},author,updatedAt`);
+  const arr = JSON.parse(raw) as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
+  return arr
+    .map((j) => ({ ...mapSummary(j), author: j.author?.login ?? "", authorName: j.author?.name || j.author?.login || "", updatedAt: j.updatedAt ?? "" }))
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export type PrDetail = PrStatus & {

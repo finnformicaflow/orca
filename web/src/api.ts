@@ -1,5 +1,5 @@
 import type { ChangeSummary } from "../../server/git";
-import type { MergedPr, PrDetail, PrSummary } from "../../server/gh";
+import type { MergedPr, PrDetail, PrSummary, ReviewPr } from "../../server/gh";
 
 export type LiveAgent = {
   branch: string;
@@ -40,6 +40,7 @@ export const api = {
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),
+  reviewPrs: (repo: string): Promise<ReviewPr[]> => fetch(`/api/prs/review${q(repo)}`).then(res),
   prDetail: (repo: string, n: number): Promise<PrDetail> => fetch(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => fetch(`/api/prs/${n}/diff${q(repo)}`).then(res),
   localDiff: (repo: string, worktree: string): Promise<{ diff: string }> =>
