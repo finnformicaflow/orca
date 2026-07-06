@@ -35,6 +35,7 @@ export const api = {
   promote: (repo: string, b: { worktreePath: string; branch: string; title: string; draft?: boolean; addPreviewLabel?: boolean }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
+  convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),

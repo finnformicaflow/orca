@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
-import { createPr, listPrs, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { convertToDraft, createPr, listPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort } from "../server/preview";
 import { run } from "../server/run";
 import {
@@ -143,6 +143,12 @@ test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears o
 
   await fixture({ statusCheckRollup: [{ conclusion: "SUCCESS" }] }); // approved + MERGEABLE again
   expect(canMerge(await prStatus(repo, 1))).toBe(true);
+});
+
+test("W8 draft-toggle: markReady/convertToDraft shell out to `gh pr ready` (± --undo)", async () => {
+  // Both directions just invoke gh and must resolve; convertToDraft backs an open PR down to draft.
+  await expect(markReady(repo, 1)).resolves.toBeDefined();
+  await expect(convertToDraft(repo, 1)).resolves.toBeDefined();
 });
 
 test("S1 source-of-truth: listWorktrees returns live worktrees under the root", async () => {
