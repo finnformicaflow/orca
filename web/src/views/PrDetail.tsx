@@ -5,10 +5,11 @@ import { Highlight, themes } from "prism-react-renderer";
 import { ArrowLeft, Check, Clock, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
-import { useWorkstreams } from "../store";
+import { addPreviewLabel, useWorkstreams, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
+import { ActionButton } from "@/components/ActionButton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const [pr, setPr] = useState<PrDetailData | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const row = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // live row for actions
+  const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
 
   useEffect(() => {
     setPr(null);
@@ -35,6 +36,14 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
   if (error) return <div className="space-y-4"><Back to={back} /><p className="text-destructive text-sm">{error}</p></div>;
   if (!pr) return <div className="space-y-4"><Back to={back} /><p className="text-muted-foreground text-sm">Loading PR #{number}…</p></div>;
+
+  // For a coworker PR (not one of your workstreams) synthesise a row so Test locally + the preview
+  // panel + add-label still work here — the review list itself is action-free for density.
+  const row: Row = liveRow ?? {
+    repo, hasRemote: true, branch: pr.head, title: pr.title, prompt: "", lane: "IN_REVIEW",
+    prNumber: pr.number, prUrl: pr.url, previewUrl: pr.previewUrl,
+    ciStatus: pr.ciStatus, reviewStatus: pr.reviewStatus, mergeable: pr.mergeable,
+  };
 
   return (
     <div className="space-y-4">
@@ -64,7 +73,9 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
           {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
         </div>
-        {row && <WorkstreamActions row={row} />}
+        {liveRow ? <WorkstreamActions row={liveRow} />
+          : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
+          : null}
       </div>
 
       <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
@@ -107,7 +118,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
         </TabsContent>
 
         <TabsContent value="preview">
-          {row ? <PreviewPanel row={row} /> : <p className="text-muted-foreground pt-3 text-sm">Not tracked locally yet.</p>}
+          <PreviewPanel row={row} />
         </TabsContent>
       </Tabs>
     </div>

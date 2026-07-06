@@ -4,7 +4,7 @@
 // local-promote flag, Slack timestamps), keyed by repo+branch.
 import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
-import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewPr, ReviewStatus } from "../../server/gh";
+import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
   slackPrompt, withAttachments,
@@ -193,21 +193,6 @@ export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabe
     patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready
   }
   await refresh();
-}
-
-/** Build a Row for a coworker PR (the review queue) so it can reuse the preview + label actions and
- *  the shared badges. `live` is the row from useWorkstreams() once you've adopted/previewed the
- *  branch — it carries the worktreePath that PreviewControl polls, so pass it through when present. */
-export function reviewRow(repo: string, pr: ReviewPr, live?: Row): Row {
-  return {
-    ...live,
-    repo, hasRemote: true, branch: pr.branch,
-    title: pr.title, prompt: live?.prompt ?? "",
-    lane: pr.isDraft ? "DRAFT" : deriveKanbanState(pr) === "MERGEABLE" ? "MERGEABLE" : "IN_REVIEW",
-    worktreePath: live?.worktreePath,
-    prNumber: pr.number, prUrl: pr.url, previewUrl: pr.previewUrl,
-    isDraft: pr.isDraft, ciStatus: pr.ciStatus, reviewStatus: pr.reviewStatus, mergeable: pr.mergeable,
-  };
 }
 
 /** Ensure a local worktree exists for a row (adopts the branch if needed). Returns its path. */
