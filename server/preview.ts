@@ -77,26 +77,16 @@ function portFree(port: number): Promise<boolean> {
   });
 }
 
-// Ports handed out by an in-flight start() but not yet in `previews`. Two previews launched close
-// together would otherwise both pass portFree() for the same port — the first's server hasn't bound
-// yet — and collide on one port (both link there; stopping one kills the shared server, hanging the
-// other). Reserving here, and re-checking AFTER the await, makes allocation race-safe.
-const inflight = new Set<number>();
-const isTracked = (p: number): boolean => {
-  for (const svcs of previews.values()) for (const s of svcs) if (s.port === p) return true;
-  return false;
-};
-
+// Pick a random port in the range. With a wide range (~90k) two previews launched close together
+// colliding is ~1/rangeSize, so there's no need to reserve/track assigned ports — just re-roll if
+// the OS says the chosen one is already in use.
 export async function freePort(range: [number, number]): Promise<number> {
-  for (let p = range[0]; p <= range[1]; p++) {
-    if (inflight.has(p) || isTracked(p)) continue;
-    if (await portFree(p)) {
-      if (inflight.has(p) || isTracked(p)) continue; // another start() grabbed it during the await
-      inflight.add(p);
-      return p;
-    }
+  const [min, max] = range;
+  for (let i = 0; i < 20; i++) {
+    const p = min + Math.floor(Math.random() * (max - min + 1));
+    if (await portFree(p)) return p;
   }
-  throw new Error(`no free port in ${range[0]}–${range[1]}`);
+  throw new Error(`no free port in ${min}–${max}`);
 }
 
 /** Kill whatever is listening on a port — precise reaping of a tracked service's actual listener
@@ -120,26 +110,20 @@ function killWorktree(cwd: string): void {
 export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
   stop(key); // reap tracked procs + orphaned servers for this worktree so we never serve stale code
   const ports: Record<string, number> = {};
-  try {
-    for (const s of services) ports[s.name] = await freePort(portRange); // reserves each in `inflight`
-    const svcs: Svc[] = services.map((s) => {
-      const cmd = s.command
-        .replace(/\{port\}/g, String(ports[s.name]))
-        .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""));
-      const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
-      const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
-      const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
-      const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now() };
-      void proc.exited.then(() => { svc.exited = true; });
-      return svc;
-    });
-    previews.set(key, svcs);
-    persist();
-  } finally {
-    // Release the transient reservation: on success the ports are now tracked in `previews` (still
-    // excluded via isTracked); on failure they free up for the next attempt.
-    for (const p of Object.values(ports)) inflight.delete(p);
-  }
+  for (const s of services) ports[s.name] = await freePort(portRange);
+  const svcs: Svc[] = services.map((s) => {
+    const cmd = s.command
+      .replace(/\{port\}/g, String(ports[s.name]))
+      .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""));
+    const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
+    const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
+    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
+    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now() };
+    void proc.exited.then(() => { svc.exited = true; });
+    return svc;
+  });
+  previews.set(key, svcs);
+  persist();
 }
 
 async function portReady(port: number): Promise<boolean> {

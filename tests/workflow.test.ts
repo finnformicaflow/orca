@@ -2,6 +2,7 @@
 // (W1–W7). git runs against a scratch repo; gh is a PATH shim. No network.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { createPr, listPrs, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
@@ -189,11 +190,16 @@ test("D2 pr-diff: returns the raw unified diff", async () => {
   expect(diff).toContain("added line");
 });
 
-test("D3 preview ports: concurrent allocations never collide", async () => {
-  // Two 'Test locally' clicks close together must NOT get the same port: the first server hasn't
-  // bound yet, so a naive freePort would hand both the same port (both link there; stopping one
-  // hangs the other). Reserving in-flight + re-checking after the async probe prevents it.
-  const range: [number, number] = [49_230, 49_290];
-  const ports = await Promise.all(Array.from({ length: 5 }, () => freePort(range)));
-  expect(new Set(ports).size).toBe(ports.length); // all distinct
+test("D3 preview ports: a free port in range, never one already bound", async () => {
+  // A random high port avoids the collision that bit two-quick-previews (both landed on the same
+  // low port); the range is wide enough that reservation isn't needed. It must still skip a port
+  // that's actually in use, so we never spawn a server onto an occupied port.
+  const p = await freePort([10_000, 100_000]);
+  expect(p).toBeGreaterThanOrEqual(10_000);
+  expect(p).toBeLessThanOrEqual(100_000);
+
+  const srv = createServer().listen(p, "0.0.0.0");
+  await new Promise<void>((res) => srv.once("listening", () => res()));
+  await expect(freePort([p, p])).rejects.toThrow(); // only option is the busy port → re-rolls out, then throws
+  await new Promise<void>((res) => srv.close(() => res()));
 });

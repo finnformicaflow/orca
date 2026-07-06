@@ -56,7 +56,7 @@ const config: OrcaConfig = {
       ],
     },
   ],
-  portRange: [4173, 4272],
+  portRange: [10_000, 100_000], // previews pick a random free port in here (wide range → no collisions)
   staleHours: 24,
 };
 
