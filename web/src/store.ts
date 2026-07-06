@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewPr, ReviewStatus } from "../../server/gh";
 import {
   deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
-  slackPrompt, withAttachments,
+  slackPrompt, titleFromPrompt, withAttachments,
 } from "./workstream";
 
 const KEY = "orca.enrichment";
@@ -15,7 +15,10 @@ const now = () => new Date().toISOString();
 const EMPTY_REPOS: RepoInfo[] = [];
 
 const listeners = new Set<() => void>();
-const notify = () => listeners.forEach((l) => l());
+// A monotonic version bumped on every notify — useWorkstreams subscribes to it (not to `live`
+// alone) so optimistic drafts and enrichment patches re-render immediately, not just on refresh.
+let version = 0;
+const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
@@ -68,6 +71,18 @@ async function withHidden(repo: string, branch: string, op: () => Promise<void>)
   hiding.add(k); notify();
   try { await op(); } finally { hiding.delete(k); notify(); }
 }
+
+// ---- optimistic drafts ----
+// Shown as a Local card the instant you submit — before the server has derived a title, cut a
+// branch, and made the worktree (a couple of seconds of Haiku + git). Once the real worktree lands
+// in `live`, the optimistic card is dropped and the real one takes over. Undo tears it down whether
+// the worktree exists yet or not.
+export type OptimisticDraft = {
+  id: string; repo: string; prompt: string; title: string;
+  cancelled?: boolean; created?: { branch: string; worktreePath: string };
+};
+let optimistic: OptimisticDraft[] = [];
+let optSeq = 0;
 
 // ---- live state (all repos) ----
 type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
@@ -131,13 +146,24 @@ function laneFor(row: Row, pr?: PrSummary): Lane {
 }
 
 export function useWorkstreams(): Row[] {
-  const snapshot = useSyncExternalStore(subscribe, () => live);
+  useSyncExternalStore(subscribe, () => version); // re-render on any store change (live, enrichment, optimistic)
+  const snapshot = live;
   const rows: Row[] = [];
+  // Optimistic drafts first — they own the top of the Local lane until their real worktree lands.
+  const optBranches = new Set<string>();
+  for (const o of optimistic) {
+    optBranches.add(`${o.repo}::${o.created?.branch}`);
+    rows.push({
+      repo: o.repo, hasRemote: repoInfo(o.repo)?.hasRemote ?? false, branch: o.id,
+      title: o.title, prompt: o.prompt, lane: "LOCAL", agentStatus: "running",
+    });
+  }
   for (const rl of snapshot) {
     const prByBranch = new Map(rl.prs.map((p) => [p.branch, p]));
     const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
     const mergedBranches = new Set(rl.merged.map((m) => m.branch));
     for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
+      if (optBranches.has(`${rl.repo}::${branch}`)) continue; // its optimistic card is still standing in
       if (hiding.has(ekey(rl.repo, branch))) continue; // being closed/discarded — don't flash it back
       if (mergedBranches.has(branch)) continue; // merged PR → its Done row wins; skip the lingering worktree
 
@@ -171,13 +197,41 @@ export function useWorkstreams(): Row[] {
 }
 
 // ---- actions (scoped by each row's repo) ----
-export async function createWorkstream(repo: string, prompt: string, images: File[] = []): Promise<Row> {
-  const paths = images.length ? await api.uploadAttachments(images) : [];
-  const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
-  patchEnrich(repo, branch, { prompt, title, createdAt: now() });
-  void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths)).catch(() => {});
-  await refresh();
-  return { repo, branch, worktreePath, title, prompt } as Row; // enough for discardDraft to revert it (Undo)
+// Optimistic: paint the Local card + Undo affordance immediately, then create the worktree and launch
+// the agent in the background. Returns the draft synchronously so the caller can wire up Undo without
+// waiting on the server. If Undo fires before the worktree exists, we tear it down once it lands.
+export function createWorkstream(repo: string, prompt: string, images: File[] = []): OptimisticDraft {
+  const draft: OptimisticDraft = { id: `opt-${optSeq++}`, repo, prompt, title: titleFromPrompt(prompt) };
+  optimistic = [...optimistic, draft];
+  notify();
+  void (async () => {
+    try {
+      const paths = images.length ? await api.uploadAttachments(images) : [];
+      const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
+      draft.created = { branch, worktreePath };
+      patchEnrich(repo, branch, { prompt, title, createdAt: now() });
+      if (draft.cancelled) { // Undo pressed while creating — discard the worktree we just made.
+        await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
+        deleteEnrich(repo, branch);
+      } else {
+        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths)).catch(() => {});
+      }
+    } finally {
+      await refresh();                                       // pull the real worktree into `live`…
+      optimistic = optimistic.filter((o) => o.id !== draft.id); // …then drop the stand-in
+      notify();
+    }
+  })();
+  return draft;
+}
+
+/** Undo a just-created draft: kill the run + remove the worktree/branch if it exists yet, else flag
+ *  it so createWorkstream discards it the moment the worktree lands. */
+export async function undoDraft(draft: OptimisticDraft) {
+  draft.cancelled = true;
+  optimistic = optimistic.filter((o) => o.id !== draft.id);
+  notify();
+  if (draft.created) await discardDraft({ repo: draft.repo, branch: draft.created.branch, worktreePath: draft.created.worktreePath } as Row);
 }
 
 export function rerunAgent(row: Row) {
