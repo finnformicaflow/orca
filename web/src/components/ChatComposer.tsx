@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts images by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
 export function ChatComposer({
-  value, onChange, onSubmit, placeholder, leading, onCancel, autoFocus,
+  value, onChange, onSubmit, placeholder, leading, footer, onCancel, autoFocus,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: (text: string, images: File[]) => Promise<void>;
   placeholder?: string;
   leading?: ReactNode; // e.g. the repo selector, sits bottom-left inside the box
+  footer?: ReactNode; // transient line below the box, e.g. a "Sent · Undo" affordance
   onCancel?: () => void;
   autoFocus?: boolean;
 }) {
@@ -92,6 +93,7 @@ export function ChatComposer({
         </div>
       </div>
       {error && <p className="text-destructive mt-1 px-1 text-xs break-words">{error}</p>}
+      {footer}
     </div>
   );
 }

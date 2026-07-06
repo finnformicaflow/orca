@@ -165,12 +165,13 @@ export function useWorkstreams(): Row[] {
 }
 
 // ---- actions (scoped by each row's repo) ----
-export async function createWorkstream(repo: string, prompt: string, images: File[] = []): Promise<void> {
+export async function createWorkstream(repo: string, prompt: string, images: File[] = []): Promise<Row> {
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
   patchEnrich(repo, branch, { prompt, title, createdAt: now() });
   void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths)).catch(() => {});
   await refresh();
+  return { repo, branch, worktreePath, title, prompt } as Row; // enough for discardDraft to revert it (Undo)
 }
 
 export function rerunAgent(row: Row) {

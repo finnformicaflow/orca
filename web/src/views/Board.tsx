@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftPromptAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, discardDraft, rerunAgent, summary as fetchSummary, useRepos, useWorkstreams,
   type Lane, type Row,
 } from "../store";
 import { readyForReview } from "../workstream";
@@ -121,13 +121,33 @@ function NewDraft() {
   const [repo, setRepo] = useAtom(draftRepoAtom);
   const [prompt, setPrompt] = useAtom(draftPromptAtom);
   const active = repo || repos[0]?.name || "";
+  // After a send we keep the created row for ~6s so a mis-sent draft (wrong repo) can be undone —
+  // Undo just discards it (kills the run, removes the worktree + branch). See CLAUDE.md / discardDraft.
+  const [undoable, setUndoable] = useState<Row | null>(null);
+  useEffect(() => {
+    if (!undoable) return;
+    const t = setTimeout(() => setUndoable(null), 6000);
+    return () => clearTimeout(t);
+  }, [undoable]);
 
   return (
     <ChatComposer
       value={prompt}
       onChange={setPrompt}
       placeholder="Describe a feature…  (⌘+Enter)"
-      onSubmit={(text, images) => createWorkstream(active, text, images)}
+      onSubmit={async (text, images) => setUndoable(await createWorkstream(active, text, images))}
+      footer={undoable && (
+        <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
+          Sent to <span className="text-foreground font-medium">{undoable.repo}</span>
+          <button
+            type="button"
+            className="text-foreground underline underline-offset-2 hover:no-underline"
+            onClick={() => { void discardDraft(undoable); setUndoable(null); }}
+          >
+            Undo
+          </button>
+        </p>
+      )}
       leading={
         <Select value={active} onValueChange={setRepo}>
           <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
