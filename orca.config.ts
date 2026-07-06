@@ -21,7 +21,14 @@ const config: OrcaConfig = {
         // Migrate the shared local DB to this branch's schema first (idempotent — applies only
         // pending migrations), mirroring a coworker's `mup && rbe`. Without it, DB-backed features
         // (e.g. integrations) break when the previewed branch adds migrations master lacks.
-        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && PORT={port} bash scripts/dev-local-watch.sh" },
+        //
+        // Then RE-SEED the test-auth user in the background: the test user + its org memberships are
+        // manual seed data (scripts/invite-user-local.sh), and any previewed branch whose migrations
+        // rebuild the public user/permissions tables wipes it — so access to orgs kept regressing.
+        // Re-inviting on every start (idempotent, backgrounded so it never blocks the preview,
+        // best-effort per org so a not-yet-provisioned tenant like `flow` fails harmlessly) makes it
+        // self-heal. Edit the org list to match the tenants you test.
+        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && { (for org in demo jeremiah flow; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done >/dev/null 2>&1 &) ; PORT={port} bash scripts/dev-local-watch.sh; }" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
