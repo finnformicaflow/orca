@@ -3,20 +3,17 @@ import { useAtom } from "jotai";
 import { draftPromptAtom, draftRepoAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, discardDraft, merge, promote, rerunAgent, resolveConflicts,
-  summary as fetchSummary, useRepos, useWorkstreams, type Lane, type Row,
+  baseBranch, createWorkstream, discardDraft, summary as fetchSummary, useRepos, useWorkstreams,
+  type Lane, type Row,
 } from "../store";
-import { attachCommand, readyForReview } from "../workstream";
+import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, ChevronDown, CircleStop, Clock, ExternalLink, Loader2, Trash2, X } from "lucide-react";
-import { ActionButton } from "@/components/ActionButton";
-import { CopyButton } from "@/components/CopyButton";
+import { Check, CircleStop, Clock, ExternalLink, Loader2, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { PrActions } from "./PrActions";
+import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 
 const LANES: { lane: Lane; title: string }[] = [
@@ -70,33 +67,6 @@ function elapsed(startedMs?: number): string {
   if (!startedMs) return "";
   const s = Math.floor((Date.now() - startedMs) / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
-}
-
-// Promote a local branch into a PR — choose ready/draft and optionally set the preview label.
-function PromoteMenu({ row, disabled }: { row: Row; disabled: boolean }) {
-  const [label, setLabel] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const go = async (draft: boolean) => {
-    setBusy(true);
-    try { await promote(row, { draft, addPreviewLabel: label }); } finally { setBusy(false); }
-  };
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="default" disabled={disabled || busy}>
-          {busy ? <><Loader2 className="animate-spin" /> Promoting…</> : <>Promote <ChevronDown className="size-3.5" /></>}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
-        <DropdownMenuCheckboxItem checked={label} onCheckedChange={(c) => setLabel(Boolean(c))} onSelect={(e) => e.preventDefault()}>
-          Add preview label
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void go(false)}>Create PR (ready)</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void go(true)}>Create draft PR</DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
 }
 
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
@@ -226,23 +196,7 @@ function WorkstreamCard({ row }: { row: Row }) {
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
-      {isOpenPr && <PrActions row={row} />}
-      {isLocal && <LocalActions row={row} hasWork={hasWork} />}
-    </div>
-  );
-}
-
-// Local-session action bar — shared by the board card and the local-session detail page.
-export function LocalActions({ row, hasWork }: { row: Row; hasWork: boolean }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      {row.worktreePath && <CopyButton text={attachCommand({ worktreePath: row.worktreePath, sessionId: row.sessionId })}>Copy CLI</CopyButton>}
-      {row.worktreePath && row.agentStatus !== "running" && <ActionButton size="sm" variant="outline" onRun={() => rerunAgent(row)}>Run</ActionButton>}
-      {row.mergeClean === "conflict" && row.lane !== "LOCAL" && <ActionButton size="sm" onRun={() => resolveConflicts(row)}>Resolve conflicts</ActionButton>}
-      {row.lane === "LOCAL" && (row.hasRemote
-        ? <PromoteMenu row={row} disabled={!hasWork} />
-        : <ActionButton size="sm" variant="default" disabled={!hasWork} onRun={() => promote(row)}>Promote</ActionButton>)}
-      {row.lane === "MERGEABLE" && <ActionButton size="sm" variant="default" confirm={`Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`} onRun={() => merge(row)}>Merge</ActionButton>}
+      {(isOpenPr || isLocal) && <WorkstreamActions row={row} hasWork={hasWork} />}
     </div>
   );
 }

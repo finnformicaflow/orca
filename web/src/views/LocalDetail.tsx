@@ -4,9 +4,9 @@ import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
 import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
-import { AgentBadge, LocalActions } from "./Board";
+import { AgentBadge } from "./Board";
 import { DiffView } from "./PrDetail";
-import { FollowUpComposer } from "./PrActions";
+import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,7 +17,6 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const row = useWorkstreams().find((r) => r.repo === repo && r.branch === branch && !r.mergedAt);
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
-  const [composing, setComposing] = useState(false);
   const wt = row?.worktreePath;
 
   useEffect(() => {
@@ -52,11 +51,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           <code>{branch}</code> → <code>{baseBranch(repo)}</code>
           {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
         </p>
-        <div className="flex flex-wrap items-center gap-1">
-          <LocalActions row={row} hasWork={hasWork} />
-          {wt && <Button size="sm" variant="outline" onClick={() => setComposing((v) => !v)}>Follow up</Button>}
-        </div>
-        {composing && <FollowUpComposer row={row} onDone={() => setComposing(false)} />}
+        <WorkstreamActions row={row} hasWork={hasWork} />
       </div>
 
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>

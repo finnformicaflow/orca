@@ -7,7 +7,7 @@ import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
 import { useWorkstreams } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
-import { PrActions } from "./PrActions";
+import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -59,7 +59,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
           {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
         </div>
-        {row && <PrActions row={row} />}
+        {row && <WorkstreamActions row={row} />}
       </div>
 
       <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
