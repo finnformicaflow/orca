@@ -142,7 +142,7 @@ export function FollowUpComposer({ row, onDone }: { row: Row; onDone: () => void
       autoFocus
       value={text}
       onChange={setText}
-      placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter · paste images)"
+      placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
       onSubmit={async (instruction, images) => { await followUp(row, instruction, images); onDone(); }}
       onCancel={onDone}
     />

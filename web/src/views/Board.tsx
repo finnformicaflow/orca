@@ -99,7 +99,7 @@ function NewDraft() {
     <ChatComposer
       value={prompt}
       onChange={setPrompt}
-      placeholder="Describe a feature…  (⌘+Enter · paste images)"
+      placeholder="Describe a feature…  (⌘+Enter)"
       onSubmit={(text, images) => createWorkstream(active, text, images)}
       leading={
         <Select value={active} onValueChange={setRepo}>

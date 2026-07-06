@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -27,7 +27,12 @@ export function ChatComposer({
     if (imgs.length) setImages((prev) => [...prev, ...imgs]);
   };
   const onPaste = (e: ClipboardEvent) => {
-    if ([...e.clipboardData.files].some((f) => f.type.startsWith("image/"))) { e.preventDefault(); addImages(e.clipboardData.files); }
+    // Pasted screenshots often arrive only via `items` (getAsFile), not `.files`.
+    const files = [...e.clipboardData.items]
+      .filter((it) => it.kind === "file")
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => Boolean(f));
+    if (files.some((f) => f.type.startsWith("image/"))) { e.preventDefault(); addImages(files); }
   };
   const onDrop = (e: DragEvent) => {
     if ([...e.dataTransfer.files].some((f) => f.type.startsWith("image/"))) { e.preventDefault(); addImages(e.dataTransfer.files); }
@@ -92,8 +97,14 @@ export function ChatComposer({
 }
 
 function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
-  const url = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  // Create + revoke the object URL inside the effect so StrictMode's dev remount doesn't leave a
+  // revoked (blank) src behind — the effect re-runs and mints a fresh URL.
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    const u = URL.createObjectURL(file);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
   return (
     <div className="group relative size-14 overflow-hidden rounded-md border">
       <img src={url} alt={file.name} className="size-full object-cover" />
