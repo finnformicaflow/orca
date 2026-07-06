@@ -1,7 +1,7 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { ChevronDown } from "lucide-react";
 import {
-  addPreviewLabel, baseBranch, ensureWorktree, fixCi, followUp, markReady, merge, promote,
+  addPreviewLabel, baseBranch, discardDraft, ensureWorktree, fixCi, followUp, markReady, merge, promote,
   rerunAgent, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
 import { attachCommand, canMerge, shouldBump } from "../workstream";
@@ -81,6 +81,19 @@ export function WorkstreamActions({ row, hasWork = true }: { row: Row; hasWork?:
                   <DropdownMenuItem disabled={!notified} onSelect={() => void sendSlack(row, "bump")}>Bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+            )}
+
+            {/* Discard — never deletes a branch that has an open PR (only pre-PR locals) */}
+            {!isPr && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
+                >
+                  Discard
+                </DropdownMenuItem>
+              </>
             )}
           </DropdownMenuContent>
         </DropdownMenu>

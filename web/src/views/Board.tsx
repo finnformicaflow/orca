@@ -3,12 +3,12 @@ import { useAtom } from "jotai";
 import { draftPromptAtom, draftRepoAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, discardDraft, summary as fetchSummary, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, summary as fetchSummary, useRepos, useWorkstreams,
   type Lane, type Row,
 } from "../store";
 import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, ExternalLink, Loader2, Trash2, X } from "lucide-react";
+import { Check, CircleStop, Clock, ExternalLink, Loader2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -157,12 +157,8 @@ function WorkstreamCard({ row }: { row: Row }) {
           <Eyebrow repo={row.repo} />
           <div className="flex shrink-0 items-center gap-2">
             {!isDone && <PreviewControl row={row} />}
+            {row.previewUrl && <ExtLink href={row.previewUrl}>preview</ExtLink>}
             {row.prNumber && <ExtLink href={row.prUrl}>#{row.prNumber}</ExtLink>}
-            {isLocal && (
-              <Button variant="ghost" title="Discard" className="text-destructive hover:bg-destructive/10 hover:text-destructive h-auto w-auto p-0.5" onClick={() => { if (confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}>
-                <Trash2 className="size-3.5" />
-              </Button>
-            )}
           </div>
         </div>
         {isOpenPr ? (
