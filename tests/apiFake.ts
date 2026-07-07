@@ -14,14 +14,16 @@ export const apiFake = {
   calls: [] as string[],
   // Diffstat served by api.summary (the card polls it) — tests set this before mounting a card.
   summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; },
+  // Open PRs served by api.prs (the board's source of truth) — tests set this before mounting.
+  prsData: [] as unknown[],
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; },
 };
 
 mock.module("@/api", () => ({
   api: {
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
     agents: async () => [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
-    prs: async () => [],
+    prs: async () => apiFake.prsData,
     mergedPrs: async () => [],
     createWorktree: () =>
       new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; }),
