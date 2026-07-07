@@ -127,6 +127,22 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
   </a>
 );
 
+// Small copy-to-clipboard icon — sits next to the PR link so you can grab the URL without visiting it.
+function CopyLink({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }, () => window.prompt("Copy the PR link:", url));
+  };
+  return (
+    <button type="button" onClick={copy} title="Copy PR link" className="text-muted-foreground hover:text-foreground">
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+    </button>
+  );
+}
+
 // Worktree/branch name, click to copy — the identifier you paste into `git worktree`/`checkout`.
 function CopyName({ name }: { name: string }) {
   const [copied, setCopied] = useState(false);
@@ -278,6 +294,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         <div className="flex shrink-0 items-center gap-3">
           {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
           {row.prNumber && <DestLink href={row.prUrl}>PR #{row.prNumber}</DestLink>}
+          {row.prUrl && <CopyLink url={row.prUrl} />}
         </div>
       </div>
 
