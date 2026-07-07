@@ -67,13 +67,13 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
         </p>
         <div className="flex flex-wrap gap-1">
           <Badge variant="outline">{pr.state}</Badge>
-          {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">changes requested</Badge>}
-          {pr.reviewStatus === "approved" && <Badge variant="success">approved</Badge>}
-          {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
+          {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
+          {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
+          {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
           {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
           {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
           {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
-          {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">auto-merge <GitMerge /></Badge>}
+          {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
         </div>
         {liveRow ? <WorkstreamActions row={liveRow} />
           : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
@@ -114,7 +114,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           {pr.checks.map((c, i) => (
             <div key={i} className="flex items-center justify-between gap-3 text-sm">
               <span className="truncate">{c.name}</span>
-              <Badge variant={c.status === "passing" ? "success" : c.status === "failing" ? "destructive" : "outline"}>{c.status}</Badge>
+              <Badge variant={c.status === "passing" ? "success" : c.status === "failing" ? "destructive" : "outline"} className="capitalize">{c.status}</Badge>
             </div>
           ))}
         </TabsContent>
