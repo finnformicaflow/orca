@@ -199,10 +199,9 @@ export function titleFromText(text: string): string {
   return truncated.charAt(0).toUpperCase() + truncated.slice(1);
 }
 
-/** Provisional title from the feature prompt (shown until the agent run finishes). */
+/** Session title, summarised from the feature prompt (server prefers a Haiku summary, falls back to
+ *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
-/** Final title: the agent's own summary of what it did, once the headless run completes. */
-export const titleFromResult = titleFromText;
 
 /** Slugify a title into a git branch name. */
 export function slugifyBranch(title: string): string {

@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
-  slackPrompt, titleFromPrompt, titleFromResult, withAttachments,
+  slackPrompt, titleFromPrompt, withAttachments,
 } from "./workstream";
 
 const KEY = "orca.enrichment";
@@ -97,17 +97,13 @@ export async function refresh() {
     prs: await api.prs(r.name).catch(() => [] as PrSummary[]),
     merged: r.hasRemote ? await api.mergedPrs(r.name).catch(() => [] as MergedPr[]) : [],
   })));
-  // Persist any fresh session id so "Copy CLI" can resume it after a restart (in-memory only otherwise);
-  // and once a run finishes, adopt its response text as the title — Claude's own summary of what it did
-  // beats the pre-run prompt guess. Only until a PR exists (then the PR title is the source of truth).
+  // Persist any fresh session id so "Copy CLI" can resume it after a restart (in-memory only otherwise).
+  // The title stays the Haiku summary of the PROMPT set at creation — deriving it from the agent's
+  // final response text instead ("Done! I've added…") produced awkward, sentence-fragment titles.
   for (const rl of live) {
     for (const a of rl.agents) {
       const e = enrichOf(rl.repo, a.branch);
       if (a.sessionId && e.sessionId !== a.sessionId) patchEnrich(rl.repo, a.branch, { sessionId: a.sessionId });
-      if (a.agentStatus === "done" && a.agentResult) {
-        const title = titleFromResult(a.agentResult);
-        if (title && e.title !== title) patchEnrich(rl.repo, a.branch, { title });
-      }
     }
   }
   notify();
