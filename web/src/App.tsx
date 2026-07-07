@@ -1,7 +1,7 @@
 import { useAtom } from "jotai";
 import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
-import { repoFilterAtom } from "@/lib/atoms";
+import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
@@ -38,17 +38,26 @@ export function App() {
   );
 }
 
-// Switch between your own kanban ("Board") and the coworker review queue ("Review").
+// Top-level nav: your own kanban ("Board"), the same board stacked as lists ("List"), and the
+// coworker review queue ("Review"). Board/List both live on "/" and just flip the display mode.
 function Nav({ active }: { active: "board" | "review" }) {
-  const link = (name: "board" | "review", to: string, label: string) => (
+  const [view, setView] = useAtom(boardViewAtom);
+  const onBoard = active === "board";
+  const link = (isActive: boolean, onClick: () => void, label: string) => (
     <button
-      className={`rounded-md px-2.5 py-1 text-sm font-medium ${active === name ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-      onClick={() => navigate(to)}
+      className={`rounded-md px-2.5 py-1 text-sm font-medium ${isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+      onClick={onClick}
     >
       {label}
     </button>
   );
-  return <nav className="flex items-center gap-1">{link("board", "/", "Board")}{link("review", "/review", "Review")}</nav>;
+  return (
+    <nav className="flex items-center gap-1">
+      {link(onBoard && view === "board", () => { setView("board"); navigate("/"); }, "Board")}
+      {link(onBoard && view === "list", () => { setView("list"); navigate("/"); }, "List")}
+      {link(active === "review", () => navigate("/review"), "Review")}
+    </nav>
+  );
 }
 
 // Board-only control: filter by repo (only meaningful with more than one configured).
