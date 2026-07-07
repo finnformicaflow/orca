@@ -336,9 +336,6 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : null}
         </div>
       )}
-      {isLocal && row.agentStatus === "done" && row.agentResult && (
-        <div className="text-muted-foreground border-l-2 pl-2 text-xs italic line-clamp-3">{row.agentResult}</div>
-      )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
       {/* Local preview: its own full-width row, sitting between the session context and the actions. */}
