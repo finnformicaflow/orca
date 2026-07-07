@@ -5,7 +5,7 @@ import { api } from "../api";
 import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
 import { AgentBadge } from "./Board";
-import { DiffView } from "./PrDetail";
+import { DiffView, Markdown } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {row.prompt && <Section title="Prompt"><p className="text-sm whitespace-pre-wrap">{row.prompt}</p></Section>}
-          {row.agentResult && <Section title="Agent result"><p className="text-sm whitespace-pre-wrap">{row.agentResult}</p></Section>}
+          {row.agentResult && <Section title="Agent result"><Markdown>{row.agentResult}</Markdown></Section>}
           {row.agentError && <p className="text-destructive text-sm whitespace-pre-wrap">{row.agentError}</p>}
           <Section title={`Files changed (${summary?.files.length ?? 0})`}>
             {summary && summary.files.length > 0 ? (
