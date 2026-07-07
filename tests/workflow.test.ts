@@ -107,6 +107,11 @@ test("W5 merge-when-green: guarded by canMerge, then worktree is removed", async
   await setPrFixture({ state: "OPEN", mergeable: "CONFLICTING", reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "FAILURE" }] });
   expect(canMerge(await prStatus(repo, 1))).toBe(false);
 
+  // mergeability UNKNOWN (GitHub hasn't computed it yet) must NOT block — only a real conflict does;
+  // gh pr merge is the final arbiter. Blocking on UNKNOWN was the "not mergeable/green" false reject.
+  await fixture({ mergeable: "UNKNOWN", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
+  expect(canMerge(await prStatus(repo, 1))).toBe(true);
+
   // green but not yet approved cannot be merged (it belongs in Awaiting Approval)
   await fixture({ reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
   expect(canMerge(await prStatus(repo, 1))).toBe(false);

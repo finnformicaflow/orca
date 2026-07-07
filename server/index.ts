@@ -86,7 +86,13 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/merge") {
     const status = await gh.prStatus(repo.repoPath, body.pr);
-    if (!mergeSafe(status)) return json({ error: "not mergeable/green", status }, 409);
+    if (!mergeSafe(status)) {
+      const why = status.mergeable === "CONFLICTING" ? "has merge conflicts"
+        : status.ciStatus === "failing" ? "CI is failing"
+        : status.ciStatus === "pending" ? "CI is still running — use auto-merge to merge once it passes"
+        : "isn't ready to merge";
+      return json({ error: `Can't merge — PR ${why}`, status }, 409);
+    }
     await gh.mergePr(repo.repoPath, body.pr);
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });

@@ -47,12 +47,16 @@ export function canMerge(s: PrStatusLike): boolean {
   return mergeSafe(s) && s.reviewStatus === "approved";
 }
 
-/** Safe to *attempt* a merge: no conflicts and CI isn't failing. Approval is deliberately NOT
- *  required here — GitHub branch protection enforces required reviews on its side, so this lets an
- *  owner merge their own PR (which GitHub won't let them self-approve) on an unprotected repo,
- *  while a protected team repo still rejects the unapproved `gh pr merge`. */
+/** Safe to *attempt* a merge: not a known conflict, and CI isn't failing/pending. Only a definitive
+ *  `CONFLICTING` blocks — `UNKNOWN` is allowed through, because GitHub computes mergeability lazily
+ *  and a fresh poll routinely returns `UNKNOWN` ("not computed yet"), which is NOT a conflict.
+ *  Blocking on it wrongly refused genuinely-mergeable PRs ("not mergeable/green"). `gh pr merge` is
+ *  the final arbiter — it recomputes and errors clearly if the PR truly can't merge. Approval is
+ *  deliberately NOT required here — GitHub branch protection enforces required reviews on its side,
+ *  so this lets an owner merge their own PR (which GitHub won't let them self-approve) on an
+ *  unprotected repo, while a protected team repo still rejects the unapproved `gh pr merge`. */
 export function mergeSafe(s: PrStatusLike): boolean {
-  return s.mergeable === "MERGEABLE" && ciOk(s.ciStatus);
+  return s.mergeable !== "CONFLICTING" && ciOk(s.ciStatus);
 }
 
 /** Map a freshly-polled PR status onto its kanban lane: open (In Review) vs approved (Mergeable). */
