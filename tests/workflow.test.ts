@@ -11,7 +11,7 @@ import { freePort, killTree } from "../server/preview";
 import { run } from "../server/run";
 import {
   attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
-  readyForReview, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -90,14 +90,6 @@ describe("W4 poll-status: gh json → state machine", () => {
       expect(deriveKanbanState(status)).toBe(expected);
     });
   }
-});
-
-test("readyForReview: green + unapproved is flagged; approved / failing / changes are not", () => {
-  const base = { state: "OPEN", mergeable: "MERGEABLE" as const };
-  expect(readyForReview({ ...base, ciStatus: "passing", reviewStatus: "review_required" })).toBe(true);
-  expect(readyForReview({ ...base, ciStatus: "passing", reviewStatus: "approved" })).toBe(false);
-  expect(readyForReview({ ...base, ciStatus: "failing", reviewStatus: "review_required" })).toBe(false);
-  expect(readyForReview({ ...base, ciStatus: "passing", reviewStatus: "changes_requested" })).toBe(false);
 });
 
 test("W5 merge-when-green: guarded by canMerge, then worktree is removed", async () => {

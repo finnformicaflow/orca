@@ -65,11 +65,6 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
   return s.reviewStatus === "approved" ? "MERGEABLE" : "IN_REVIEW"; // conflict/CI/ready show as badges
 }
 
-/** In-review PR that's green and just needs a reviewer to look — surfaced as a badge. */
-export function readyForReview(s: PrStatusLike): boolean {
-  return s.reviewStatus !== "approved" && s.reviewStatus !== "changes_requested" && ciOk(s.ciStatus);
-}
-
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
 // place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
 export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "resolveConflicts" | "fixCi" | "addPreview" | "copyLink";
