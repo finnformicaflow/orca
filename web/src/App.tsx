@@ -1,5 +1,5 @@
 import { useAtom } from "jotai";
-import { CircleUser, LayoutGrid, List, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
+import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
 import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -25,7 +25,6 @@ export function App() {
         <h1 className="text-xl font-semibold">🐳 Orca</h1>
         <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
         {topLevel && <Nav active={route.name} />}
-        {route.name === "board" && <ViewToggle />}
         <div className="ml-auto flex items-center gap-2">
           {topLevel && <RepoFilter />}
           <ProfileMenu />
@@ -39,34 +38,26 @@ export function App() {
   );
 }
 
-// Switch between your own kanban ("Board") and the coworker review queue ("Review").
+// Top-level nav: your own kanban ("Board"), the same board stacked as lists ("List"), and the
+// coworker review queue ("Review"). Board/List both live on "/" and just flip the display mode.
 function Nav({ active }: { active: "board" | "review" }) {
-  const link = (name: "board" | "review", to: string, label: string) => (
+  const [view, setView] = useAtom(boardViewAtom);
+  const onBoard = active === "board";
+  const link = (isActive: boolean, onClick: () => void, label: string) => (
     <button
-      className={`rounded-md px-2.5 py-1 text-sm font-medium ${active === name ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-      onClick={() => navigate(to)}
+      className={`rounded-md px-2.5 py-1 text-sm font-medium ${isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+      onClick={onClick}
     >
       {label}
     </button>
   );
-  return <nav className="flex items-center gap-1">{link("board", "/", "Board")}{link("review", "/review", "Review")}</nav>;
-}
-
-// Board-only control: switch the kanban between side-by-side columns and lanes stacked as lists.
-function ViewToggle() {
-  const [view, setView] = useAtom(boardViewAtom);
-  const btn = (v: "board" | "list", Icon: typeof List, label: string) => (
-    <button
-      title={label}
-      aria-label={label}
-      aria-pressed={view === v}
-      className={`inline-flex size-6 items-center justify-center rounded ${view === v ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-      onClick={() => setView(v)}
-    >
-      <Icon className="size-3.5" />
-    </button>
+  return (
+    <nav className="flex items-center gap-1">
+      {link(onBoard && view === "board", () => { setView("board"); navigate("/"); }, "Board")}
+      {link(onBoard && view === "list", () => { setView("list"); navigate("/"); }, "List")}
+      {link(active === "review", () => navigate("/review"), "Review")}
+    </nav>
   );
-  return <div className="bg-muted flex items-center gap-0.5 rounded-md p-0.5">{btn("board", LayoutGrid, "Board view")}{btn("list", List, "List view")}</div>;
 }
 
 // Board-only control: filter by repo (only meaningful with more than one configured).

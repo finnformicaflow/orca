@@ -1,7 +1,8 @@
-// E2E for the board display toggle (App.ViewToggle → boardViewAtom → Board): the header offers a
-// Board/List switch next to the nav; clicking List stacks the swimlanes as vertical sections
-// (max-w-3xl) instead of side-by-side kanban columns (grid), and the choice persists. Driven against
-// the fake api (tests/apiFake.ts), rendered into a real DOM.
+// E2E for the board display toggle (App.Nav → boardViewAtom → Board): the header nav offers a
+// "List" button next to "Board"; clicking List stacks the swimlanes as collapsible sections that
+// scroll internally (max-w-3xl + an overflow-y-auto pane) instead of side-by-side kanban columns
+// (grid), and the choice persists. Section headers collapse like an accordion. Driven against the
+// fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -32,28 +33,45 @@ afterEach(() => {
 
 const gridEl = () => container!.querySelector(".xl\\:grid-cols-5");
 const listEl = () => container!.querySelector(".max-w-3xl");
-const click = async (sel: string) =>
-  await act(async () => { container!.querySelector<HTMLElement>(sel)!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+const navBtn = (label: string) =>
+  [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
+const clickEl = async (el?: Element | null) =>
+  await act(async () => { (el as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
 describe("board display toggle", () => {
-  test("defaults to the kanban grid; a List/Board switch sits in the header", async () => {
+  test("defaults to the kanban grid; Board/List buttons sit in the nav", async () => {
     await mount();
     expect(gridEl()).not.toBeNull();
     expect(listEl()).toBeNull();
-    expect(container!.querySelector('button[aria-label="List view"]')).not.toBeNull();
-    expect(container!.querySelector('button[aria-label="Board view"]')).not.toBeNull();
+    expect(navBtn("Board")).not.toBeUndefined();
+    expect(navBtn("List")).not.toBeUndefined();
   });
 
-  test("clicking List stacks the lanes as sections and persists; Board switches back", async () => {
+  test("clicking List stacks the lanes as a scrolling section pane and persists; Board switches back", async () => {
     await mount();
-    await click('button[aria-label="List view"]');
+    await clickEl(navBtn("List"));
     expect(listEl()).not.toBeNull();
     expect(gridEl()).toBeNull();
+    // Only the list content scrolls — there's an internal overflow-y-auto pane.
+    expect(listEl()!.querySelector(".overflow-y-auto")).not.toBeNull();
     expect(localStorage.getItem("orca.boardView")).toBe('"list"');
 
-    await click('button[aria-label="Board view"]');
+    await clickEl(navBtn("Board"));
     expect(gridEl()).not.toBeNull();
     expect(listEl()).toBeNull();
     expect(localStorage.getItem("orca.boardView")).toBe('"board"');
+  });
+
+  test("list section headers collapse like an accordion", async () => {
+    await mount();
+    await clickEl(navBtn("List"));
+    // The Local section always renders (with the New-draft composer); its header toggles it closed.
+    const header = [...container!.querySelectorAll("button[aria-expanded]")]
+      .find((b) => b.textContent?.toLowerCase().includes("local"))!;
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(listEl()!.querySelector("textarea")).not.toBeNull(); // composer visible while expanded
+    await clickEl(header);
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(listEl()!.querySelector("textarea")).toBeNull(); // collapsed → content hidden
   });
 });
