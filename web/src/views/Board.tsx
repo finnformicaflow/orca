@@ -52,7 +52,7 @@ export function Board() {
             const isCollapsed = collapsed.has(lane);
             return (
               <section key={lane}>
-                <div className="bg-background sticky top-0 z-10 flex items-center gap-2 border-b py-2">
+                <div className="bg-background sticky top-0 z-10 flex items-center gap-2 py-2">
                   <button
                     type="button"
                     onClick={() => toggleLane(lane)}
