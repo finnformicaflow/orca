@@ -45,7 +45,7 @@ export function Board() {
   if (view === "list")
     return (
       <div className="mx-auto flex max-w-3xl flex-col overflow-hidden md:h-[calc(100dvh-6.5rem)]">
-        <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+        <div className="flex-1 space-y-1 overflow-y-auto px-1.5">
           {LANES.map(({ lane, title }) => {
             const cards = cardsFor(lane);
             if (cards.length === 0 && lane !== "LOCAL") return null;
