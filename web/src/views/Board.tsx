@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { boardViewAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
@@ -27,12 +27,42 @@ const LANES: { lane: Lane; title: string }[] = [
 export function Board() {
   const all = useWorkstreams();
   const filter = useAtomValue(repoFilterAtom);
+  const view = useAtomValue(boardViewAtom);
   const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
+  const cardsFor = (lane: Lane) => {
+    const cards = rows.filter((r) => r.lane === lane);
+    if (lane === "DONE") cards.sort((a, b) => (b.mergedAt ?? "").localeCompare(a.mergedAt ?? "")); // recent first
+    return cards;
+  };
+
+  // List view: lanes stacked as vertical sections rather than side-by-side columns. Empty lanes are
+  // hidden (Local always shows, for the New-draft composer).
+  if (view === "list")
+    return (
+      <div className="mx-auto flex max-w-3xl flex-col gap-6">
+        {LANES.map(({ lane, title }) => {
+          const cards = cardsFor(lane);
+          if (cards.length === 0 && lane !== "LOCAL") return null;
+          return (
+            <section key={lane}>
+              <h3 className="text-muted-foreground mb-2 flex items-center gap-2 border-b pb-1.5 text-xs font-semibold tracking-wide uppercase">
+                {title} <span className="opacity-60">{cards.length}</span>
+                {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
+              </h3>
+              <div className="space-y-2">
+                {lane === "LOCAL" && <NewDraft />}
+                {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    );
+
   return (
     <div className="grid grid-cols-1 gap-3 md:h-[calc(100dvh-6.5rem)] md:grid-cols-3 xl:grid-cols-5">
       {LANES.map(({ lane, title }) => {
-        const cards = rows.filter((r) => r.lane === lane);
-        if (lane === "DONE") cards.sort((a, b) => (b.mergedAt ?? "").localeCompare(a.mergedAt ?? "")); // recent first
+        const cards = cardsFor(lane);
         return (
           <div key={lane} className="bg-muted/30 flex flex-col overflow-hidden rounded-lg border">
             <h3 className="text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs font-semibold tracking-wide uppercase">
