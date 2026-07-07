@@ -183,14 +183,26 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">): st
   ].join(" ");
 }
 
-/** Derive a short human title from a prompt's first line (no AI). */
-export function titleFromPrompt(prompt: string): string {
-  const first = prompt.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-  const cleaned = first.replace(/[.!?…]+$/, "").trim();
+/** Derive a short human title from text's first non-empty line (no AI): strip markdown,
+ *  drop trailing punctuation, truncate on a word boundary, capitalise. Used for both the
+ *  provisional title from a prompt and the final title from the agent's response text. */
+export function titleFromText(text: string): string {
+  const first = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  const cleaned = first
+    .replace(/[`*_#>[\]]/g, "")     // strip markdown
+    .replace(/^[\w ]{1,24}:\s+/, "") // drop a leading "Task Name:" style label — visible width is scarce
+    .replace(/[.!?…:]+$/, "")       // trailing punctuation
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return "Untitled";
   const truncated = cleaned.length > 60 ? cleaned.slice(0, 60).replace(/\s+\S*$/, "") : cleaned;
   return truncated.charAt(0).toUpperCase() + truncated.slice(1);
 }
+
+/** Provisional title from the feature prompt (shown until the agent run finishes). */
+export const titleFromPrompt = titleFromText;
+/** Final title: the agent's own summary of what it did, once the headless run completes. */
+export const titleFromResult = titleFromText;
 
 /** Slugify a title into a git branch name. */
 export function slugifyBranch(title: string): string {

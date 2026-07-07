@@ -16,13 +16,15 @@ export const apiFake = {
   summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
   // Open PRs served by api.prs (the board's source of truth) — tests set this before mounting.
   prsData: [] as unknown[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; },
+  // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
+  agentsData: null as null | unknown[],
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; },
 };
 
 mock.module("@/api", () => ({
   api: {
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
-    agents: async () => [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
+    agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => apiFake.prsData,
     mergedPrs: async () => [],
     createWorktree: () =>
