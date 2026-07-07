@@ -28,7 +28,7 @@ export async function createPr(
   return { number, url };
 }
 
-export type PrSummary = PrStatus & { number: number; title: string; branch: string; url: string; isDraft: boolean; previewUrl?: string };
+export type PrSummary = PrStatus & { number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean; previewUrl?: string };
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
 function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefined {
@@ -40,10 +40,11 @@ function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefin
 // call at a time — `comments` and `statusCheckRollup` (CI). Together they turn a ~3s list of 200
 // PRs into ~14s, so both are detail-only (see listReviewPrs / prDetail). What's left are plain
 // index fields (state/draft/mergeable/reviewDecision) that come back in the single list call.
-const PR_META_FIELDS = "number,title,headRefName,url,state,isDraft,mergeable,reviewDecision";
+const PR_META_FIELDS = "number,title,headRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest";
 type RawPr = {
   number: number; title: string; headRefName: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
+  autoMergeRequest?: { enabledAt?: string } | null;
   statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
   comments?: Array<{ body?: string }>;
 };
@@ -54,6 +55,7 @@ const mapSummary = (j: RawPr): PrSummary => ({
   url: j.url,
   state: j.state,
   isDraft: Boolean(j.isDraft),
+  autoMergeEnabled: Boolean(j.autoMergeRequest),
   ciStatus: rollupCi(j.statusCheckRollup ?? []),
   reviewStatus: mapReview(j.reviewDecision ?? ""),
   mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",

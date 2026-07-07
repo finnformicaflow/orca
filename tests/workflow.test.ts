@@ -181,6 +181,15 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
 });
 
+test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boolean flag", async () => {
+  await setPrListFixture([
+    { number: 12, title: "Armed", headRefName: "feat-am", url: "u12", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], autoMergeRequest: { enabledAt: "2026-07-07T10:00:00Z" } },
+    { number: 13, title: "Not armed", headRefName: "feat-nm", url: "u13", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], autoMergeRequest: null },
+  ]);
+  const prs = await listPrs(repo);
+  expect(prs.map((p) => p.autoMergeEnabled)).toEqual([true, false]); // the card renders a purple auto-merge badge only for the armed PR
+});
+
 test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no comments", async () => {
   await setPrListFixture([
     { number: 20, title: "Older", headRefName: "feat-old", url: "u20", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex", name: "Alex Atack" }, updatedAt: "2026-07-01T10:00:00Z" },

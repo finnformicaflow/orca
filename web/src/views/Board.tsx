@@ -8,7 +8,7 @@ import {
 } from "../store";
 import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, Loader2, Play, X } from "lucide-react";
+import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -181,6 +181,7 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
 function ConditionBadges({ row }: { row: Row }) {
   return (
     <>
+      {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">auto-merge <GitMerge /></Badge>}
       {row.reviewStatus === "changes_requested" && <Badge variant="destructive">changes requested</Badge>}
       {readyForReview({ state: "OPEN", mergeable: row.mergeable ?? "UNKNOWN", ciStatus: row.ciStatus ?? "none", reviewStatus: row.reviewStatus ?? "none" }) && <Badge variant="secondary">ready for review</Badge>}
       {row.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
