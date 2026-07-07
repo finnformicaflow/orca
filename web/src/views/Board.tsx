@@ -153,7 +153,7 @@ function CopyName({ name }: { name: string }) {
   return (
     <button type="button" onClick={copy} title="Copy worktree name" className="hover:text-foreground group flex max-w-full items-center gap-1">
       <code className="truncate">{name}</code>
-      {copied ? <Check className="size-3 shrink-0" /> : <Copy className="size-3 shrink-0 opacity-40 group-hover:opacity-100" />}
+      {copied ? <Check className="size-3 shrink-0" /> : <Copy className="size-3 shrink-0 opacity-0 group-hover:opacity-100" />}
     </button>
   );
 }
