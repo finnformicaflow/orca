@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../server/run";
@@ -16,8 +16,11 @@ export async function makeScratchRepo(): Promise<string> {
 }
 
 // A `gh` stand-in: `pr create` prints a URL, `pr view` cats the fixture file,
-// `pr merge` succeeds. Same code path as real gh, no network.
+// `pr merge` succeeds. Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
+// records each invocation's args, so a test can assert *which* --json fields we ask gh for (the
+// shim otherwise ignores the field list — cat'ing the whole fixture regardless).
 const GH_SHIM = `#!/bin/sh
+[ -n "$ORCA_GH_ARGS_LOG" ] && echo "$*" >> "$ORCA_GH_ARGS_LOG"
 case "$1 $2" in
   "pr create") echo "https://github.com/acme/app/pull/\${ORCA_PR_NUMBER:-123}" ;;
   "pr view") cat "$ORCA_GH_FIXTURE" ;;
@@ -72,4 +75,13 @@ export async function setPrListFixture(prs: unknown[]): Promise<void> {
   const path = join(dir, "prs.json");
   await writeFile(path, JSON.stringify(prs));
   process.env.ORCA_PRLIST_FIXTURE = path;
+}
+
+/** Start recording every fake-`gh` invocation's args; returns a reader for what's been logged. */
+export async function recordGhArgs(): Promise<() => Promise<string>> {
+  const dir = await mkdtemp(join(tmpdir(), "orca-args-"));
+  const path = join(dir, "args.log");
+  await writeFile(path, "");
+  process.env.ORCA_GH_ARGS_LOG = path;
+  return async () => readFile(path, "utf8");
 }

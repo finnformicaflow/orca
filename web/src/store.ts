@@ -131,6 +131,7 @@ export type Row = {
   ciStatus?: CiStatus;
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
+  autoMergeEnabled?: boolean;
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -179,7 +180,7 @@ export function useWorkstreams(): Row[] {
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
-        ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable,
+        ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };

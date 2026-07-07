@@ -1,7 +1,9 @@
 // Launch the bridge + Vite dev server together. Vite proxies /api to the bridge.
 const opts = { stdout: "inherit", stderr: "inherit", env: process.env } as const;
 const children = [
-  Bun.spawn(["bun", "run", "server/index.ts"], opts),
+  // --watch so editing server code (adapters, routes) restarts the bridge — otherwise Vite
+  // hot-reloads the UI but the API keeps serving stale logic until a manual restart.
+  Bun.spawn(["bun", "--watch", "run", "server/index.ts"], opts),
   Bun.spawn(["bunx", "--bun", "vite"], { cwd: "web", ...opts }),
 ];
 

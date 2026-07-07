@@ -13,7 +13,7 @@ import {
   attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
   readyForReview, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
-import { installFakeGh, makeScratchRepo, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
+import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
 let repo: string;
 beforeAll(async () => {
@@ -179,6 +179,19 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect(prs.map((p) => p.branch)).toEqual(["feat-a", "feat-b"]);
   expect(deriveKanbanState(prs[0]!)).toBe("MERGEABLE"); // approved
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
+});
+
+test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boolean flag", async () => {
+  await setPrListFixture([
+    { number: 12, title: "Armed", headRefName: "feat-am", url: "u12", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], autoMergeRequest: { enabledAt: "2026-07-07T10:00:00Z" } },
+    { number: 13, title: "Not armed", headRefName: "feat-nm", url: "u13", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], autoMergeRequest: null },
+  ]);
+  const readArgs = await recordGhArgs();
+  const prs = await listPrs(repo);
+  expect(prs.map((p) => p.autoMergeEnabled)).toEqual([true, false]); // the card renders a purple auto-merge badge only for the armed PR
+  // …and guard the field is actually *requested* from gh — without it the live API omits the flag
+  // (the badge silently never shows), even though the mapping above still passes on the fixture.
+  expect(await readArgs()).toContain("autoMergeRequest");
 });
 
 test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no comments", async () => {
