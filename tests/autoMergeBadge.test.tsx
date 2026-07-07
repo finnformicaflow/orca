@@ -1,5 +1,5 @@
 // E2E for the auto-merge card badge (server/gh.listPrs → store Row.autoMergeEnabled →
-// Board.ConditionBadges): an open PR with GitHub auto-merge armed shows a purple "auto-merge"
+// Board.ConditionBadges): an open PR with GitHub auto-merge armed shows a purple "Auto-merge"
 // badge alongside the other GitHub condition badges (ready for review, CI, …). Driven against the
 // fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, expect, test } from "bun:test";
@@ -39,16 +39,16 @@ const pr = (over: Record<string, unknown>) => ({
 const badge = (label: string) =>
   [...container!.querySelectorAll("[data-slot='badge']")].find((b) => b.textContent?.trim().startsWith(label));
 
-test("open PR with auto-merge armed shows the auto-merge badge; a plain PR does not", async () => {
+test("open PR with auto-merge armed shows the capitalised Auto-merge badge; a plain PR does not", async () => {
   apiFake.prsData = [pr({ number: 1, branch: "feat-am", autoMergeEnabled: true })];
   await act(async () => { await store.refresh(); });
   await mount();
-  expect(badge("auto-merge")).not.toBeUndefined();
+  expect(badge("Auto-merge")).not.toBeUndefined();
 });
 
-test("open PR without auto-merge shows no auto-merge badge", async () => {
+test("open PR without auto-merge shows no Auto-merge badge", async () => {
   apiFake.prsData = [pr({ number: 2, branch: "feat-plain", autoMergeEnabled: false })];
   await act(async () => { await store.refresh(); });
   await mount();
-  expect(badge("auto-merge")).toBeUndefined();
+  expect(badge("Auto-merge")).toBeUndefined();
 });

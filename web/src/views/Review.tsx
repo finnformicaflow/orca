@@ -61,10 +61,10 @@ function ReviewItem({ pr, multiRepo }: { pr: Item; multiRepo: boolean }) {
       <span className="text-muted-foreground shrink-0 text-xs">
         #{pr.number} · {pr.authorName || pr.author || "?"}{multiRepo && <> · {pr.repo}</>} · {timeAgo(pr.updatedAt)}
       </span>
-      {pr.isDraft && <Badge variant="outline">draft</Badge>}
-      {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">changes</Badge>}
-      {pr.reviewStatus === "approved" && <Badge variant="success">approved</Badge>}
-      {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
+      {pr.isDraft && <Badge variant="outline">Draft</Badge>}
+      {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes</Badge>}
+      {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
+      {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
       <a className="text-muted-foreground hover:text-foreground shrink-0" href={pr.url} target="_blank" rel="noreferrer" title="View on GitHub"><ExternalLink className="size-3.5" /></a>
     </li>
   );

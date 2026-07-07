@@ -196,10 +196,10 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
 function ConditionBadges({ row }: { row: Row }) {
   return (
     <>
-      {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">auto-merge <GitMerge /></Badge>}
-      {row.reviewStatus === "changes_requested" && <Badge variant="destructive">changes requested</Badge>}
-      {row.mergeable === "CONFLICTING" && <Badge variant="destructive">conflicts</Badge>}
-      {row.mergeable === "UNKNOWN" && <Badge variant="outline">checking…</Badge>}
+      {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+      {row.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
+      {row.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
+      {row.mergeable === "UNKNOWN" && <Badge variant="outline">Checking…</Badge>}
       {row.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
       {row.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
       {row.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
@@ -319,7 +319,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
             </button>
           )}
           {isOpenPr && <ConditionBadges row={row} />}
-          {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">conflicts with {baseBranch(row.repo)}</Badge>}
+          {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">Conflicts with {baseBranch(row.repo)}</Badge>}
         </div>
       )}
 
