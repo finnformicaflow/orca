@@ -193,7 +193,12 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">): st
  *  provisional title from a prompt and the final title from the agent's response text. */
 export function titleFromText(text: string): string {
   const first = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-  const cleaned = first.replace(/[`*_#>[\]]/g, "").replace(/[.!?…:]+$/, "").replace(/\s+/g, " ").trim();
+  const cleaned = first
+    .replace(/[`*_#>[\]]/g, "")     // strip markdown
+    .replace(/^[\w ]{1,24}:\s+/, "") // drop a leading "Task Name:" style label — visible width is scarce
+    .replace(/[.!?…:]+$/, "")       // trailing punctuation
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return "Untitled";
   const truncated = cleaned.length > 60 ? cleaned.slice(0, 60).replace(/\s+\S*$/, "") : cleaned;
   return truncated.charAt(0).toUpperCase() + truncated.slice(1);

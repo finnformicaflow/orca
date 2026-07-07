@@ -50,6 +50,15 @@ describe("response text as title", () => {
     expect(row.textContent).toBe("Added a copy-link icon next to the PR link on board cards"); // first line, period stripped
   });
 
+  test("a leading 'Task Name:' style label is stripped — visible width is scarce", async () => {
+    const result = "Task Name: Investigate Missing Source ID Column\n\nHere's what I found…";
+    apiFake.agentsData = [{ branch: "feat-z", worktreePath: "/wt/feat-z", agentStatus: "done", agentResult: result }];
+    mount();
+    await act(async () => { await store.refresh(); });
+    const row = items().find((li) => li.getAttribute("data-branch") === "feat-z")!;
+    expect(row.textContent).toBe("Investigate Missing Source ID Column"); // no "Task Name:" prefix
+  });
+
   test("a running run keeps its provisional (branch) title — no result yet", async () => {
     apiFake.agentsData = [{ branch: "feat-y", worktreePath: "/wt/feat-y", agentStatus: "running" }];
     mount();
