@@ -284,6 +284,13 @@ export async function convertToDraft(row: Row) {
   await refresh();
 }
 
+/** Ask GitHub to squash-merge this PR automatically once its checks + reviews pass. */
+export async function autoMerge(row: Row) {
+  if (!row.prNumber) return;
+  await api.autoMerge(row.repo, row.prNumber);
+  await refresh();
+}
+
 export async function merge(row: Row) {
   if (row.prNumber) await api.merge(row.repo, row.prNumber, row.worktreePath);
   else await api.mergeLocal(row.repo, row.branch, row.worktreePath);

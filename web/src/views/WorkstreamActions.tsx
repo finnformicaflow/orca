@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
-  addPreviewLabel, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
+  addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
   merge, promote, resolveConflicts, sendSlack, staleHours, type Row,
 } from "../store";
 import { attachCommand, prMenuActions, shouldBump } from "../workstream";
@@ -98,6 +98,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
                 <DropdownMenuSubContent>
                   {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
                   {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+                  {prActions.includes("autoMerge") && <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>}
                   {prActions.includes("resolveConflicts") && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
                   {prActions.includes("fixCi") && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
                   {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}

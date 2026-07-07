@@ -68,7 +68,7 @@ export function readyForReview(s: PrStatusLike): boolean {
 
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
 // place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
-export type PrMenuAction = "markReady" | "moveToDraft" | "resolveConflicts" | "fixCi" | "addPreview" | "copyLink";
+export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "resolveConflicts" | "fixCi" | "addPreview" | "copyLink";
 export type PrMenuRow = {
   prNumber?: number;
   isDraft?: boolean;
@@ -84,6 +84,9 @@ export type PrMenuRow = {
 export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   if (!row.prNumber) return [];
   const actions: PrMenuAction[] = [row.isDraft ? "markReady" : "moveToDraft"];
+  // Auto-merge only applies to a ready PR — GitHub rejects it on a draft. Offer it regardless of
+  // current mergeability: the whole point is to queue the merge for once checks/reviews pass.
+  if (!row.isDraft) actions.push("autoMerge");
   if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") actions.push("resolveConflicts");
   if (row.ciStatus === "failing") actions.push("fixCi");
   if (!row.previewUrl) actions.push("addPreview");
