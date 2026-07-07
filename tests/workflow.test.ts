@@ -275,6 +275,7 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
     comments: [{ author: { login: "carol" }, body: "nice" }, { author: { login: "bot" }, body: "Deploy preview: https://feat-a.preview.example.com is ready" }],
     mergeable: "MERGEABLE", reviewDecision: "APPROVED",
     statusCheckRollup: [{ name: "build", conclusion: "SUCCESS" }, { name: "lint", conclusion: "FAILURE" }],
+    autoMergeRequest: { enabledAt: "2026-07-07T10:00:00Z", mergeMethod: "SQUASH" },
   });
   const d = await prDetail(repo, 5);
   expect(d.title).toBe("Add A");
@@ -284,6 +285,7 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
   expect(d.checks).toEqual([{ name: "build", status: "passing" }, { name: "lint", status: "failing" }]);
   expect(d.ciStatus).toBe("failing"); // any failing check fails the rollup
   expect(d.previewUrl).toBe("https://feat-a.preview.example.com"); // deep fetch surfaces the deploy preview
+  expect(d.autoMergeEnabled).toBe(true); // gh's autoMergeRequest object → the detail page's auto-merge badge
 });
 
 test("D2 pr-diff: returns the raw unified diff", async () => {

@@ -127,6 +127,7 @@ export type PrDetail = PrStatus & {
   comments: { author: string; body: string }[];
   checks: { name: string; status: CiStatus }[];
   previewUrl?: string;
+  autoMergeEnabled: boolean;
 };
 
 function checkOutcome(c: { conclusion?: string; state?: string }): CiStatus {
@@ -139,7 +140,7 @@ function checkOutcome(c: { conclusion?: string; state?: string }): CiStatus {
 /** Full detail for one PR — overview, files, reviews, comments. */
 export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
   const raw = await gh(cwd, "pr", "view", String(pr), "--json",
-    "number,title,body,author,state,url,headRefName,baseRefName,additions,deletions,changedFiles,files,reviews,comments,mergeable,reviewDecision,statusCheckRollup");
+    "number,title,body,author,state,url,headRefName,baseRefName,additions,deletions,changedFiles,files,reviews,comments,mergeable,reviewDecision,statusCheckRollup,autoMergeRequest");
   // deno-lint-ignore no-explicit-any -- gh's json is broad; we normalise below
   const j = JSON.parse(raw) as any;
   return {
@@ -162,6 +163,7 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
     reviewStatus: mapReview(j.reviewDecision ?? ""),
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
     previewUrl: extractPreviewUrl(j.comments ?? []),
+    autoMergeEnabled: Boolean(j.autoMergeRequest), // gh: null when off, an object (mergeMethod/enabledAt/…) when on
   };
 }
 

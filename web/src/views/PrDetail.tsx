@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
-import { ArrowLeft, Check, Clock, ExternalLink, X } from "lucide-react";
+import { ArrowLeft, Check, Clock, ExternalLink, GitMerge, X } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
 import { addPreviewLabel, useWorkstreams, type Row } from "../store";
@@ -73,6 +73,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
           {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
           {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+          {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">auto-merge <GitMerge /></Badge>}
         </div>
         {liveRow ? <WorkstreamActions row={liveRow} />
           : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
