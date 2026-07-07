@@ -129,7 +129,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
 const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to board</Button>;
 
-const Markdown = ({ children }: { children: string }) => (
+export const Markdown = ({ children }: { children: string }) => (
   <div className="prose prose-sm dark:prose-invert max-w-none">
     <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
   </div>

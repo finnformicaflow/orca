@@ -63,6 +63,10 @@ test("W2 change-summary: commits produce a summary and flip DRAFTING → READY",
   expect(summary.commits.map((c) => c.subject)).toContain("implement feature");
   expect(summary.files.map((f) => f.path)).toContain("feature.ts");
   expect(summary.additions).toBeGreaterThan(0);
+  // Per-file diffstat powers the skimmable "Files changed" summary on the local-session Overview.
+  const featureFile = summary.files.find((f) => f.path === "feature.ts");
+  expect(featureFile?.additions).toBe(1);
+  expect(featureFile?.deletions).toBe(0);
   expect(draftState(summary.commits.length)).toBe("READY");
 });
 

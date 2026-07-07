@@ -5,7 +5,7 @@ import { api } from "../api";
 import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
 import { AgentBadge } from "./Board";
-import { DiffView } from "./PrDetail";
+import { DiffView, Markdown } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
@@ -63,8 +63,22 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {row.prompt && <Section title="Prompt"><p className="text-sm whitespace-pre-wrap">{row.prompt}</p></Section>}
-          {row.agentResult && <Section title="Agent result"><p className="text-sm whitespace-pre-wrap">{row.agentResult}</p></Section>}
+          {row.agentResult && <Section title="Agent result"><Markdown>{row.agentResult}</Markdown></Section>}
           {row.agentError && <p className="text-destructive text-sm whitespace-pre-wrap">{row.agentError}</p>}
+          <Section title={`Files changed (${summary?.files.length ?? 0})`}>
+            {summary && summary.files.length > 0 ? (
+              <ul className="space-y-1 font-mono text-xs">
+                {summary.files.map((f) => (
+                  <li key={f.path} className="flex items-center gap-2">
+                    <button className="truncate text-left hover:underline" onClick={() => go("files")}>{f.path}</button>
+                    <span className="ml-auto shrink-0">
+                      <span className="text-emerald-600 dark:text-emerald-400">+{f.additions}</span> <span className="text-red-600 dark:text-red-400">−{f.deletions}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="text-muted-foreground text-sm">No changes yet.</p>}
+          </Section>
           <Section title={`Commits (${summary?.commits.length ?? 0})`}>
             {summary && summary.commits.length > 0 ? (
               <ul className="space-y-1 text-sm">
