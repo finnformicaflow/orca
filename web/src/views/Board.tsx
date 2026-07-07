@@ -3,8 +3,8 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, discardDraft, rerunAgent, summary as fetchSummary, useRepos, useWorkstreams,
-  type Lane, type Row,
+  baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
+  type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { readyForReview } from "../workstream";
 import { navigate } from "@/lib/route";
@@ -120,9 +120,10 @@ function NewDraft() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(draftRepoAtom);
   const active = repo || repos[0]?.name || "";
-  // After a send we keep the created row for ~6s so a mis-sent draft (wrong repo) can be undone —
-  // Undo just discards it (kills the run, removes the worktree + branch). See CLAUDE.md / discardDraft.
-  const [undoable, setUndoable] = useState<Row | null>(null);
+  // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
+  // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
+  // draft (wrong repo) can be reverted; Undo discards it (kills the run, removes the worktree+branch).
+  const [undoable, setUndoable] = useState<OptimisticDraft | null>(null);
   useEffect(() => {
     if (!undoable) return;
     const t = setTimeout(() => setUndoable(null), 6000);
@@ -133,14 +134,14 @@ function NewDraft() {
     <ChatComposer
       persistKey="orca.newDraft"
       placeholder="Describe a feature…  (⌘+Enter)"
-      onSubmit={async (text, images) => setUndoable(await createWorkstream(active, text, images))}
+      onSubmit={async (text, images) => setUndoable(createWorkstream(active, text, images))}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
           Sent to <span className="text-foreground font-medium">{undoable.repo}</span>
           <button
             type="button"
             className="text-foreground underline underline-offset-2 hover:no-underline"
-            onClick={() => { void discardDraft(undoable); setUndoable(null); }}
+            onClick={() => { void undoDraft(undoable); setUndoable(null); }}
           >
             Undo
           </button>
