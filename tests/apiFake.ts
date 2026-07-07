@@ -12,7 +12,9 @@ export const apiFake = {
   // is still working, then hand back a real branch.
   pending: null as null | ((v: { branch: string; worktreePath: string; title: string }) => void),
   calls: [] as string[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; },
+  // Diffstat served by api.summary (the card polls it) — tests set this before mounting a card.
+  summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -29,5 +31,7 @@ mock.module("@/api", () => ({
       apiFake.calls.push(`discard:${branch}`); if (branch) apiFake.worktrees.delete(branch); return { ok: true };
     },
     previewStop: async () => ({ ok: true }),
+    previewStatus: async () => [],
+    summary: async () => apiFake.summaryData,
   },
 }));

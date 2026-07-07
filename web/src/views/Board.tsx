@@ -79,6 +79,34 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
   </a>
 );
 
+// Worktree/branch name, click to copy — the identifier you paste into `git worktree`/`checkout`.
+function CopyName({ name }: { name: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard.writeText(name);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button type="button" onClick={copy} title="Copy worktree name" className="hover:text-foreground group flex max-w-full items-center gap-1">
+      <code className="truncate">{name}</code>
+      {copied ? <Check className="size-3 shrink-0" /> : <Copy className="size-3 shrink-0 opacity-40 group-hover:opacity-100" />}
+    </button>
+  );
+}
+
+// Coloured diffstat: green additions, red deletions, then the file count.
+function Diffstat({ summary }: { summary: ChangeSummary }) {
+  return (
+    <div>
+      <span className="text-emerald-700 dark:text-emerald-400">+{summary.additions}</span>
+      {" / "}
+      <span className="text-destructive">−{summary.deletions}</span>
+      {" · "}{summary.files.length} files
+    </div>
+  );
+}
+
 function timeAgo(iso?: string): string {
   if (!iso) return "";
   const m = Math.floor((Date.now() - Date.parse(iso)) / 60_000);
@@ -161,19 +189,21 @@ function NewDraft() {
 
 // One card for every lane. Sections switch on whether the row has an open PR / is done /
 // is a draft, but the shell, header, and styling are shared.
-function WorkstreamCard({ row }: { row: Row }) {
+export function WorkstreamCard({ row }: { row: Row }) {
   const isDone = row.lane === "DONE";
   const isOpenPr = Boolean(row.prNumber) && !isDone;
   const isLocal = !row.prNumber && !isDone; // draft or local (no-remote) branch
 
+  // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
+  // gain one on first action).
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   useEffect(() => {
-    if (!isLocal || !row.worktreePath) return;
+    if (isDone || !row.worktreePath) return;
     const reload = () => void fetchSummary(row.repo, row.worktreePath!).then(setSummary).catch(() => {});
     reload();
     const t = setInterval(reload, 5000);
     return () => clearInterval(t);
-  }, [isLocal, row.repo, row.worktreePath]);
+  }, [isDone, row.repo, row.worktreePath]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
@@ -229,11 +259,15 @@ function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
 
-      {/* Detail line: branch + diffstat / agent result / merged-when. */}
-      {isLocal && (
-        <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs">
-          <code className="truncate">{row.branch}</code>
-          <span>{summary ? `+${summary.additions}/−${summary.deletions} · ${summary.files.length} files` : "no changes yet"}</span>
+      {/* Detail: worktree name (click to copy) on its own line, then the diffstat. All lanes but Done. */}
+      {!isDone && (
+        <div className="text-muted-foreground space-y-0.5 text-xs">
+          <CopyName name={row.branch} />
+          {summary ? (
+            <Diffstat summary={summary} />
+          ) : isLocal ? (
+            <div>no changes yet</div>
+          ) : null}
         </div>
       )}
       {isLocal && row.agentStatus === "done" && row.agentResult && (
