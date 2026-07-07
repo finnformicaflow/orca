@@ -183,6 +183,25 @@ test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newe
   expect(prs[1]).toMatchObject({ author: "alex", authorName: "Alex Atack" }); // name preferred over login
 });
 
+test("R2 review-queue: listReviewPrs caches per repo, serving the queue without re-running gh (fast reloads/polls)", async () => {
+  const repo2 = await makeScratchRepo(); // fresh cwd = fresh cache key, isolated from other tests
+  await setPrListFixture([{ number: 30, title: "First", headRefName: "feat-1", url: "u30", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex" }, updatedAt: "2026-07-01T10:00:00Z" }]);
+  const first = await listReviewPrs(repo2); // cold: shells gh, populates the cache
+  expect(first.map((p) => p.number)).toEqual([30]);
+  await setPrListFixture([{ number: 31, title: "Changed", headRefName: "feat-2", url: "u31", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "sam" }, updatedAt: "2026-07-06T10:00:00Z" }]);
+  const second = await listReviewPrs(repo2); // within TTL: served from cache, so it still shows the first fixture, not the changed one
+  expect(second.map((p) => p.number)).toEqual([30]);
+});
+
+test("R3 review-queue: a failed cold fetch surfaces the error (not a silent empty queue) and isn't cached", async () => {
+  const repo3 = await makeScratchRepo();
+  process.env.ORCA_PRLIST_FIXTURE = "/nonexistent/orca-prlist.json"; // make `gh pr list` fail
+  await expect(listReviewPrs(repo3)).rejects.toThrow(); // cold failure surfaces
+  await setPrListFixture([{ number: 40, title: "Recovered", headRefName: "feat-r", url: "u40", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex" }, updatedAt: "2026-07-01T10:00:00Z" }]);
+  const after = await listReviewPrs(repo3); // no stale placeholder cached, so it retries and recovers
+  expect(after.map((p) => p.number)).toEqual([40]);
+});
+
 test("D1 pr-detail: gh view json maps to a detail object", async () => {
   await setViewFixture({
     number: 5, title: "Add A", body: "Because reasons", author: { login: "finn" },

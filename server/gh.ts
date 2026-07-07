@@ -69,10 +69,7 @@ export async function listPrs(cwd: string): Promise<PrSummary[]> {
 
 export type ReviewPr = PrSummary & { author: string; authorName: string; updatedAt: string };
 
-/** Open PRs authored by OTHERS — the coworker review queue (a timeline, newest-updated first). A
- *  lightweight META list only: no comments (so it stays fast for a large queue). Deeper info incl.
- *  the deploy-preview URL comes from prDetail when you click into a specific PR. */
-export async function listReviewPrs(cwd: string): Promise<ReviewPr[]> {
+async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
   // `-author:@me` (gh expands @me to the authenticated user) excludes your own PRs server-side.
   // High limit so the queue shows *all* open coworker PRs (gh's default is only 30).
   const raw = await gh(cwd, "pr", "list", "--state", "open", "--search", "-author:@me", "--limit", "500",
@@ -81,6 +78,35 @@ export async function listReviewPrs(cwd: string): Promise<ReviewPr[]> {
   return arr
     .map((j) => ({ ...mapSummary(j), author: j.author?.login ?? "", authorName: j.author?.name || j.author?.login || "", updatedAt: j.updatedAt ?? "" }))
     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+// The review queue re-fetches on every page mount + a 15s client poll, per repo — but each `gh pr
+// list` is a ~3s network round-trip, and coworker PRs change slowly. So cache per repo and serve
+// stale-while-revalidate: return the cached list instantly, refreshing in the background when it's
+// older than the TTL. First load pays the round-trip; every navigation/poll after is instant.
+const REVIEW_TTL_MS = 30_000;
+const reviewCache = new Map<string, { at: number; prs: ReviewPr[]; inflight?: Promise<ReviewPr[]> }>();
+
+/** Open PRs authored by OTHERS — the coworker review queue (a timeline, newest-updated first). A
+ *  lightweight META list only: no comments (so it stays fast for a large queue). Deeper info incl.
+ *  the deploy-preview URL comes from prDetail when you click into a specific PR. Cached per repo. */
+export function listReviewPrs(cwd: string): Promise<ReviewPr[]> {
+  const hit = reviewCache.get(cwd);
+  const refresh = () => {
+    const inflight = fetchReviewPrs(cwd)
+      .then((prs) => { reviewCache.set(cwd, { at: Date.now(), prs }); return prs; })
+      .catch((e) => {
+        const c = reviewCache.get(cwd);
+        if (c?.at) c.inflight = undefined; // had real data before — keep serving it, allow a later retry
+        else reviewCache.delete(cwd); // cold failure: drop the placeholder so the error surfaces, not an empty queue
+        throw e;
+      });
+    reviewCache.set(cwd, { at: hit?.at ?? 0, prs: hit?.prs ?? [], inflight });
+    return inflight;
+  };
+  if (!hit) return refresh(); // cold: must wait for the first fetch
+  if (Date.now() - hit.at > REVIEW_TTL_MS && !hit.inflight) void refresh().catch(() => {}); // stale: refresh in background
+  return Promise.resolve(hit.prs); // serve cached immediately
 }
 
 export type PrDetail = PrStatus & {
