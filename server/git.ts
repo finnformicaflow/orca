@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { cp, mkdir, rm, symlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { run } from "./run";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
@@ -111,13 +111,29 @@ export async function copyToWorktree(repoPath: string, worktreePath: string, pat
  * Symlink heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
  * checkout has none, and a per-worktree install is slow + disk-heavy. Deps resolve through the
  * link; safe while the branch hasn't changed its lockfile. Best-effort per path.
+ *
+ * `node_modules` is special-cased: rather than one symlink to the whole shared dir, each entry is
+ * linked individually, so the worktree gets its OWN `node_modules/.vite` (Vite's dep-optimize
+ * cache). A single shared symlink makes every concurrent preview write to one `.vite/deps` and
+ * stomp each other's versioned chunks — the browser then 504s on an "Outdated Optimize Dep" and
+ * the app renders a blank screen. Package dirs stay shared via the per-entry links; only Vite's
+ * caches (`.vite*`) are kept worktree-local.
  */
 export async function linkToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
   await Promise.all(paths.map(async (rel) => {
-    const link = join(worktreePath, rel);
-    await mkdir(dirname(link), { recursive: true }).catch(() => {});
-    await rm(link, { recursive: true, force: true }).catch(() => {}); // replace any stale entry
-    await symlink(join(repoPath, rel), link).catch(() => {});
+    const src = join(repoPath, rel);
+    const dest = join(worktreePath, rel);
+    await mkdir(dirname(dest), { recursive: true }).catch(() => {});
+    await rm(dest, { recursive: true, force: true }).catch(() => {}); // replace any stale entry
+    if (basename(rel) === "node_modules") {
+      await mkdir(dest, { recursive: true }).catch(() => {});
+      const entries = await readdir(src).catch(() => [] as string[]);
+      await Promise.all(entries
+        .filter((e) => !e.startsWith(".vite")) // keep Vite's optimize cache per-worktree, not shared
+        .map((e) => symlink(join(src, e), join(dest, e)).catch(() => {})));
+    } else {
+      await symlink(src, dest).catch(() => {});
+    }
   }));
 }
 

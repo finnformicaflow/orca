@@ -1,10 +1,11 @@
 // The core problem, as executable spec. Each test is named after a workflow step
 // (W1–W7). git runs against a scratch repo; gh is a PATH shim. No network.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
+import { changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort } from "../server/preview";
 import { run } from "../server/run";
@@ -210,6 +211,27 @@ test("R3 review-queue: a failed cold fetch surfaces the error (not a silent empt
   await setPrListFixture([{ number: 40, title: "Recovered", headRefName: "feat-r", url: "u40", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex" }, updatedAt: "2026-07-01T10:00:00Z" }]);
   const after = await listReviewPrs(repo3); // no stale placeholder cached, so it retries and recovers
   expect(after.map((p) => p.number)).toEqual([40]);
+});
+
+test("P1 preview isolation: node_modules links per-entry so each worktree owns its .vite cache", async () => {
+  const src = await mkdtemp(join(tmpdir(), "orca-src-"));
+  const wt = await mkdtemp(join(tmpdir(), "orca-wt-"));
+  // shared main-repo node_modules: a package + Vite's dep-optimize cache
+  await mkdir(join(src, "frontend/node_modules/somepkg"), { recursive: true });
+  await writeFile(join(src, "frontend/node_modules/somepkg/index.js"), "module.exports=1");
+  await mkdir(join(src, "frontend/node_modules/.vite/deps"), { recursive: true });
+
+  await linkToWorktree(src, wt, ["frontend/node_modules"]);
+
+  const nm = join(wt, "frontend/node_modules");
+  // a real directory, NOT one symlink to the shared dir — so .vite can be worktree-local
+  expect((await lstat(nm)).isSymbolicLink()).toBe(false);
+  expect((await lstat(nm)).isDirectory()).toBe(true);
+  // packages still resolve, via per-entry symlinks to the shared copy
+  expect(await readFile(join(nm, "somepkg/index.js"), "utf8")).toBe("module.exports=1");
+  // .vite is deliberately NOT linked — Vite writes a per-worktree cache instead of stomping the
+  // shared one (concurrent previews sharing .vite/deps 504 → blank screen).
+  await expect(lstat(join(nm, ".vite"))).rejects.toThrow();
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {
