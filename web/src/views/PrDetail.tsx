@@ -7,6 +7,7 @@ import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
 import { addPreviewLabel, useWorkstreams, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
+import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { ActionButton } from "@/components/ActionButton";
@@ -186,7 +187,7 @@ export function DiffView({ text }: { text: string }) {
               <span className="flex flex-1 items-center gap-2 overflow-hidden">
                 <span className="truncate">{f.path}</span>
                 <span className="ml-auto shrink-0">
-                  <span className="text-emerald-600">+{adds}</span> <span className="text-red-600">−{dels}</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">+{adds}</span> <span className="text-red-600 dark:text-red-400">−{dels}</span>
                 </span>
               </span>
             </AccordionTrigger>
@@ -194,7 +195,7 @@ export function DiffView({ text }: { text: string }) {
               <div className="overflow-x-auto border-t font-mono text-xs">
                 {f.hunks.map((h, j) => (
                   <div key={j}>
-                    <div className="bg-muted/30 px-3 py-0.5 text-cyan-700">{h.header}</div>
+                    <div className="bg-muted/30 px-3 py-0.5 text-cyan-700 dark:text-cyan-400">{h.header}</div>
                     <HunkView hunk={h} lang={f.lang} />
                   </div>
                 ))}
@@ -209,17 +210,22 @@ export function DiffView({ text }: { text: string }) {
 
 function HunkView({ hunk, lang }: { hunk: Hunk; lang: string }) {
   const code = hunk.lines.map((l) => l.text).join("\n");
+  // prism-react-renderer paints token colors inline, so a light theme is dark-on-dark in dark mode:
+  // swap to a dark syntax theme when the `.dark` class is on (useTheme re-renders on toggle).
+  useTheme();
+  const dark = document.documentElement.classList.contains("dark");
   return (
-    <Highlight theme={themes.github} code={code} language={lang}>
+    <Highlight theme={dark ? themes.vsDark : themes.github} code={code} language={lang}>
       {({ tokens, getLineProps, getTokenProps }) => (
         <>
           {tokens.map((lineTokens, i) => {
             const type = hunk.lines[i]?.type ?? "ctx";
-            const bg = type === "add" ? "bg-emerald-500/10" : type === "del" ? "bg-red-500/10" : "";
+            const bg = type === "add" ? "bg-emerald-500/10 dark:bg-emerald-500/25" : type === "del" ? "bg-red-500/10 dark:bg-red-500/25" : "";
+            const signColor = type === "add" ? "text-emerald-600 dark:text-emerald-400" : type === "del" ? "text-red-600 dark:text-red-400" : "text-muted-foreground";
             const sign = type === "add" ? "+" : type === "del" ? "−" : " ";
             return (
               <div key={i} {...getLineProps({ line: lineTokens, className: `flex px-2 ${bg}` })}>
-                <span className="text-muted-foreground w-4 shrink-0 select-none">{sign}</span>
+                <span className={`${signColor} w-4 shrink-0 select-none`}>{sign}</span>
                 <span className="flex-1 whitespace-pre">{lineTokens.map((token, k) => <span key={k} {...getTokenProps({ token })} />)}</span>
               </div>
             );
