@@ -108,6 +108,17 @@ function killWorktree(cwd: string): void {
   try { Bun.spawnSync(["pkill", "-f", `${cwd}.*node_modules`]); } catch { /* nothing matched */ }
 }
 
+/** Kill a process AND all its descendants (leaves first). The `sh -lc` preview wrapper backgrounds
+ *  a reseed subshell (`( until curl … ; do sleep 2; done; invite… ) &`) whose argv has no worktree
+ *  path or `node_modules` token — so neither proc.kill() (the sh only) nor killWorktree (argv match)
+ *  reaps it, and it polls a dead port forever after a stop/restart. Walking the pid tree catches it.
+ *  macOS Bun.spawn has no process-group option, hence the manual pgrep walk. */
+export function killTree(pid: number): void {
+  const kids = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().trim().split("\n").filter(Boolean);
+  for (const k of kids) killTree(Number(k));
+  try { process.kill(pid); } catch { /* already gone */ }
+}
+
 export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
   stop(key); // reap tracked procs + orphaned servers for this worktree so we never serve stale code
   const ports: Record<string, number> = {};
@@ -158,7 +169,8 @@ export async function status(key: string): Promise<SvcStatus[]> {
 
 export function stop(key: string): void {
   for (const s of previews.get(key) ?? []) {
-    try { s.proc?.kill(); } catch { /* already gone / adopted, no handle */ }
+    if (s.proc?.pid) { try { killTree(s.proc.pid); } catch { /* gone */ } } // reap the sh wrapper + ALL its children (nest/vite + the backgrounded reseed loop)
+    else { try { s.proc?.kill(); } catch { /* already gone / adopted, no handle */ } }
     killPort(s.port); // precise: reap the actual listener the sh-wrapper kill (or adoption) leaves behind
     if (s.logFd !== undefined) { try { closeSync(s.logFd); } catch { /* already closed */ } }
   }

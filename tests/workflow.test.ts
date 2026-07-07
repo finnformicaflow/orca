@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
-import { freePort } from "../server/preview";
+import { freePort, killTree } from "../server/preview";
 import { run } from "../server/run";
 import {
   attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
@@ -245,6 +245,24 @@ test("P1 preview isolation: node_modules links per-entry so each worktree owns i
   // .vite is deliberately NOT linked — Vite writes a per-worktree cache instead of stomping the
   // shared one (concurrent previews sharing .vite/deps 504 → blank screen).
   await expect(lstat(join(nm, ".vite"))).rejects.toThrow();
+});
+
+test("P2 preview cleanup: killTree reaps the whole subtree incl. a backgrounded loop", async () => {
+  // Mimic the preview's `sh -lc` wrapper: a parent shell with a BACKGROUNDED child (the reseed
+  // poll loop, `… &`) plus a foreground child. proc.kill() hits only the shell, orphaning the
+  // backgrounded loop — which is exactly the 23h "sleep 2" leak. killTree must get all of them.
+  const proc = Bun.spawn(["sh", "-lc", "sleep 30 & sleep 30"]);
+  let kids: number[] = [];
+  for (let i = 0; i < 20 && kids.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    kids = Bun.spawnSync(["pgrep", "-P", String(proc.pid)]).stdout.toString().trim().split("\n").filter(Boolean).map(Number);
+  }
+  expect(kids.length).toBeGreaterThan(0); // children exist
+
+  killTree(proc.pid);
+  await new Promise((r) => setTimeout(r, 250));
+  const alive = [proc.pid, ...kids].filter((p) => { try { process.kill(p, 0); return true; } catch { return false; } });
+  expect(alive).toEqual([]); // wrapper AND every descendant reaped
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {

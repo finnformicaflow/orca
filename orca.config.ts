@@ -30,7 +30,11 @@ const config: OrcaConfig = {
         // is actually answering so the invite's MikroORM/cache work doesn't race the backend's own
         // boot (a concurrent metadata regen breaks MikroORM init — see invite-user-aws.sh). Edit the
         // org list to match the tenants you test.
-        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && { ( until curl -s -o /dev/null http://localhost:{port} 2>/dev/null; do sleep 2; done; for org in demo jeremiah flow; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
+        // The reseed poll is BOUNDED (~90×2s ≈ 3min) not `until` — an unbounded loop orphaned by a
+        // backend that never boots (or a hard bridge kill) polls a dead port forever (a 23h "sleep 2"
+        // leak we hit). It gives up if the backend doesn't come up in time. (Orca also reaps the whole
+        // preview subtree on stop via killTree — this is the belt to that suspenders.)
+        { name: "backend", command: "cd backend && bash scripts/migrate-local.sh && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
