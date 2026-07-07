@@ -67,6 +67,21 @@ describe("swimlane card details", () => {
     expect(copied).toBe("enrich-cards-1");
   });
 
+  test("a PR card shows a copy-link icon that copies the PR url", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount(base);
+    const btn = container!.querySelector<HTMLElement>('button[title="Copy PR link"]')!;
+    expect(btn).not.toBeNull();
+    await act(async () => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    expect(copied).toBe("https://x/7");
+  });
+
+  test("a local card with no PR has no copy-link icon", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
+    expect(container!.querySelector('button[title="Copy PR link"]')).toBeNull();
+  });
+
   test("a Done card shows neither the copy-name control nor the diffstat", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 5, deletions: 5 };
     await mount({ ...base, lane: "DONE", mergedAt: new Date().toISOString() });
