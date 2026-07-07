@@ -177,6 +177,10 @@ export async function mergePr(cwd: string, pr: number): Promise<void> {
   await gh(cwd, "pr", "merge", String(pr), "--squash");
 }
 
+/** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. */
+export const enableAutoMerge = (cwd: string, pr: number) =>
+  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash");
+
 export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
   const raw = await gh(cwd, "pr", "view", String(pr),
     "--json", "state,mergeable,reviewDecision,statusCheckRollup");

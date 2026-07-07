@@ -165,6 +165,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     await gh.markReady(repo.repoPath, body.pr);
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/prs/auto-merge") {
+    await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/prs/draft") {
     await gh.convertToDraft(repo.repoPath, body.pr);
     return json({ ok: true });

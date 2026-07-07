@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { changeSummary, createWorktree, listWorktrees, removeWorktree } from "../server/git";
-import { convertToDraft, createPr, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort } from "../server/preview";
 import { run } from "../server/run";
 import {
@@ -151,6 +151,11 @@ test("W8 draft-toggle: markReady/convertToDraft shell out to `gh pr ready` (± -
   await expect(convertToDraft(repo, 1)).resolves.toBeDefined();
 });
 
+test("W9 auto-merge: enableAutoMerge shells out to `gh pr merge --auto` (queues the merge for when CI/reviews pass)", async () => {
+  // Unlike mergePr, this doesn't require the PR to be green *now* — GitHub holds it until requirements pass.
+  await expect(enableAutoMerge(repo, 1)).resolves.toBeDefined();
+});
+
 test("S1 source-of-truth: listWorktrees returns live worktrees under the root", async () => {
   const root = join(repo, ".worktrees");
   await createWorktree(repo, root, "feat-list", "main");
@@ -231,20 +236,20 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
     expect(prMenuActions({ prUrl: "x", ciStatus: "failing" })).toEqual([]);
   });
 
-  test("open ready PR → draft toggle + copy link, plus preview when unlabeled", () => {
-    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "addPreview", "copyLink"]);
+  test("open ready PR → draft toggle + auto-merge + copy link, plus preview when unlabeled", () => {
+    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "autoMerge", "addPreview", "copyLink"]);
   });
 
-  test("draft PR offers Mark ready instead of Move to draft", () => {
+  test("draft PR offers Mark ready instead of Move to draft, and no auto-merge (gh rejects it on a draft)", () => {
     expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "copyLink"]);
   });
 
   test("conflicts and failing CI add their fix actions, in order", () => {
     expect(prMenuActions({ prNumber: 5, mergeable: "CONFLICTING", ciStatus: "failing", previewUrl: "p", prUrl: "u" }))
-      .toEqual(["moveToDraft", "resolveConflicts", "fixCi", "copyLink"]);
+      .toEqual(["moveToDraft", "autoMerge", "resolveConflicts", "fixCi", "copyLink"]);
   });
 
   test("no prUrl → no Copy link (nothing to copy)", () => {
-    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft"]);
+    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge"]);
   });
 });
