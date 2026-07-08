@@ -86,7 +86,9 @@ function RepoFilter() {
 function UsageMeter() {
   const [usage, setUsage] = useState<Usage | null>(null);
   useEffect(() => {
-    const load = () => void api.usage().then(setUsage).catch(() => {});
+    // Keep the last value on a transient null/failure (the endpoint rate-limits) so the widget
+    // doesn't flicker out; the server also serves last-good, this is the client-side belt.
+    const load = () => void api.usage().then((u) => { if (u) setUsage(u); }).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);

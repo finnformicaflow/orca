@@ -45,15 +45,27 @@ async function readToken(): Promise<string | null> {
   return null;
 }
 
-/** Current subscription usage, or null when not logged in / the call fails (widget just hides). */
+// Cache the last successful read. The OAuth usage endpoint is flaky (transient 5xx / rate-limits /
+// timeouts) and a single failure used to null out the response, making the whole header widget
+// vanish and reappear. Serving the last-good value on any failure keeps it steady; we only ever
+// return null before the first success (genuinely logged out / never fetched).
+let lastGood: Usage | null = null;
+
+/** Current subscription usage. Returns the last successful value on a transient failure so the
+ *  widget doesn't flicker; null only until the first success (not logged in / never fetched). */
 export async function usage(): Promise<Usage | null> {
-  const token = await readToken();
-  if (!token) return null;
   try {
-    const r = await fetch(USAGE_URL, { headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" } });
-    if (!r.ok) return null;
-    return shapeUsage(await r.json());
-  } catch {
-    return null;
+    const token = await readToken();
+    if (!token) { console.error("[usage] no Claude token found (credentials file / Keychain)"); return lastGood; }
+    const r = await fetch(USAGE_URL, {
+      headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) { console.error(`[usage] upstream HTTP ${r.status}`); return lastGood; }
+    lastGood = shapeUsage(await r.json());
+    return lastGood;
+  } catch (e) {
+    console.error("[usage] fetch failed:", e instanceof Error ? e.message : e);
+    return lastGood;
   }
 }
