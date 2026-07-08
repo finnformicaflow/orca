@@ -21,12 +21,15 @@ export const apiFake = {
   // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.claudePrompts = []; },
+  // Claude usage served by api.usage (the header meter) — null hides the widget (default).
+  usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null } },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.claudePrompts = []; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
   api: {
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
+    usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => apiFake.prsData,
     mergedPrs: async () => [],
