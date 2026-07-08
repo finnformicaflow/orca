@@ -6,8 +6,8 @@ import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  deriveKanbanState, followUpPrompt, launchPrompt, resolveCiPrompt, resolveConflictsPrompt,
-  slackPrompt, titleFromPrompt, withAttachments,
+  addressReviewPrompt, deriveKanbanState, followAction, followUpPrompt, launchPrompt, resolveCiPrompt,
+  resolveConflictsPrompt, slackPrompt, titleFromPrompt, withAttachments,
 } from "./workstream";
 
 const KEY = "orca.enrichment";
@@ -35,7 +35,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
-  prompt?: string; title?: string; promoted?: boolean; sessionId?: string;
+  prompt?: string; title?: string; promoted?: boolean; sessionId?: string; following?: boolean;
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -106,9 +106,50 @@ export async function refresh() {
       if (a.sessionId && e.sessionId !== a.sessionId) patchEnrich(rl.repo, a.branch, { sessionId: a.sessionId });
     }
   }
+  runFollowers(); // auto-drive any followed PRs off the status we just polled
   notify();
 }
 setInterval(() => void refresh(), 8_000);
+
+// ---- active PR following ----
+// A "followed" card is on autopilot: each poll, if its PR has a blocker (conflict / failing CI /
+// requested changes) and no agent is already working the branch, Orca fires the same action you'd
+// click. `followHandled` records the condition last acted on so it fires once per distinct state —
+// a genuinely new failure (state changed then recurred) re-triggers, but a steady blocker doesn't
+// stack runs. Followed rows fire from `live` (not the assembled rows) so this stays poll-driven.
+const followHandled = new Map<string, string>(); // repo::branch -> last condition acted on ("ok" when clear)
+
+/** Toggle whether Orca actively follows a PR's card (auto-fixing conflicts/CI/review). */
+export function toggleFollow(row: Row) {
+  patchEnrich(row.repo, row.branch, { following: !enrichOf(row.repo, row.branch).following });
+}
+
+function runFollowers() {
+  for (const rl of live) {
+    const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
+    for (const pr of rl.prs) {
+      const key = ekey(rl.repo, pr.branch);
+      const e = enrichOf(rl.repo, pr.branch);
+      if (!e.following) { followHandled.delete(key); continue; }
+      if (wtByBranch.get(pr.branch)?.agentStatus === "running") continue; // let the current run finish
+      const action = followAction(pr);
+      const sig = action ?? "ok";
+      if (followHandled.get(key) === sig) continue; // already handled this exact state
+      followHandled.set(key, sig);
+      if (!action) continue;
+      const wt = wtByBranch.get(pr.branch);
+      const row: Row = {
+        repo: rl.repo, hasRemote: rl.hasRemote, branch: pr.branch, title: pr.title, prompt: e.prompt ?? "",
+        lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
+        prNumber: pr.number, prUrl: pr.url, following: true,
+      };
+      const fire = action === "resolveConflicts" ? resolveConflicts(row)
+        : action === "fixCi" ? fixCi(row)
+        : followUp(row, addressReviewPrompt({ prNumber: pr.number, branch: pr.branch }));
+      void fire.catch(() => {});
+    }
+  }
+}
 
 // ---- assembled rows ----
 export type Lane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
@@ -135,6 +176,7 @@ export type Row = {
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
+  following?: boolean;
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -184,6 +226,7 @@ export function useWorkstreams(): Row[] {
         mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
+        following: e.following,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };

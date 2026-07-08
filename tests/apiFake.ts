@@ -23,12 +23,18 @@ export const apiFake = {
   previewSvcs: [] as unknown[],
   // When set, api.previewMaster rejects with it — the failed-start path (Retry + Log popover).
   previewMasterError: null as null | string,
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; },
+  // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
+  // which action ran by matching the prompt text.
+  claudePrompts: [] as string[],
+  // Claude usage served by api.usage (the header meter) — null hides the widget (default).
+  usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null } },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
   api: {
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
+    usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => apiFake.prsData,
     mergedPrs: async () => [],
@@ -47,5 +53,9 @@ mock.module("@/api", () => ({
     previewStop: async () => ({ ok: true }),
     previewStatus: async () => apiFake.previewSvcs,
     summary: async () => apiFake.summaryData,
+    adopt: async (_repo: string, branch: string) => {
+      const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
+    },
+    claude: async (_repo: string, key: string, prompt: string) => { apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt); return { status: "ok" }; },
   },
 }));

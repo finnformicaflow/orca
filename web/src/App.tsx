@@ -1,8 +1,11 @@
+import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
 import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
+import { api } from "./api";
+import type { Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { TestMasterMenu } from "./views/PreviewControl";
@@ -28,6 +31,7 @@ export function App() {
         {topLevel && <Nav active={route.name} />}
         <div className="ml-auto flex items-center gap-2">
           {topLevel && <TestMasterMenu />}
+          <UsageMeter />
           {topLevel && <RepoFilter />}
           <ProfileMenu />
         </div>
@@ -75,6 +79,37 @@ function RepoFilter() {
         {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
       </SelectContent>
     </Select>
+  );
+}
+
+// Claude subscription limits (top-right): how much of the 5-hour rolling window and the weekly
+// allowance you've burned, à la the CLI statusline. Polls the bridge (`/api/usage`) each minute;
+// renders nothing when you're not on a Claude.ai plan / not logged in (the endpoint returns null).
+function UsageMeter() {
+  const [usage, setUsage] = useState<Usage | null>(null);
+  useEffect(() => {
+    const load = () => void api.usage().then(setUsage).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+  if (!usage) return null;
+  const bar = (label: string, w: Usage["fiveHour"]) => {
+    // amber past 75%, red past 90% — a glanceable "how close am I" without opening /usage.
+    const color = w.utilization >= 90 ? "text-destructive" : w.utilization >= 75 ? "text-amber-600 dark:text-amber-400" : "text-foreground";
+    const resets = w.resetsAt ? `, resets ${new Date(w.resetsAt).toLocaleString()}` : "";
+    return (
+      <span title={`Claude ${label} usage: ${w.utilization}%${resets}`}>
+        {label} <span className={`font-medium ${color}`}>{w.utilization}%</span>
+      </span>
+    );
+  };
+  return (
+    <div className="text-muted-foreground hidden items-center gap-2 text-xs sm:flex" aria-label="Claude usage limits">
+      {bar("5h", usage.fiveHour)}
+      <span className="opacity-40">·</span>
+      {bar("wk", usage.sevenDay)}
+    </div>
   );
 }
 
