@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  merge, promote, resolveConflicts, sendSlack, staleHours, type Row,
+  merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, type Row,
 } from "../store";
 import { attachCommand, prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -81,6 +81,16 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
             <Button size="sm" variant="ghost">Actions <ChevronDown className="size-3.5" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[12rem]">
+            {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
+                conflicts / fix CI / address review comments as they appear. */}
+            {isPr && (
+              <>
+                <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}>
+                  Follow PR (auto-fix)
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
             {isLocalLane && (row.hasRemote
               ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />

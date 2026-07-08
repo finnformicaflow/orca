@@ -183,6 +183,32 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">): st
   ].join(" ");
 }
 
+/** Instruction for Claude to address a PR's requested changes / review comments, then push. */
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">): string {
+  return [
+    `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
+    `Read them (\`gh pr view ${ws.prNumber} --comments\`), address every point,`,
+    `then commit and push.`,
+  ].join(" ");
+}
+
+// Active PR following: when a card is "followed", Orca watches its polled status and launches the
+// matching agent action itself — the same buttons, fired for you the moment a blocker appears.
+export type FollowAction = "resolveConflicts" | "fixCi" | "addressReview";
+
+/** The action a followed PR needs right now, or null if there's nothing to do. Priority mirrors what
+ *  blocks progress most: a conflict stops any merge, then failing CI, then a reviewer asking for
+ *  changes. A draft, pending CI, or a green/approved PR needs no action. */
+export function followAction(
+  s: { isDraft?: boolean; mergeable?: Mergeable; ciStatus?: CiStatus; reviewStatus?: ReviewStatus },
+): FollowAction | null {
+  if (s.isDraft) return null; // a draft isn't up for review yet — leave it alone
+  if (s.mergeable === "CONFLICTING") return "resolveConflicts";
+  if (s.ciStatus === "failing") return "fixCi";
+  if (s.reviewStatus === "changes_requested") return "addressReview";
+  return null;
+}
+
 /** Derive a short human title from text's first non-empty line (no AI): strip markdown,
  *  drop trailing punctuation, truncate on a word boundary, capitalise. Used for both the
  *  provisional title from a prompt and the final title from the agent's response text. */

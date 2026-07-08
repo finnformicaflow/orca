@@ -18,7 +18,10 @@ export const apiFake = {
   prsData: [] as unknown[],
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; },
+  // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
+  // which action ran by matching the prompt text.
+  claudePrompts: [] as string[],
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.claudePrompts = []; },
 };
 
 mock.module("@/api", () => ({
@@ -37,5 +40,9 @@ mock.module("@/api", () => ({
     previewStop: async () => ({ ok: true }),
     previewStatus: async () => [],
     summary: async () => apiFake.summaryData,
+    adopt: async (_repo: string, branch: string) => {
+      const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
+    },
+    claude: async (_repo: string, key: string, prompt: string) => { apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt); return { status: "ok" }; },
   },
 }));
