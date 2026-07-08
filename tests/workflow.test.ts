@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
+import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
@@ -281,6 +282,41 @@ test("P2 preview cleanup: killTree reaps the whole subtree incl. a backgrounded 
   await new Promise((r) => setTimeout(r, 250));
   const alive = [proc.pid, ...kids].filter((p) => { try { process.kill(p, 0); return true; } catch { return false; } });
   expect(alive).toEqual([]); // wrapper AND every descendant reaped
+});
+
+// A fake bridge that just holds a port, spawned from a path we control so its argv either does or
+// doesn't look like an Orca bridge (server/index.ts). Waits until it's actually bound.
+const LISTENER = "const p=Number(process.argv[2]);Bun.serve({port:p,fetch:()=>new Response('ok')});await new Promise(()=>{});";
+async function spawnListener(scriptPath: string, port: number): Promise<Bun.Subprocess> {
+  await writeFile(scriptPath, LISTENER);
+  const proc = Bun.spawn(["bun", scriptPath, String(port)], { stdout: "ignore", stderr: "ignore" });
+  for (let i = 0; i < 60 && (await portFree(port)); i++) await new Promise((r) => setTimeout(r, 50));
+  return proc;
+}
+
+test("N1 bridge-port reclaim: a stale bridge on the API port is killed so a fresh one can bind", async () => {
+  // The "Test master 404" bug: a bridge from another checkout squatted the API port, so the fresh
+  // bridge lost the bind and the UI proxied to old, routeless code. Reclaim must free the port.
+  const dir = await mkdtemp(join(tmpdir(), "orca-bridge-"));
+  await mkdir(join(dir, "server"), { recursive: true });
+  const port = await freePort([20_000, 60_000]);
+  await spawnListener(join(dir, "server", "index.ts"), port); // argv → …/server/index.ts (looks like a bridge)
+
+  expect(await portFree(port)).toBe(false); // squatting
+  expect(reclaimBridgePort(port)).toBe(true); // matched an Orca bridge → killed it
+  expect(await waitForPortFree(port)).toBe(true); // …and the port is now bindable
+});
+
+test("N2 bridge-port reclaim: an unrelated service on the port is left alone", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "orca-decoy-"));
+  const port = await freePort([20_000, 60_000]);
+  const proc = await spawnListener(join(dir, "decoy.ts"), port); // argv does NOT look like a bridge
+  try {
+    expect(reclaimBridgePort(port)).toBe(false); // not an Orca bridge → don't touch it
+    expect(await portFree(port)).toBe(false); // still bound
+  } finally {
+    killTree(proc.pid!); // it wasn't reaped by reclaim, so clean it up
+  }
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {
