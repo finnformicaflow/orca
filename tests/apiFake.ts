@@ -22,7 +22,7 @@ export const apiFake = {
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
-  usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null } },
+  usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
   reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.claudePrompts = []; this.usageData = null; },
 };
 

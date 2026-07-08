@@ -51,8 +51,24 @@ test("renders nothing when not logged in / not on a Claude.ai plan (usage is nul
   expect(meter()).toBeNull();
 });
 
-test("shapeUsage clamps/rounds utilization and defaults missing windows to 0%", () => {
+test("shows extra-usage spend as money in the plan's currency", async () => {
+  apiFake.usageData = {
+    fiveHour: { utilization: 20, resetsAt: null }, sevenDay: { utilization: 30, resetsAt: null },
+    extra: { usedMinor: 8535, limitMinor: 20000, currency: "GBP", exponent: 2, utilization: 43 },
+  };
+  await mount();
+  const text = meter()?.textContent ?? "";
+  expect(text).toContain("extra");
+  expect(text).toContain("£85.35"); // 8535 minor / 10^2, GBP → pound-formatted
+});
+
+test("shapeUsage clamps/rounds utilization, defaults windows to 0%, and extracts extra-usage spend", () => {
   expect(shapeUsage({ five_hour: { utilization: 37.6, resets_at: "2026-07-08T20:00:00Z" }, seven_day: { utilization: 120 } }))
-    .toEqual({ fiveHour: { utilization: 38, resetsAt: "2026-07-08T20:00:00Z" }, sevenDay: { utilization: 100, resetsAt: null } });
-  expect(shapeUsage(null)).toEqual({ fiveHour: { utilization: 0, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null } });
+    .toEqual({ fiveHour: { utilization: 38, resetsAt: "2026-07-08T20:00:00Z" }, sevenDay: { utilization: 100, resetsAt: null }, extra: null });
+  expect(shapeUsage(null)).toEqual({ fiveHour: { utilization: 0, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null });
+
+  // enabled extra_usage → surfaced in minor units + currency; disabled → null (widget skips it)
+  const withExtra = shapeUsage({ extra_usage: { is_enabled: true, used_credits: 8535, monthly_limit: 20000, currency: "GBP", decimal_places: 2, utilization: 42.7, disabled_reason: null } });
+  expect(withExtra.extra).toEqual({ usedMinor: 8535, limitMinor: 20000, currency: "GBP", exponent: 2, utilization: 43 });
+  expect(shapeUsage({ extra_usage: { is_enabled: false } }).extra).toBeNull();
 });

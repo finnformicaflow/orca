@@ -5,7 +5,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
-import type { Usage } from "../../server/usage";
+import type { ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { Review } from "./views/Review";
@@ -92,22 +92,58 @@ function UsageMeter() {
     return () => clearInterval(t);
   }, []);
   if (!usage) return null;
-  const bar = (label: string, w: Usage["fiveHour"]) => {
-    // amber past 75%, red past 90% — a glanceable "how close am I" without opening /usage.
-    const color = w.utilization >= 90 ? "text-destructive" : w.utilization >= 75 ? "text-amber-600 dark:text-amber-400" : "text-foreground";
-    const resets = w.resetsAt ? `, resets ${new Date(w.resetsAt).toLocaleString()}` : "";
-    return (
-      <span title={`Claude ${label} usage: ${w.utilization}%${resets}`}>
-        {label} <span className={`font-medium ${color}`}>{w.utilization}%</span>
-      </span>
-    );
-  };
   return (
-    <div className="text-muted-foreground hidden items-center gap-2 text-xs sm:flex" aria-label="Claude usage limits">
-      {bar("5h", usage.fiveHour)}
-      <span className="opacity-40">·</span>
-      {bar("wk", usage.sevenDay)}
+    <div className="hidden items-center gap-1 sm:flex" aria-label="Claude usage limits">
+      <UsagePill label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
+      <UsagePill label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
+      {usage.extra && <SpendPill extra={usage.extra} />}
     </div>
+  );
+}
+
+// Traffic-light zone by how much of the allowance is burned: green (fine) → amber (caution, ≥75%)
+// → red (the "red-zone", ≥90%). Tints the whole pill so it's glanceable at the edge of vision.
+function usageZone(pct: number): "ok" | "warn" | "danger" {
+  return pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok";
+}
+const ZONE_CLASS: Record<"ok" | "warn" | "danger", string> = {
+  ok: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  warn: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  danger: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-400",
+};
+const pillClass = (pct: number) =>
+  `inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs ${ZONE_CLASS[usageZone(pct)]}`;
+
+function UsagePill({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
+  const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
+  return (
+    <span className={pillClass(pct)} title={`Claude ${label} usage: ${pct}%${resets}`}>
+      <span className="opacity-60">{label}</span>
+      <span className="font-semibold tabular-nums">{pct}%</span>
+    </span>
+  );
+}
+
+/** Format money carried as minor units (+ exponent) in its own currency, e.g. 8535/2/GBP → "£85.35". */
+function formatMoney(minor: number, exponent: number, currency: string): string {
+  const amount = minor / 10 ** exponent;
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: exponent }).format(amount);
+  } catch {
+    return `${amount.toFixed(exponent)} ${currency}`; // unknown currency code → plain number + code
+  }
+}
+
+// Pay-as-you-go spend this month, shown as actual money (£/$/€…) and coloured by how much of the
+// extra-usage cap is used — same red-zone treatment as the rate-limit pills.
+function SpendPill({ extra }: { extra: ExtraUsage }) {
+  const used = formatMoney(extra.usedMinor, extra.exponent, extra.currency);
+  const limit = formatMoney(extra.limitMinor, extra.exponent, extra.currency);
+  return (
+    <span className={pillClass(extra.utilization)} title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
+      <span className="opacity-60">extra</span>
+      <span className="font-semibold tabular-nums">{used}</span>
+    </span>
   );
 }
 
