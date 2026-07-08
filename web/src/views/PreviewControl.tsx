@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
-import { draftRepoAtom } from "@/lib/atoms";
 import { Check, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import type { PreviewSvc } from "../api";
 import { baseBranch, previewStatus, stopPreview, testLocally, testMaster, useRepos, type Row } from "../store";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -128,42 +127,85 @@ export function PreviewControl({ row }: { row: Row }) {
   );
 }
 
-/** "Test master": spin up a preview of the repo's base branch itself (latest, in a detached
- *  checkout) to sanity-check whether a bug reproduces on a clean main. Lives at the top of the
- *  board's Local lane, scoped to the same repo as the New-draft composer. Same lifecycle/visuals as
- *  the per-card PreviewControl, just keyed by the base worktree rather than a row. */
-export function TestMaster() {
-  const repos = useRepos();
-  const draftRepo = useAtomValue(draftRepoAtom);
-  const repo = draftRepo || repos[0]?.name || "";
-  const base = repo ? baseBranch(repo) : "main";
-  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(undefined, () => testMaster(repo));
-  if (!repo) return null;
-
-  if (!active && !busy) {
-    return (
-      <div className="w-full space-y-1">
-        <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — expand the log below" : `Spin up a preview of the latest ${base}`}>
-          {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
-          {error ? `Retry ${base} test` : `Test ${base}`}
-        </Button>
-        {error && <ErrorLog error={error} />}
-      </div>
-    );
-  }
+// Small "Log" button that opens the crashed service's captured output in a popover (the menu is
+// tight, so — unlike the card's inline <details> — the log floats above it). Copy button included.
+function LogPopover({ error }: { error: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { /* clipboard unavailable */ }
+  };
   return (
-    <div className="inline-flex w-full">
-      {ready && open ? (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open the ${base} preview on :${open.port}`}>
-          <ExternalLink className="size-3.5" /> Open {base}
-        </Button>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="sm" variant="ghost" className="text-destructive h-8 px-2" title="Show the preview log"><TriangleAlert className="size-3.5" /> Log</Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96">
+        <div className="relative">
+          <button onClick={() => void copy()} title="Copy log" className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </button>
+          <pre className="bg-muted max-h-64 overflow-auto rounded-md p-2 pr-8 text-xs whitespace-pre-wrap">{error}</pre>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** One repo's row in the Test-master menu: its base branch + a Test/Starting/Open·Stop control
+ *  (and, on failure, Retry + a Log popover). Each row owns an independent preview lifecycle keyed by
+ *  that repo's base worktree. */
+export function TestMasterRow({ repo }: { repo: string }) {
+  const base = baseBranch(repo);
+  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(undefined, () => testMaster(repo));
+
+  return (
+    <div className="space-y-1">
+      <div className="text-muted-foreground text-xs font-medium">{repo}</div>
+      {!active && !busy ? (
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="outline" className="flex-1 justify-center" onClick={() => void start()} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
+            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+            {error ? `Retry ${base}` : `Test ${base}`}
+          </Button>
+          {error && <LogPopover error={error} />}
+        </div>
       ) : (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
-          <Loader2 className="size-3.5 animate-spin" /> Starting {base}… {starting && elapsed > 0 ? `${elapsed}s` : ""}
-        </Button>
+        <div className="inline-flex w-full">
+          {ready && open ? (
+            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open the ${base} preview on :${open.port}`}>
+              <ExternalLink className="size-3.5" /> Open {base}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
+              <Loader2 className="size-3.5 animate-spin" /> Starting… {starting && elapsed > 0 ? `${elapsed}s` : ""}
+            </Button>
+          )}
+          <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+        </div>
       )}
-      <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
     </div>
+  );
+}
+
+/** Top-right "Test master" menu: a flask-icon trigger that opens a popover with one row per repo,
+ *  each able to spin up a preview of that repo's base branch itself — to sanity-check whether a bug
+ *  reproduces on a clean main, without a feature branch in the way. */
+export function TestMasterMenu() {
+  const repos = useRepos();
+  if (repos.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="icon" variant="outline" className="size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
+          <FlaskConical className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 space-y-3">
+        <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Test master</div>
+        {repos.map((r) => <TestMasterRow key={r.name} repo={r.name} />)}
+      </PopoverContent>
+    </Popover>
   );
 }
 

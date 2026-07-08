@@ -18,7 +18,12 @@ export const apiFake = {
   prsData: [] as unknown[],
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; },
+  // Preview services served by api.previewMaster (on start) + api.previewStatus (the poll) — tests set
+  // these to drive the Test-master menu through its ready state.
+  previewSvcs: [] as unknown[],
+  // When set, api.previewMaster rejects with it — the failed-start path (Retry + Log popover).
+  previewMasterError: null as null | string,
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; },
 };
 
 mock.module("@/api", () => ({
@@ -34,8 +39,13 @@ mock.module("@/api", () => ({
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {
       apiFake.calls.push(`discard:${branch}`); if (branch) apiFake.worktrees.delete(branch); return { ok: true };
     },
+    previewMaster: async (repo: string) => {
+      apiFake.calls.push(`previewMaster:${repo}`);
+      if (apiFake.previewMasterError) throw new Error(apiFake.previewMasterError);
+      return { worktreePath: `/wt/${repo}-main`, svcs: apiFake.previewSvcs };
+    },
     previewStop: async () => ({ ok: true }),
-    previewStatus: async () => [],
+    previewStatus: async () => apiFake.previewSvcs,
     summary: async () => apiFake.summaryData,
   },
 }));

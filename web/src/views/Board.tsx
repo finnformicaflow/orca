@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewControl, TestMaster } from "./PreviewControl";
+import { PreviewControl } from "./PreviewControl";
 
 const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
@@ -65,7 +65,7 @@ export function Board() {
                 </div>
                 {!isCollapsed && (
                   <div className="space-y-2 py-2">
-                    {lane === "LOCAL" && <><NewDraft /><TestMaster /></>}
+                    {lane === "LOCAL" && <NewDraft />}
                     {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
                   </div>
                 )}
@@ -87,7 +87,7 @@ export function Board() {
               {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
-              {lane === "LOCAL" && <><NewDraft /><TestMaster /></>}
+              {lane === "LOCAL" && <NewDraft />}
               {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
             </div>
           </div>
