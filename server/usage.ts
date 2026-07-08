@@ -5,15 +5,28 @@ import { homedir } from "os";
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
 export type UsageWindow = { utilization: number; resetsAt: string | null };
-export type Usage = { fiveHour: UsageWindow; sevenDay: UsageWindow };
+// Pay-as-you-go "extra usage" spend (only present when you've enabled it on your plan). Money is
+// carried in MINOR units (pence/cents) + exponent so the client formats it exactly, no float drift.
+export type ExtraUsage = { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number };
+export type Usage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null };
 
-/** Shape the raw endpoint payload into the two windows we surface (percent, rounded). Pure. */
+/** Shape the raw endpoint payload into the windows + extra-usage spend we surface. Pure. */
 export function shapeUsage(raw: any): Usage {
   const win = (w: any): UsageWindow => ({
     utilization: Math.max(0, Math.min(100, Math.round(Number(w?.utilization) || 0))),
     resetsAt: typeof w?.resets_at === "string" ? w.resets_at : null,
   });
-  return { fiveHour: win(raw?.five_hour), sevenDay: win(raw?.seven_day) };
+  // extra_usage: { is_enabled, monthly_limit, used_credits (both minor units), currency,
+  // decimal_places, utilization, disabled_reason }. Only surface it when actually enabled.
+  const eu = raw?.extra_usage;
+  const extra: ExtraUsage | null = eu && eu.is_enabled && !eu.disabled_reason ? {
+    usedMinor: Math.max(0, Math.round(Number(eu.used_credits) || 0)),
+    limitMinor: Math.max(0, Math.round(Number(eu.monthly_limit) || 0)),
+    currency: typeof eu.currency === "string" ? eu.currency : "USD",
+    exponent: Number.isInteger(eu.decimal_places) ? eu.decimal_places : 2,
+    utilization: Math.max(0, Math.min(100, Math.round(Number(eu.utilization) || 0))),
+  } : null;
+  return { fiveHour: win(raw?.five_hour), sevenDay: win(raw?.seven_day), extra };
 }
 
 // Reads the Claude Code OAuth access token from wherever the CLI stored it: ~/.claude/.credentials.json
