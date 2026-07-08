@@ -11,7 +11,7 @@ import { freePort, killTree } from "../server/preview";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
-  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  prMenuActions, promptFor, resolveConflictsPrompt, sanitizeAiTitle, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -48,6 +48,15 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");
   // attach command drops you into a session continuing the headless run
   expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
+});
+
+test("sanitizeAiTitle: keeps short names, strips preambles/quotes, rejects sentences", () => {
+  expect(sanitizeAiTitle("Dark Mode Toggle")).toBe("Dark Mode Toggle");
+  expect(sanitizeAiTitle('Here\'s a title: "Add Usage Meter"')).toBe("Add Usage Meter"); // preamble + quotes stripped
+  expect(sanitizeAiTitle("add dark mode.")).toBe("Add dark mode"); // capitalised, trailing punctuation dropped
+  // a whole-sentence reply isn't a title → null so the caller falls back to the prompt-derived title
+  expect(sanitizeAiTitle("This task adds a dark mode toggle to the settings page for users")).toBeNull();
+  expect(sanitizeAiTitle("")).toBeNull();
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

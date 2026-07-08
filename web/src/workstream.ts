@@ -229,6 +229,25 @@ export function titleFromText(text: string): string {
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
 
+/** Clean + VALIDATE a model's title suggestion. The summariser sometimes ignores "2–5 words" and
+ *  replies with a whole sentence (or a "Here's a title:" preamble); we'd rather fall back to a
+ *  prompt-derived title than show that. Returns a tidy title, or null when the reply doesn't look
+ *  like a short name (too many words / too long) so the caller can fall back. */
+export function sanitizeAiTitle(raw: string): string | null {
+  const first = (raw.split("\n").map((l) => l.trim()).find(Boolean) ?? "")
+    .replace(/^(sure|okay|ok)[\s,!.:-]*/i, "") // conversational lead-in: "Sure! ", "Okay, "
+    .replace(/^[^:\n]{0,30}:\s+/, "")          // a leading "Here's a title: " / "Name: " label
+    .replace(/[`*_#>[\]]/g, "")                // markdown
+    .replace(/["'“”‘’]/g, "")                  // quotes
+    .replace(/[.!?…:;]+$/, "")                 // trailing sentence punctuation
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!first) return null;
+  // A real title is a few words. Reject sentence-like replies (fall back to the prompt title).
+  if (first.split(" ").length > 6 || first.length > 48) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
 /** Slugify a title into a git branch name. */
 export function slugifyBranch(title: string): string {
   return (
