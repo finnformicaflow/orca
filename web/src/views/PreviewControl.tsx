@@ -127,8 +127,9 @@ export function PreviewControl({ row }: { row: Row }) {
   );
 }
 
-// Small "Log" button that opens the crashed service's captured output in a popover (the menu is
-// tight, so — unlike the card's inline <details> — the log floats above it). Copy button included.
+// The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview
+// failed — show log"). The menu is tight, so — unlike the card's inline <details> expand — the log
+// opens in a popover floating above the row. Copy button included.
 function LogPopover({ error }: { error: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -138,14 +139,14 @@ function LogPopover({ error }: { error: string }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="sm" variant="ghost" className="text-destructive h-8 px-2" title="Show the preview log"><TriangleAlert className="size-3.5" /> Log</Button>
+        <button type="button" className="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">Preview failed — show log</button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96">
+      <PopoverContent align="end" className="w-96 text-xs">
         <div className="relative">
           <button onClick={() => void copy()} title="Copy log" className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
           </button>
-          <pre className="bg-muted max-h-64 overflow-auto rounded-md p-2 pr-8 text-xs whitespace-pre-wrap">{error}</pre>
+          <pre className="bg-muted max-h-48 overflow-auto rounded-md p-2 pr-8 whitespace-pre-wrap">{error}</pre>
         </div>
       </PopoverContent>
     </Popover>
@@ -163,8 +164,8 @@ export function TestMasterRow({ repo }: { repo: string }) {
     <div className="space-y-1">
       <div className="text-muted-foreground text-xs font-medium">{repo}</div>
       {!active && !busy ? (
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="outline" className="flex-1 justify-center" onClick={() => void start()} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
+        <div className="w-full space-y-1">
+          <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
             {error ? `Retry ${base}` : `Test ${base}`}
           </Button>

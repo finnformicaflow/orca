@@ -47,6 +47,6 @@ test("TM2 test-master row: a failed start shows Retry + a Log popover trigger", 
   await mount();
 
   await click(button("Test main")!);
-  expect(button("Retry main")).toBeTruthy();  // failed start drops back to a retry affordance…
-  expect(button("Log")).toBeTruthy();         // …with the log one click away (opens in a popover)
+  expect(button("Retry main")).toBeTruthy();               // failed start drops back to a retry affordance…
+  expect(button("Preview failed — show log")).toBeTruthy(); // …with the card-styled log trigger below it (opens a popover)
 });
