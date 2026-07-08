@@ -10,8 +10,8 @@ import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, mark
 import { freePort, killTree } from "../server/preview";
 import { run } from "../server/run";
 import {
-  attachCommand, canMerge, deriveKanbanState, draftState, followUpPrompt, launchPrompt, prMenuActions, promptFor,
-  resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
+  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -145,6 +145,36 @@ test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears o
 
   await fixture({ statusCheckRollup: [{ conclusion: "SUCCESS" }] }); // approved + MERGEABLE again
   expect(canMerge(await prStatus(repo, 1))).toBe(true);
+});
+
+// W10 active-following: given a polled PR status, decide which agent action to auto-run. This is the
+// pure decision behind the "Follow PR" toggle — the store fires the matching action off every poll
+// (see tests/activeFollowing.test.tsx for the end-to-end wiring). Priority: conflict → CI → review.
+describe("W10 active-following (followAction)", () => {
+  test("a clean, green, approved PR needs nothing", () => {
+    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "approved" })).toBeNull();
+  });
+  test("a merge conflict wins over everything → resolveConflicts", () => {
+    expect(followAction({ mergeable: "CONFLICTING", ciStatus: "failing", reviewStatus: "changes_requested" })).toBe("resolveConflicts");
+  });
+  test("failing CI (no conflict) → fixCi", () => {
+    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "failing", reviewStatus: "review_required" })).toBe("fixCi");
+  });
+  test("requested changes (clean + green) → addressReview", () => {
+    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "changes_requested" })).toBe("addressReview");
+  });
+  test("pending CI and unknown mergeability are not (yet) actionable", () => {
+    expect(followAction({ mergeable: "UNKNOWN", ciStatus: "pending", reviewStatus: "review_required" })).toBeNull();
+  });
+  test("a draft PR is never followed, even with a blocker", () => {
+    expect(followAction({ isDraft: true, mergeable: "CONFLICTING", ciStatus: "failing" })).toBeNull();
+  });
+  test("the review follow-up prompt points the agent at the PR's comments", () => {
+    const p = addressReviewPrompt({ prNumber: 7, branch: "feat-x" });
+    expect(p).toContain("#7");
+    expect(p).toContain("feat-x");
+    expect(p).toContain("gh pr view 7 --comments");
+  });
 });
 
 test("W8 draft-toggle: markReady/convertToDraft shell out to `gh pr ready` (± --undo)", async () => {

@@ -7,7 +7,7 @@ import {
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { navigate } from "@/lib/route";
-import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, GitMerge, Loader2, Play, X } from "lucide-react";
+import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -312,6 +312,11 @@ export function WorkstreamCard({ row }: { row: Row }) {
           Local cards always show it (each is an agent session); PR cards only when a run is live/recent. */}
       {!isDone && (
         <div className="flex flex-wrap items-center gap-1">
+          {isOpenPr && row.following && (
+            <Badge variant="outline" className="border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
+              Following <Eye />
+            </Badge>
+          )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
