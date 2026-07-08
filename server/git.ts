@@ -58,6 +58,28 @@ export async function createWorktree(
   return { branch, worktreePath };
 }
 
+/**
+ * Create or refresh a DETACHED worktree at the latest `base` — for previewing the base branch
+ * itself ("test master": confirm on a clean main whether a bug is already fixed / still there).
+ * Fetches origin so it's current, then checks out the resolved base ref detached. Detached is the
+ * point: with no `branch refs/heads/…` line it's invisible to `listWorktrees`, so it never shows up
+ * as a board workstream. Reused across runs (its copied env + linked node_modules stay in place),
+ * just moved to the newest base each time.
+ */
+export async function baseWorktree(repoPath: string, worktreeRoot: string, base: string): Promise<{ worktreePath: string }> {
+  await git(repoPath, "worktree", "prune").catch(() => {}); // clear stale registrations
+  await git(repoPath, "fetch", "origin", base).catch(() => {}); // best-effort; local-only repos have no origin
+  const ref = await resolveBase(repoPath, base); // origin/<base> when present (newest), else the local branch
+  const worktreePath = join(worktreeRoot, base);
+  try {
+    await git(worktreePath, "checkout", "--detach", ref); // existing worktree → move it to the newest base
+  } catch {
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => {}); // clear any stale/leftover dir
+    await git(repoPath, "worktree", "add", "--detach", worktreePath, ref);
+  }
+  return { worktreePath };
+}
+
 /** List worktrees under `worktreeRoot` (excludes the main working tree). */
 export async function listWorktrees(
   repoPath: string,

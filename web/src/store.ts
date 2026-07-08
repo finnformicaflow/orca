@@ -262,10 +262,18 @@ export async function ensureWorktree(row: Row): Promise<string> {
   return worktreePath;
 }
 
-/** Check out the branch locally (if needed) and spin up its preview services. */
-export async function testLocally(row: Row): Promise<PreviewSvc[]> {
+/** Check out the branch locally (if needed) and spin up its preview services. Returns the preview
+ *  key (the worktree path) so the caller can poll/stop it. */
+export async function testLocally(row: Row): Promise<{ key: string; svcs: PreviewSvc[] }> {
   const worktreePath = await ensureWorktree(row);
-  return api.preview(row.repo, worktreePath, worktreePath);
+  return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath) };
+}
+
+/** Spin up a preview of the repo's base branch itself ("test master"), in a fresh detached checkout
+ *  of the latest base. Same shape as testLocally so the same preview control drives it. */
+export async function testMaster(repo: string): Promise<{ key: string; svcs: PreviewSvc[] }> {
+  const { worktreePath, svcs } = await api.previewMaster(repo);
+  return { key: worktreePath, svcs };
 }
 
 /** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */

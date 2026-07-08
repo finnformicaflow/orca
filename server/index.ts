@@ -112,6 +112,16 @@ async function api(req: Request, url: URL): Promise<Response> {
     await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
     return json(await preview.status(body.key));
   }
+  if (req.method === "POST" && p === "/api/preview/master") {
+    // "Test master": spin up a preview of the base branch itself, in a detached worktree of the
+    // latest base. Same machinery as a branch preview (copy env, link node_modules, start services),
+    // keyed by the worktree path — so status/stop go through the existing /api/preview endpoints.
+    const { worktreePath } = await git.baseWorktree(repo.repoPath, repo.worktreeRoot, repo.baseBranch);
+    await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
+    await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
+    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
+    return json({ worktreePath, svcs: await preview.status(worktreePath) });
+  }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
     return json(key ? await preview.status(key) : []);

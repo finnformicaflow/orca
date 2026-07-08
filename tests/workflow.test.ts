@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
+import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { run } from "../server/run";
@@ -164,6 +164,28 @@ test("S1 source-of-truth: listWorktrees returns live worktrees under the root", 
   const wts = await listWorktrees(repo, root);
   expect(wts.map((w) => w.branch)).toContain("feat-list");
   expect(wts.every((w) => w.worktreePath.includes("/.worktrees/"))).toBe(true); // main repo excluded
+});
+
+test("M1 test-master: baseWorktree makes a detached checkout of the latest base, invisible to the board", async () => {
+  const repoM = await makeScratchRepo(); // isolated so the extra commit doesn't touch the shared repo
+  const root = join(repoM, ".worktrees");
+  // Advance main so we can prove the base worktree tracks the newest tip, not a stale one.
+  await writeFile(join(repoM, "bug.txt"), "repro\n");
+  await run(["git", "-C", repoM, "add", "."]);
+  await run(["git", "-C", repoM, "commit", "-m", "add bug"]);
+  const mainTip = (await run(["git", "-C", repoM, "rev-parse", "main"])).trim();
+
+  const { worktreePath } = await baseWorktree(repoM, root, "main");
+  expect(await stat(join(worktreePath, "bug.txt")).then(() => true)).toBe(true); // real checkout on disk…
+  expect((await run(["git", "-C", worktreePath, "rev-parse", "HEAD"])).trim()).toBe(mainTip); // …at main's tip
+
+  // Detached → no `branch refs/heads/…` line → never surfaces as a Local workstream card.
+  expect((await listWorktrees(repoM, root)).map((w) => w.branch)).not.toContain("main");
+
+  // Reusable: a second call refreshes the SAME path (kept in place with its env/node_modules).
+  const again = await baseWorktree(repoM, root, "main");
+  expect(again.worktreePath).toBe(worktreePath);
+  await removeWorktree(repoM, worktreePath).catch(() => {});
 });
 
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
