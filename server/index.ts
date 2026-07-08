@@ -4,6 +4,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
+import { usage } from "./usage";
 import { mergeSafe, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 
 const cfg = await loadConfig();
@@ -32,6 +33,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
+  if (req.method === "GET" && p === "/api/usage") {
+    return json(await usage()); // Claude subscription limits (5h + weekly); not repo-scoped
+  }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel,

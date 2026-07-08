@@ -1,5 +1,6 @@
 import type { ChangeSummary } from "../../server/git";
 import type { MergedPr, PrDetail, PrSummary, ReviewPr } from "../../server/gh";
+import type { Usage } from "../../server/usage";
 
 export type LiveAgent = {
   branch: string;
@@ -28,6 +29,7 @@ const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extr
 
 export const api = {
   config: (): Promise<{ repos: RepoInfo[]; staleHours: number }> => fetch("/api/config").then(res),
+  usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
   createWorktree: (repo: string, prompt: string): Promise<{ branch: string; worktreePath: string; title: string }> =>
     post("/api/workstreams", { repo, prompt }),
   summary: (repo: string, worktree: string): Promise<ChangeSummary> =>
