@@ -30,8 +30,8 @@ export function App() {
         <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
         {topLevel && <Nav active={route.name} />}
         <div className="ml-auto flex items-center gap-2">
-          {topLevel && <TestMasterMenu />}
           <UsageMeter />
+          {topLevel && <TestMasterMenu />}
           {topLevel && <RepoFilter />}
           <ProfileMenu />
         </div>
