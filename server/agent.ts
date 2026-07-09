@@ -4,12 +4,12 @@
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 
-// Per-run metadata pulled from the `claude -p` JSON: which model ran, how much context it used
-// (of the window), cost, turns, and wall-clock. Surfaced on the card so a session shows its cost/scale.
+// Per-run metadata pulled from the `claude -p` JSON: which model ran, its cost, turns, and
+// wall-clock. Surfaced on the card so a session shows what ran and how much it cost. (Token usage
+// is deliberately omitted — the result's `usage` is cumulative across turns, not context-window
+// occupancy, so a "% of context" from it is misleading.)
 export type RunMeta = {
-  model?: string;         // friendly, e.g. "Opus 4.8"
-  contextTokens?: number; // input + cache tokens (≈ how much of the window the run occupied)
-  contextWindow?: number; // e.g. 200000
+  model?: string; // friendly, e.g. "Opus 4.8"
   costUsd?: number;
   numTurns?: number;
   durationMs?: number;
@@ -25,17 +25,13 @@ export function prettyModel(id: string): string {
   return ver.length ? `${cap(family)} ${ver.join(".")}` : cap(core) || id;
 }
 
-/** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
+/** Pull model + cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
 export function parseRunMeta(j: any): RunMeta {
   const mu = (j?.modelUsage && typeof j.modelUsage === "object") ? j.modelUsage as Record<string, any> : {};
   const modelId = Object.keys(mu)[0];
-  const u = j?.usage ?? {};
-  const ctx = (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   return {
     model: modelId ? prettyModel(modelId) : undefined,
-    contextTokens: ctx || undefined,
-    contextWindow: modelId ? num(mu[modelId]?.contextWindow) : undefined,
     costUsd: num(j?.total_cost_usd),
     numTurns: num(j?.num_turns),
     durationMs: num(j?.duration_ms),

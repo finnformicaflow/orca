@@ -83,12 +83,11 @@ test("run metadata: prettyModel + parseRunMeta surface model/context/cost from t
 
   const meta = parseRunMeta({
     modelUsage: { "claude-opus-4-8-20251101": { contextWindow: 200000 } },
-    usage: { input_tokens: 10, cache_read_input_tokens: 21711, cache_creation_input_tokens: 5966, output_tokens: 151 },
     total_cost_usd: 0.0148681, num_turns: 3, duration_ms: 12340,
   });
-  expect(meta).toEqual({ model: "Opus 4.8", contextTokens: 27687, contextWindow: 200000, costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
-  // missing/garbage input → all-undefined, never throws (widget just shows nothing)
-  expect(parseRunMeta({})).toEqual({ model: undefined, contextTokens: undefined, contextWindow: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
+  expect(meta).toEqual({ model: "Opus 4.8", costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
+  // missing/garbage input → all-undefined, never throws (line just doesn't render)
+  expect(parseRunMeta({})).toEqual({ model: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

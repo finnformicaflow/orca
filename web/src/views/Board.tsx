@@ -7,7 +7,7 @@ import {
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { navigate } from "@/lib/route";
-import { Check, ChevronRight, CircleStop, Clock, Copy, Cpu, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
+import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -170,26 +170,15 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
   );
 }
 
-const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
-
-// The model + context/cost of a session's last agent run (from the `claude -p` result). Compact
-// line — model, context used (of the window), cost — with turns/duration in the tooltip.
+// The model + cost of a session's last agent run (from the `claude -p` result), with turns and
+// duration in the tooltip. e.g. `Opus 4.8 · $0.42`.
 function AgentMeta({ meta }: { meta: NonNullable<Row["agentMeta"]> }) {
   const parts: string[] = [];
   if (meta.model) parts.push(meta.model);
-  if (meta.contextTokens) {
-    const pct = meta.contextWindow ? ` (${Math.round((meta.contextTokens / meta.contextWindow) * 100)}%)` : "";
-    parts.push(`${fmtTokens(meta.contextTokens)} ctx${pct}`);
-  }
   if (typeof meta.costUsd === "number") parts.push(meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`);
   if (!parts.length) return null;
   const tip = [meta.numTurns != null ? `${meta.numTurns} turns` : "", meta.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
-  return (
-    <div className="flex items-center gap-1 truncate" title={tip || undefined}>
-      <Cpu className="size-3 shrink-0" />
-      <span className="truncate">{parts.join(" · ")}</span>
-    </div>
-  );
+  return <div className="truncate" title={tip || undefined}>{parts.join(" · ")}</div>;
 }
 
 function timeAgo(iso?: string): string {
