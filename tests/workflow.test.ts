@@ -49,8 +49,10 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   // pasted-image paths are appended for the agent to Read; no images = prompt unchanged
   expect(withAttachments("go", [])).toBe("go");
   expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");
-  // attach command drops you into a session continuing the headless run
-  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
+  // attach command drops you into a session continuing the headless run: exact id → --resume it;
+  // unknown id → --continue the most recent conversation in that dir (never a bare, fresh `claude`).
+  expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123`);
+  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue`);
 });
 
 test("titleFromModelJson: zod-validates the title field, tolerates fences/prose, rejects junk/sentences", () => {

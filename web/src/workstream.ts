@@ -135,10 +135,13 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
   ].join("\n");
 }
 
-/** Terminal command to open Claude in the worktree, resuming the headless run's session. */
+/** Terminal command to open Claude in the worktree, resuming the headless run's session. When we
+ *  know the exact session id, `--resume` it; otherwise `--continue` picks up the most recent
+ *  conversation in that directory (so history still opens after a bridge restart drops the id, and
+ *  it just starts fresh when the worktree genuinely has no prior session). */
 export function attachCommand(ws: { worktreePath: string; sessionId?: string }): string {
   const base = `cd "${ws.worktreePath}" && claude`;
-  return ws.sessionId ? `${base} --resume ${ws.sessionId}` : base;
+  return ws.sessionId ? `${base} --resume ${ws.sessionId}` : `${base} --continue`;
 }
 
 /** Instruction for Claude to send a Slack message about a PR (Claude has Slack access). */
