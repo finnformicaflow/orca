@@ -44,8 +44,9 @@ export type OrcaConfig = {
 export const repoOf = (cfg: OrcaConfig, name?: string): RepoConfig =>
   cfg.repos.find((r) => r.name === name) ?? cfg.repos[0]!;
 
-/** API server port (the local bridge). */
-export const API_PORT = Number(process.env.ORCA_API_PORT ?? 8787);
+/** API server port (the local bridge). Defined in a leaf module so the Vite proxy can import it
+ *  without dragging orca.config into Vite's config-dependency graph — see server/ports.ts. */
+export { API_PORT } from "./ports";
 
 // Loaded lazily so tests can exercise adapters without a config file.
 export async function loadConfig(): Promise<OrcaConfig> {

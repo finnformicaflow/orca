@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { API_PORT } from "../server/config";
+import { API_PORT } from "../server/ports";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
