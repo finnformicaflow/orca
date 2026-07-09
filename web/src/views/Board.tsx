@@ -170,14 +170,15 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
   );
 }
 
-// The model + cost of a session's last agent run (from the `claude -p` result), with turns and
-// duration in the tooltip. e.g. `Opus 4.8 · $0.42`.
+// The model + context fill of a session's last agent run (from the `claude -p` result), with cost,
+// turns and duration in the tooltip. e.g. `Opus 4.8 · 12% ctx`.
 function AgentMeta({ meta }: { meta: NonNullable<Row["agentMeta"]> }) {
   const parts: string[] = [];
   if (meta.model) parts.push(meta.model);
-  if (typeof meta.costUsd === "number") parts.push(meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`);
+  if (typeof meta.contextPct === "number") parts.push(`${meta.contextPct}% ctx`);
   if (!parts.length) return null;
-  const tip = [meta.numTurns != null ? `${meta.numTurns} turns` : "", meta.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
+  const cost = typeof meta.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
+  const tip = [cost, meta.numTurns != null ? `${meta.numTurns} turns` : "", meta.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
   return <div className="truncate" title={tip || undefined}>{parts.join(" · ")}</div>;
 }
 

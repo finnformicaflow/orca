@@ -80,14 +80,29 @@ test("run metadata: prettyModel + parseRunMeta surface model/context/cost from t
   expect(prettyModel("claude-opus-4-8-20251101")).toBe("Opus 4.8");
   expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
   expect(prettyModel("claude-sonnet-5")).toBe("Sonnet 5");
+  expect(prettyModel("claude-opus-4-8[1m]")).toBe("Opus 4.8"); // 1M-tier suffix stripped
 
+  // contextPct = the FINAL iteration's read side (24783) over the window (1M) → 2% — NOT the
+  // top-level `usage` sum. The real shape uses the `[1m]` tier key + a per-turn `iterations` array.
   const meta = parseRunMeta({
-    modelUsage: { "claude-opus-4-8-20251101": { contextWindow: 200000 } },
+    modelUsage: { "claude-opus-4-8[1m]": { contextWindow: 1000000 } },
+    usage: {
+      input_tokens: 9999, cache_read_input_tokens: 9999, cache_creation_input_tokens: 9999, // cumulative — ignored
+      iterations: [
+        { input_tokens: 1000, cache_read_input_tokens: 5000, cache_creation_input_tokens: 2000 },
+        { input_tokens: 4064, cache_read_input_tokens: 15667, cache_creation_input_tokens: 5052 },
+      ],
+    },
     total_cost_usd: 0.0148681, num_turns: 3, duration_ms: 12340,
   });
-  expect(meta).toEqual({ model: "Opus 4.8", costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
+  expect(meta).toEqual({ model: "Opus 4.8", contextPct: 2, costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
+  // single-turn runs have no `iterations` → fall back to top-level usage (4064+15667+5052 = 24783 → 2%)
+  expect(parseRunMeta({
+    modelUsage: { "claude-opus-4-8[1m]": { contextWindow: 1000000 } },
+    usage: { input_tokens: 4064, cache_read_input_tokens: 15667, cache_creation_input_tokens: 5052 },
+  }).contextPct).toBe(2);
   // missing/garbage input → all-undefined, never throws (line just doesn't render)
-  expect(parseRunMeta({})).toEqual({ model: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
+  expect(parseRunMeta({})).toEqual({ model: undefined, contextPct: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

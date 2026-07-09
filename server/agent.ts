@@ -4,12 +4,13 @@
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 
-// Per-run metadata pulled from the `claude -p` JSON: which model ran, its cost, turns, and
-// wall-clock. Surfaced on the card so a session shows what ran and how much it cost. (Token usage
-// is deliberately omitted — the result's `usage` is cumulative across turns, not context-window
-// occupancy, so a "% of context" from it is misleading.)
+// Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
+// cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
+// FINAL turn's prompt over the model's window — NOT the top-level `usage`, which sums every turn and
+// so overshoots 100%.)
 export type RunMeta = {
   model?: string; // friendly, e.g. "Opus 4.8"
+  contextPct?: number; // % of the model's context window the last turn's prompt filled
   costUsd?: number;
   numTurns?: number;
   durationMs?: number;
@@ -17,21 +18,31 @@ export type RunMeta = {
 export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; meta?: RunMeta; startedAt?: number; finishedAt?: number };
 type Run = RunState & { proc?: Bun.Subprocess };
 
-/** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop the `claude-` prefix + trailing date, prettify). */
+/** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
+ *  trailing date, then prettify). */
 export function prettyModel(id: string): string {
-  const core = id.replace(/^claude-/, "").replace(/-\d{6,8}$/, "");
+  const core = id.replace(/^claude-/, "").replace(/\[[^\]]*\]$/, "").replace(/-\d{6,8}$/, "");
   const [family, ...ver] = core.split("-");
   const cap = (s: string | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
   return ver.length ? `${cap(family)} ${ver.join(".")}` : cap(core) || id;
 }
 
-/** Pull model + cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
+/** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
 export function parseRunMeta(j: any): RunMeta {
   const mu = (j?.modelUsage && typeof j.modelUsage === "object") ? j.modelUsage as Record<string, any> : {};
   const modelId = Object.keys(mu)[0];
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  // Context occupancy = the LAST turn's prompt (read side: fresh input + cache read + cache
+  // creation), NOT the top-level `usage` (which sums every turn and would overshoot the window).
+  const iters = Array.isArray(j?.usage?.iterations) ? j.usage.iterations : [];
+  const lastTurn = iters.length ? iters[iters.length - 1] : j?.usage;
+  const ctxTokens = lastTurn
+    ? (num(lastTurn.input_tokens) ?? 0) + (num(lastTurn.cache_read_input_tokens) ?? 0) + (num(lastTurn.cache_creation_input_tokens) ?? 0)
+    : 0;
+  const window = modelId ? num(mu[modelId]?.contextWindow) : undefined;
   return {
     model: modelId ? prettyModel(modelId) : undefined,
+    contextPct: window && window > 0 && ctxTokens > 0 ? Math.round((ctxTokens / window) * 100) : undefined,
     costUsd: num(j?.total_cost_usd),
     numTurns: num(j?.num_turns),
     durationMs: num(j?.duration_ms),
