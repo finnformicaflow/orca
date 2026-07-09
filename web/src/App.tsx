@@ -109,7 +109,7 @@ function UsageMeter() {
         <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
         {usage.extra && <SpendStat extra={usage.extra} />}
       </div>
-      <div className="bg-border hidden h-5 w-px sm:block" aria-hidden="true" />
+      <div className="bg-border hidden h-8 w-px sm:block" aria-hidden="true" />
     </>
   );
 }
