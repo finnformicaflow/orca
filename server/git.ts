@@ -1,9 +1,27 @@
 import { realpathSync } from "node:fs";
 import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { dlopen, FFIType, suffix } from "bun:ffi";
 import { run } from "./run";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+
+// APFS copy-on-write directory clone via clonefile(2) — clones a whole tree in O(1) (block-shared
+// until modified). Bound lazily; on any non-macOS/non-APFS context the binding or the call fails
+// and callers fall back. clonefile requires `dst` to not already exist.
+let _clonefile: ((src: Buffer, dst: Buffer, flags: number) => number) | null | undefined;
+function cloneTree(src: string, dst: string): boolean {
+  if (_clonefile === undefined) {
+    try {
+      _clonefile = dlopen(`libSystem.${suffix}`, {
+        clonefile: { args: [FFIType.cstring, FFIType.cstring, FFIType.u32], returns: FFIType.i32 },
+      }).symbols.clonefile as (s: Buffer, d: Buffer, f: number) => number;
+    } catch { _clonefile = null; }
+  }
+  if (!_clonefile) return false;
+  try { return _clonefile(Buffer.from(`${src}\0`), Buffer.from(`${dst}\0`), 0) === 0; }
+  catch { return false; }
+}
 
 export type FileChange = { path: string; additions: number; deletions: number };
 export type Commit = { hash: string; subject: string };
@@ -133,7 +151,7 @@ export async function copyToWorktree(repoPath: string, worktreePath: string, pat
  * Provision heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
  * checkout has none, and a real per-worktree install is slow + disk-heavy. Best-effort per path.
  *
- * `node_modules` is special-cased: it's CLONED, not symlinked, via APFS copy-on-write (`cp -c`).
+ * `node_modules` is special-cased: it's CLONED, not symlinked, via APFS copy-on-write (clonefile).
  * A copy-on-write clone is near-instant and shares disk blocks with the source until a file is
  * modified, so it costs almost nothing — but each worktree gets a fully INDEPENDENT tree. That
  * isolation is the point: when worktrees shared one node_modules (a whole-dir symlink, or even
@@ -143,31 +161,29 @@ export async function copyToWorktree(repoPath: string, worktreePath: string, pat
  * `cache:generate` while the shared `@mikro-orm/core` was mid-rewrite, plus Vite 504s from a shared
  * `.vite/deps`. With a per-worktree clone, no worktree can perturb another's deps.
  *
- * Falls back to the old per-entry symlink if the clone fails (e.g. a non-APFS volume where `cp -c`
- * isn't supported) — shared but functional. Other (non-node_modules) paths stay symlinked.
+ * Falls back to the old per-entry symlink if the clone fails (e.g. a non-APFS volume where
+ * clonefile isn't supported) — shared but functional. Other (non-node_modules) paths stay symlinked.
  */
 export async function linkToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
   await Promise.all(paths.map(async (rel) => {
     const src = join(repoPath, rel);
     const dest = join(worktreePath, rel);
     await mkdir(dirname(dest), { recursive: true }).catch(() => {});
-    await rm(dest, { recursive: true, force: true }).catch(() => {}); // replace any stale entry
+    await rm(dest, { recursive: true, force: true }).catch(() => {}); // replace any stale entry; clonefile needs dest absent
     if (basename(rel) !== "node_modules") {
       await symlink(src, dest).catch(() => {});
       return;
     }
-    // APFS CoW clone: instant, block-shared, but a fully independent tree per worktree.
-    try {
-      await run(["cp", "-c", "-R", src, dest]);
-    } catch {
-      // Non-APFS / clone unsupported → degrade to the old per-entry symlink (keeps .vite local).
-      await rm(dest, { recursive: true, force: true }).catch(() => {});
-      await mkdir(dest, { recursive: true }).catch(() => {});
-      const entries = await readdir(src).catch(() => [] as string[]);
-      await Promise.all(entries
-        .filter((e) => !e.startsWith(".vite"))
-        .map((e) => symlink(join(src, e), join(dest, e)).catch(() => {})));
-    }
+    // APFS CoW directory clone: ~2s for an 82k-file node_modules (vs ~40s for per-file `cp -c`),
+    // block-shared with the source until modified, but a fully independent tree per worktree.
+    if (cloneTree(src, dest)) return;
+    // Non-APFS / clonefile unavailable → degrade to the old per-entry symlink (keeps .vite local).
+    await rm(dest, { recursive: true, force: true }).catch(() => {});
+    await mkdir(dest, { recursive: true }).catch(() => {});
+    const entries = await readdir(src).catch(() => [] as string[]);
+    await Promise.all(entries
+      .filter((e) => !e.startsWith(".vite"))
+      .map((e) => symlink(join(src, e), join(dest, e)).catch(() => {})));
   }));
 }
 

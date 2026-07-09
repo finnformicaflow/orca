@@ -63,7 +63,7 @@ const config: OrcaConfig = {
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
       // provider/AWS keys. Copied on create + checkout.
       copyToWorktree: ["backend/.env"],
-      // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS `cp -c`, see git.ts) so
+      // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)
       linkToWorktree: ["backend/node_modules", "frontend/node_modules"],
