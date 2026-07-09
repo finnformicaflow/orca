@@ -41,10 +41,16 @@ const config: OrcaConfig = {
         // preview. The `-f package.json` check is an instant no-op when healthy (a plain file test —
         // not `require.resolve`, which false-negatives on ESM-`exports` packages); only when the
         // fragile dep is actually missing does it run a non-destructive `npm install` before booting.
+        // That reinstall first sweeps leftover `.<pkg>-<random>` staging dirs (npm's atomic-rename
+        // scratch, orphaned when an install is killed — they had piled up to 1600+ and are what
+        // strands entity decorators mid-install → mikro-orm's "only abstract entities discovered").
+        // The sweep is safe: the `npm install` right after restores anything real it might touch.
+        // `find -E` = BSD extended regex (/usr/bin/find defaults to basic, where `+` is a literal, so
+        // the pattern would match nothing without it).
         // Second self-heal: an `npm install` into the shared tree sometimes lands @nestjs/cli's
         // bin/nest.js without its execute bit, so `npx nest` dies with "Permission denied" in EVERY
         // worktree. `[ -x .bin/nest ]` follows the symlink to test the target's bit; chmod repairs it.
-        { name: "backend", command: "cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || npm install --no-audit --no-fund; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && bash scripts/migrate-local.sh && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
+        { name: "backend", command: "cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && bash scripts/migrate-local.sh && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which

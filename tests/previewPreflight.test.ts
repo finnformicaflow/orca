@@ -9,11 +9,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import config from "../orca.config";
 
+const backendCmd = () => {
+  const cmd = config.repos.find((r) => r.name === "branch-demo")?.previewServices.find((s) => s.name === "backend")?.command;
+  if (!cmd) throw new Error("branch-demo backend command not found");
+  return cmd;
+};
+
 /** The `{ [ -x node_modules/.bin/nest ] || chmod +x …; }` sub-expression out of the real command. */
 function nestGuard(): string {
-  const cmd = config.repos.find((r) => r.name === "branch-demo")?.previewServices.find((s) => s.name === "backend")?.command;
-  const m = cmd?.match(/\{ \[ -x node_modules\/\.bin\/nest \][^}]*\}/);
+  const m = backendCmd().match(/\{ \[ -x node_modules\/\.bin\/nest \][^}]*\}/);
   if (!m) throw new Error("nest chmod guard not found in branch-demo backend command");
+  return m[0];
+}
+
+/** The `find node_modules … -exec rm -rf {} +` staging-dir sweep out of the real command. */
+function stagingSweep(): string {
+  const m = backendCmd().match(/find -E node_modules[^&]*rm -rf \{\} \+/);
+  if (!m) throw new Error("staging-dir sweep not found in branch-demo backend command");
   return m[0];
 }
 
@@ -46,4 +58,19 @@ test("backend preflight is a no-op when the nest bin is already executable", asy
   const p = Bun.spawn(["bash", "-c", nestGuard()], { cwd: dir, stderr: "ignore" });
   expect(await p.exited).toBe(0);
   expect(await isExec(nest)).toBe(true);
+});
+
+test("staging-dir sweep removes orphaned npm scratch dirs but keeps real packages", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "orca-staging-"));
+  await mkdir(join(dir, "node_modules/@types/.compression-8Z3tFSKG"), { recursive: true }); // npm scratch
+  await mkdir(join(dir, "node_modules/@types/compression"), { recursive: true }); // real package
+  await mkdir(join(dir, "node_modules/.bin"), { recursive: true }); // must survive (no -<random> suffix)
+  await writeFile(join(dir, "node_modules/.package-lock.json"), "{}"); // must survive
+  const p = Bun.spawn(["bash", "-c", stagingSweep()], { cwd: dir, stderr: "ignore" });
+  expect(await p.exited).toBe(0);
+  const exists = (rel: string) => stat(join(dir, rel)).then(() => true, () => false);
+  expect(await exists("node_modules/@types/.compression-8Z3tFSKG")).toBe(false);
+  expect(await exists("node_modules/@types/compression")).toBe(true);
+  expect(await exists("node_modules/.bin")).toBe(true);
+  expect(await exists("node_modules/.package-lock.json")).toBe(true);
 });
