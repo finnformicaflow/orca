@@ -29,6 +29,28 @@ function stagingSweep(): string {
   return m[0];
 }
 
+/** The `{ bash scripts/migrate-local.sh || { … } || { … }; }` retry block out of the real command. */
+function migrateRetry(): string {
+  const m = backendCmd().match(/\{ bash scripts\/migrate-local\.sh[\s\S]*?migrate-local\.sh; \}; \}/);
+  if (!m) throw new Error("migrate retry block not found in branch-demo backend command");
+  return m[0];
+}
+
+/** Run the real retry block with `migrate-local.sh` swapped for a command that fails until its
+ *  Nth call (counter file), and sleeps zeroed. Returns the overall exit code. */
+async function runRetryWithFlaky(succeedsOnAttempt: number): Promise<number> {
+  const dir = await mkdtemp(join(tmpdir(), "orca-retry-"));
+  const cf = join(dir, "count");
+  const flaky = join(dir, "flaky.sh");
+  await writeFile(flaky, `#!/bin/bash\nc=$(cat "${cf}" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "${cf}"\n[ "$c" -ge ${succeedsOnAttempt} ]\n`);
+  await chmod(flaky, 0o755);
+  const script = migrateRetry()
+    .replaceAll("bash scripts/migrate-local.sh", `bash ${flaky}`)
+    .replaceAll("sleep 3", "sleep 0").replaceAll("sleep 5", "sleep 0");
+  const p = Bun.spawn(["bash", "-c", script], { stdout: "ignore", stderr: "ignore" });
+  return p.exited;
+}
+
 /** Scratch node_modules with a `.bin/nest` symlink → @nestjs/cli/bin/nest.js at the given mode. */
 async function scratchTree(mode: number): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "orca-nest-"));
@@ -73,4 +95,14 @@ test("staging-dir sweep removes orphaned npm scratch dirs but keeps real package
   expect(await exists("node_modules/@types/compression")).toBe(true);
   expect(await exists("node_modules/.bin")).toBe(true);
   expect(await exists("node_modules/.package-lock.json")).toBe(true);
+});
+
+test("migrate retry rides out a transient failure (succeeds by the 3rd attempt)", async () => {
+  expect(await runRetryWithFlaky(1)).toBe(0); // succeeds first try
+  expect(await runRetryWithFlaky(2)).toBe(0); // fails once, retry succeeds
+  expect(await runRetryWithFlaky(3)).toBe(0); // fails twice, third succeeds
+});
+
+test("migrate retry still surfaces a genuine failure (all 3 attempts fail → non-zero)", async () => {
+  expect(await runRetryWithFlaky(4)).not.toBe(0); // never succeeds within 3 tries
 });

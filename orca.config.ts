@@ -50,7 +50,14 @@ const config: OrcaConfig = {
         // Second self-heal: an `npm install` into the shared tree sometimes lands @nestjs/cli's
         // bin/nest.js without its execute bit, so `npx nest` dies with "Permission denied" in EVERY
         // worktree. `[ -x .bin/nest ]` follows the symlink to test the target's bit; chmod repairs it.
-        { name: "backend", command: "cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && bash scripts/migrate-local.sh && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
+        // RETRY migrate: `cache:generate` inside migrate-local.sh intermittently throws mikro-orm's
+        // "only abstract entities discovered" — a transient race when a preview boots against the
+        // node_modules that 4+ other preview/agent processes are concurrently reading/mutating (the
+        // decorators momentarily fail to register). It's idempotent and clears on a re-run, but
+        // migrate-local.sh is `set -e`, so a single hiccup would kill the whole preview. Retry up to
+        // 3× with backoff; a genuine failure (DB down, real migration error) still fails all 3 and
+        // surfaces in the preview log.
+        { name: "backend", command: "cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash scripts/migrate-local.sh || { echo '[orca] migrate failed — transient shared-node_modules race? retrying (2/3)'; sleep 3; bash scripts/migrate-local.sh; } || { echo '[orca] retrying (3/3)'; sleep 5; bash scripts/migrate-local.sh; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
