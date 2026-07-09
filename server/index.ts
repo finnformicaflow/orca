@@ -179,6 +179,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         agentStatus,
         agentError: run.error,
         agentResult: run.result,
+        agentMeta: run.meta,
         agentStartedAt: run.startedAt,
         sessionId: run.sessionId,
         mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),

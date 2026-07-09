@@ -4,8 +4,43 @@
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 
-export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; startedAt?: number; finishedAt?: number };
+// Per-run metadata pulled from the `claude -p` JSON: which model ran, how much context it used
+// (of the window), cost, turns, and wall-clock. Surfaced on the card so a session shows its cost/scale.
+export type RunMeta = {
+  model?: string;         // friendly, e.g. "Opus 4.8"
+  contextTokens?: number; // input + cache tokens (≈ how much of the window the run occupied)
+  contextWindow?: number; // e.g. 200000
+  costUsd?: number;
+  numTurns?: number;
+  durationMs?: number;
+};
+export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; meta?: RunMeta; startedAt?: number; finishedAt?: number };
 type Run = RunState & { proc?: Bun.Subprocess };
+
+/** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop the `claude-` prefix + trailing date, prettify). */
+export function prettyModel(id: string): string {
+  const core = id.replace(/^claude-/, "").replace(/-\d{6,8}$/, "");
+  const [family, ...ver] = core.split("-");
+  const cap = (s: string | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+  return ver.length ? `${cap(family)} ${ver.join(".")}` : cap(core) || id;
+}
+
+/** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
+export function parseRunMeta(j: any): RunMeta {
+  const mu = (j?.modelUsage && typeof j.modelUsage === "object") ? j.modelUsage as Record<string, any> : {};
+  const modelId = Object.keys(mu)[0];
+  const u = j?.usage ?? {};
+  const ctx = (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  return {
+    model: modelId ? prettyModel(modelId) : undefined,
+    contextTokens: ctx || undefined,
+    contextWindow: modelId ? num(mu[modelId]?.contextWindow) : undefined,
+    costUsd: num(j?.total_cost_usd),
+    numTurns: num(j?.num_turns),
+    durationMs: num(j?.duration_ms),
+  };
+}
 
 const runs = new Map<string, Run>();
 
@@ -23,16 +58,17 @@ export function launch(key: string, cwd: string, prompt: string, resume?: string
     const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     const code = await proc.exited;
     if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
-    let result: string | undefined, isError = false;
+    let result: string | undefined, isError = false, meta: RunMeta | undefined;
     try {
       const j = JSON.parse(out.trim());
       result = j.result;
       isError = Boolean(j.is_error);
+      meta = parseRunMeta(j);
     } catch { /* non-JSON output (e.g. crash) */ }
     const finishedAt = Date.now();
     runs.set(key, code === 0 && !isError
-      ? { status: "done", sessionId, result, startedAt, finishedAt }
-      : { status: "error", sessionId, error: (err.trim() || result || `exit ${code}`).slice(0, 300), startedAt, finishedAt });
+      ? { status: "done", sessionId, result, meta, startedAt, finishedAt }
+      : { status: "error", sessionId, error: (err.trim() || result || `exit ${code}`).slice(0, 300), meta, startedAt, finishedAt });
   })();
 }
 
@@ -92,5 +128,5 @@ export async function detectRunning(branches: string[]): Promise<Set<string>> {
 
 export const status = (key: string): RunState => {
   const r = runs.get(key);
-  return r ? { status: r.status, error: r.error, sessionId: r.sessionId, result: r.result, startedAt: r.startedAt, finishedAt: r.finishedAt } : { status: "idle" };
+  return r ? { status: r.status, error: r.error, sessionId: r.sessionId, result: r.result, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt } : { status: "idle" };
 };

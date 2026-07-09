@@ -1,3 +1,4 @@
+import type { RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { MergedPr, PrDetail, PrSummary, ReviewPr } from "../../server/gh";
 import type { Usage } from "../../server/usage";
@@ -8,6 +9,7 @@ export type LiveAgent = {
   agentStatus: "idle" | "running" | "done" | "error";
   agentError?: string;
   agentResult?: string;
+  agentMeta?: RunMeta;
   agentStartedAt?: number;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";

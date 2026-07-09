@@ -15,6 +15,7 @@ import {
   prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
+import { parseRunMeta, prettyModel } from "../server/agent";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
 let repo: string;
@@ -73,6 +74,21 @@ test("retryTitle: refetches on an invalid reply, gives up after N attempts", asy
   const alwaysBad = async () => { n++; return "nope"; };
   expect(await retryTitle(alwaysBad, 2)).toBeNull();
   expect(n).toBe(2); // exhausted the attempts, then gave up (caller falls back to the prompt title)
+});
+
+test("run metadata: prettyModel + parseRunMeta surface model/context/cost from the claude -p JSON", () => {
+  expect(prettyModel("claude-opus-4-8-20251101")).toBe("Opus 4.8");
+  expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
+  expect(prettyModel("claude-sonnet-5")).toBe("Sonnet 5");
+
+  const meta = parseRunMeta({
+    modelUsage: { "claude-opus-4-8-20251101": { contextWindow: 200000 } },
+    usage: { input_tokens: 10, cache_read_input_tokens: 21711, cache_creation_input_tokens: 5966, output_tokens: 151 },
+    total_cost_usd: 0.0148681, num_turns: 3, duration_ms: 12340,
+  });
+  expect(meta).toEqual({ model: "Opus 4.8", contextTokens: 27687, contextWindow: 200000, costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
+  // missing/garbage input → all-undefined, never throws (widget just shows nothing)
+  expect(parseRunMeta({})).toEqual({ model: undefined, contextTokens: undefined, contextWindow: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {
