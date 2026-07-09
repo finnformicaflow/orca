@@ -149,8 +149,10 @@ function UsageStat({ label, pct, resetsAt }: { label: string; pct: number; reset
   const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
   return (
     <span title={`Claude ${label} usage: ${pct}%${resets}`}>
-      {label} <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>{pct}%</span>
-      {left && <span className="opacity-60"> · {left}</span>}
+      {label}{" "}
+      <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>
+        {pct}%{left && <span className="font-normal opacity-60"> ({left})</span>}
+      </span>
     </span>
   );
 }
