@@ -9,7 +9,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 // Accepts images by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic,
 }: {
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
@@ -18,6 +18,10 @@ export function ChatComposer({
   footer?: ReactNode; // transient line below the box, e.g. a "Sent · Undo" affordance
   onCancel?: () => void;
   autoFocus?: boolean;
+  // Fire-and-forget: hand the message to onSubmit and return at once (no spinner, no clearing).
+  // The parent closes the box immediately and owns the outcome — it keeps the persisted draft so a
+  // failure can reopen with the same text, and clears it on success. Used by the follow-up box.
+  optimistic?: boolean;
 }) {
   const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
   const [images, setImages] = useState<File[]>([]);
@@ -69,6 +73,8 @@ export function ChatComposer({
   const canSubmit = Boolean(value.trim() || images.length) && !busy;
   const submit = async () => {
     if (!canSubmit) return;
+    // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
+    if (optimistic) return void onSubmit(value.trim(), images);
     setBusy(true);
     setError(null);
     try {

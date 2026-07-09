@@ -26,9 +26,11 @@ export const apiFake = {
   // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
+  // When set, api.claude rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
+  claudeError: null as null | string,
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.claudeError = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -56,6 +58,10 @@ mock.module("@/api", () => ({
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
     },
-    claude: async (_repo: string, key: string, prompt: string) => { apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt); return { status: "ok" }; },
+    claude: async (_repo: string, key: string, prompt: string) => {
+      apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
+      if (apiFake.claudeError) throw new Error(apiFake.claudeError);
+      return { status: "ok" };
+    },
   },
 }));

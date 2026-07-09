@@ -6,7 +6,7 @@ import {
 } from "../store";
 import { attachCommand, prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
-import { hasDraft } from "@/lib/composerDraft";
+import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -160,7 +160,14 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
         </DropdownMenu>
       </div>
       {err && <p className="text-destructive text-xs break-words">{err}</p>}
-      {composing && <FollowUpComposer row={row} onDone={() => setComposing(false)} />}
+      {composing && (
+        <FollowUpComposer
+          row={row}
+          onClose={() => setComposing(false)}
+          // Launch failed: reopen with the (still-persisted) prompt and surface why.
+          onFail={(msg) => { setErr(msg); setComposing(true); }}
+        />
+      )}
     </div>
   );
 }
@@ -184,14 +191,23 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
   );
 }
 
-export function FollowUpComposer({ row, onDone }: { row: Row; onDone: () => void }) {
+export function FollowUpComposer({ row, onClose, onFail }: { row: Row; onClose: () => void; onFail: (msg: string) => void }) {
+  const key = followUpDraftKey(row);
   return (
     <ChatComposer
       autoFocus
-      persistKey={followUpDraftKey(row)}
+      optimistic
+      persistKey={key}
       placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
-      onSubmit={async (instruction, images) => { await followUp(row, instruction, images); onDone(); }}
-      onCancel={onDone}
+      // Optimistic submit: close the box the instant you send (launching the agent takes a few
+      // seconds — ensureWorktree + upload). The draft stays persisted, so a failed launch reopens
+      // it with the same prompt; a success drops it.
+      onSubmit={async (instruction, images) => {
+        onClose();
+        try { await followUp(row, instruction, images); clearDraft(key); }
+        catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
+      }}
+      onCancel={onClose}
     />
   );
 }
