@@ -95,7 +95,9 @@ function UsageMeter() {
     // doesn't flicker out; the server also serves last-good, this is the client-side belt.
     const load = () => void api.usage().then((u) => { if (u) setUsage(u); }).catch(() => {});
     load();
-    const t = setInterval(load, 60_000);
+    // Every 5 min — the 5h/weekly windows move slowly, so this is plenty fresh and stays well clear
+    // of the endpoint's rate limit (which used to null the widget out).
+    const t = setInterval(load, 5 * 60_000);
     return () => clearInterval(t);
   }, []);
   if (!usage) return null;
