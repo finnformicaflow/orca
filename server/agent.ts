@@ -2,7 +2,7 @@
 // UI can show done/error and "Copy CLI" can resume the exact conversation (mid-run too, since
 // we choose the session id up front). Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
-import { titleFromModelJson } from "../web/src/workstream";
+import { retryTitle } from "./title";
 
 export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; startedAt?: number; finishedAt?: number };
 type Run = RunState & { proc?: Bun.Subprocess };
@@ -39,20 +39,20 @@ export function launch(key: string, cwd: string, prompt: string, resume?: string
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
 export const runAgent = (worktreePath: string, prompt: string) => launch(worktreePath, worktreePath, prompt);
 
-/** Quick Haiku summary of a prompt into a 2–5 word title. Returns null on any failure OR when the
- *  model replies with a sentence rather than a short name — the caller falls back to titleFromPrompt. */
-export async function summarize(prompt: string): Promise<string | null> {
-  try {
+/** Quick Haiku summary of a prompt into a 2–5 word title. Asks for JSON, validates it (zod), and
+ *  refetches once if the reply doesn't parse to a valid title; null after that (caller falls back
+ *  to titleFromPrompt). */
+export function summarize(prompt: string): Promise<string | null> {
+  const ask = async (): Promise<string> => {
     const proc = Bun.spawn(
       ["claude", "-p", `Respond with ONLY minified JSON: {"title":"<a 2-5 word Title Case name for this task>"}. No other text.\n\n${prompt}`, "--model", "haiku", "--output-format", "json"],
       { env: process.env, stdout: "pipe", stderr: "ignore" },
     );
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    return titleFromModelJson(String(JSON.parse(out.trim()).result ?? "")); // parse the title field; null if junk/sentence
-  } catch {
-    return null;
-  }
+    return String(JSON.parse(out.trim()).result ?? "");
+  };
+  return retryTitle(ask, 2); // validate + refetch once on a bad reply
 }
 
 /** Kill and forget a run (e.g. on discard). */

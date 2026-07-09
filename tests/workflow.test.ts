@@ -12,8 +12,9 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
-  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, titleFromModelJson, withAttachments, type WorkstreamState,
+  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
+import { retryTitle, titleFromModelJson } from "../server/title";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
 let repo: string;
@@ -51,14 +52,27 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
 });
 
-test("titleFromModelJson: parses the title field, tolerates fences/prose, rejects junk/sentences", () => {
+test("titleFromModelJson: zod-validates the title field, tolerates fences/prose, rejects junk/sentences", () => {
   expect(titleFromModelJson('{"title":"Dark Mode Toggle"}')).toBe("Dark Mode Toggle");
   expect(titleFromModelJson('```json\n{"title":"Add Usage Meter"}\n```')).toBe("Add Usage Meter"); // fenced
   expect(titleFromModelJson('Sure! {"title":"add dark mode"}')).toBe("Add dark mode"); // prose around it + capitalised
-  // a sentence in the title field still isn't a title → null so the caller falls back to the prompt
+  // a sentence in the title field fails the schema → null so the caller falls back to the prompt
   expect(titleFromModelJson('{"title":"This task adds a dark mode toggle to the settings page for users"}')).toBeNull();
+  expect(titleFromModelJson('{"name":"Wrong Field"}')).toBeNull(); // missing title field
   expect(titleFromModelJson("not json at all")).toBeNull();
   expect(titleFromModelJson("")).toBeNull();
+});
+
+test("retryTitle: refetches on an invalid reply, gives up after N attempts", async () => {
+  let calls = 0;
+  const flaky = async () => (++calls === 1 ? "garbage, no json" : '{"title":"Dark Mode Toggle"}');
+  expect(await retryTitle(flaky, 3)).toBe("Dark Mode Toggle");
+  expect(calls).toBe(2); // retried once, then the valid reply won
+
+  let n = 0;
+  const alwaysBad = async () => { n++; return "nope"; };
+  expect(await retryTitle(alwaysBad, 2)).toBeNull();
+  expect(n).toBe(2); // exhausted the attempts, then gave up (caller falls back to the prompt title)
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

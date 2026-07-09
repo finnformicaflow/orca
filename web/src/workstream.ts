@@ -229,21 +229,7 @@ export function titleFromText(text: string): string {
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
 
-/** Extract the title from the summariser's reply. We ask the model for JSON (`{"title":"…"}`) and
- *  pull the `title` field out of it, rather than scrubbing free text with an open-ended regex list:
- *  it targets the intended value and tolerates prose/```fences around the object. Returns null when
- *  there's no parseable object, the field isn't a string, or it's clearly not a title (a sentence in
- *  the field) — so the caller falls back to the prompt-derived title. */
-export function titleFromModelJson(raw: string): string | null {
-  const match = raw.match(/\{[\s\S]*?\}/); // first {...} object, wherever the model buried it
-  if (!match) return null;
-  let title: unknown;
-  try { title = (JSON.parse(match[0]) as { title?: unknown }).title; } catch { return null; }
-  if (typeof title !== "string") return null;
-  const t = title.replace(/\s+/g, " ").trim();
-  if (!t || t.split(" ").length > 6 || t.length > 48) return null; // sanity cap: a title, not a sentence
-  return t.charAt(0).toUpperCase() + t.slice(1);
-}
+// (The model-title parser lives in server/title.ts — it uses zod, kept out of the web bundle.)
 
 /** Slugify a title into a git branch name. */
 export function slugifyBranch(title: string): string {
