@@ -29,11 +29,14 @@ export function App() {
         <h1 className="text-xl font-semibold">🐳 Orca</h1>
         <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
         {topLevel && <Nav active={route.name} />}
-        <div className="ml-auto flex items-center gap-2">
+        {/* Right cluster reads as two groups: read-only usage status, then a divider, then controls. */}
+        <div className="ml-auto flex items-center gap-3">
           <UsageMeter />
-          {topLevel && <TestMasterMenu />}
-          {topLevel && <RepoFilter />}
-          <ProfileMenu />
+          <div className="flex items-center gap-2">
+            {topLevel && <TestMasterMenu />}
+            {topLevel && <RepoFilter />}
+            <ProfileMenu />
+          </div>
         </div>
       </header>
       {route.name === "pr" ? <PrDetail repo={route.repo} number={route.number} sub={route.sub} />
@@ -96,13 +99,18 @@ function UsageMeter() {
     return () => clearInterval(t);
   }, []);
   if (!usage) return null;
-  // A statusline, à la the CLI: monospace, dim labels, coloured figures — no boxes/badges.
+  // A statusline, à la the CLI: monospace, dim labels, coloured figures — no boxes/badges. A trailing
+  // divider (only rendered with the stats, so no lone line when usage is hidden) sets it apart from
+  // the controls to its right.
   return (
-    <div className="text-muted-foreground hidden items-center gap-3 font-mono text-xs sm:flex" aria-label="Claude usage limits">
-      <UsageStat label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
-      <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
-      {usage.extra && <SpendStat extra={usage.extra} />}
-    </div>
+    <>
+      <div className="text-muted-foreground hidden items-center gap-3 font-mono text-xs sm:flex" aria-label="Claude usage limits">
+        <UsageStat label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
+        <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
+        {usage.extra && <SpendStat extra={usage.extra} />}
+      </div>
+      <div className="bg-border hidden h-5 w-px sm:block" aria-hidden="true" />
+    </>
   );
 }
 
