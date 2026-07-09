@@ -111,7 +111,11 @@ function UsageMeter() {
         <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
         {usage.extra && <SpendStat extra={usage.extra} />}
       </div>
-      <div className="bg-border hidden h-8 w-px sm:block" aria-hidden="true" />
+      {/* Full button-height footprint (h-8) but the visible line is inset by py-1 — reads as the
+          same height as the buttons, just a touch shorter. */}
+      <div className="hidden h-8 py-1 sm:block" aria-hidden="true">
+        <div className="bg-border h-full w-px" />
+      </div>
     </>
   );
 }
