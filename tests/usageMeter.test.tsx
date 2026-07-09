@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { shapeUsage } from "../server/usage";
+import { shapeUsage, untilReset } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -43,6 +43,22 @@ test("shows the 5-hour and weekly percentages in the header", async () => {
   expect(text).toContain("38%");
   expect(text).toContain("wk");
   expect(text).toContain("55%");
+});
+
+test("shows the time left till each window resets", async () => {
+  const in90m = new Date(Date.now() + 90 * 60_000).toISOString();
+  apiFake.usageData = { fiveHour: { utilization: 38, resetsAt: in90m }, sevenDay: { utilization: 55, resetsAt: null } };
+  await mount();
+  expect(meter()?.textContent ?? "").toContain("2h"); // 90m rounds to 2h
+});
+
+test("untilReset formats the countdown compactly, null when unknown/past", () => {
+  const now = Date.parse("2026-07-08T12:00:00Z");
+  expect(untilReset(null, now)).toBeNull();
+  expect(untilReset("2026-07-08T11:00:00Z", now)).toBeNull(); // already past
+  expect(untilReset("2026-07-08T12:45:00Z", now)).toBe("45m");
+  expect(untilReset("2026-07-08T14:00:00Z", now)).toBe("2h");
+  expect(untilReset("2026-07-10T12:00:00Z", now)).toBe("2d");
 });
 
 test("renders nothing when not logged in / not on a Claude.ai plan (usage is null)", async () => {

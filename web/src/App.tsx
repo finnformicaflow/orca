@@ -5,7 +5,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
-import type { ExtraUsage, Usage } from "../../server/usage";
+import { untilReset, type ExtraUsage, type Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { TestMasterMenu } from "./views/PreviewControl";
@@ -132,10 +132,12 @@ const ZONE_TEXT: Record<"ok" | "warn" | "danger", string> = {
 };
 
 function UsageStat({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
+  const left = untilReset(resetsAt);
   const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
   return (
     <span title={`Claude ${label} usage: ${pct}%${resets}`}>
       {label} <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>{pct}%</span>
+      {left && <span className="opacity-60"> · {left}</span>}
     </span>
   );
 }
