@@ -10,18 +10,6 @@ export type UsageWindow = { utilization: number; resetsAt: string | null };
 export type ExtraUsage = { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number };
 export type Usage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null };
 
-/** Compact countdown to a window's reset, e.g. "45m", "2h", "3d" — null if unknown or already
- *  past. `now` is injectable for tests (defaults to wall-clock). Pure. */
-export function untilReset(resetsAt: string | null, now = Date.now()): string | null {
-  if (!resetsAt) return null;
-  const ms = new Date(resetsAt).getTime() - now;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const mins = Math.round(ms / 60_000);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.round(mins / 60);
-  return hrs < 24 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
-}
-
 /** Shape the raw endpoint payload into the windows + extra-usage spend we surface. Pure. */
 export function shapeUsage(raw: any): Usage {
   const win = (w: any): UsageWindow => ({

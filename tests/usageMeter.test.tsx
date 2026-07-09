@@ -7,8 +7,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { App } from "@/App";
-import { shapeUsage, untilReset } from "../server/usage";
+import { App, untilReset } from "@/App";
+import { shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

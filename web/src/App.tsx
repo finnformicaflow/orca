@@ -5,7 +5,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
-import { untilReset, type ExtraUsage, type Usage } from "../../server/usage";
+import type { ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { TestMasterMenu } from "./views/PreviewControl";
@@ -130,6 +130,19 @@ const ZONE_TEXT: Record<"ok" | "warn" | "danger", string> = {
   warn: "text-amber-600 dark:text-amber-400",
   danger: "text-red-600 dark:text-red-400",
 };
+
+/** Compact countdown to a window's reset, e.g. "45m", "2h", "3d" — null if unknown or already
+ *  past. `now` is injectable for tests (defaults to wall-clock). Pure. Lives here (not server/usage.ts)
+ *  so it stays out of a browser bundle that can't resolve that module's node/Bun imports. */
+export function untilReset(resetsAt: string | null, now = Date.now()): string | null {
+  if (!resetsAt) return null;
+  const ms = new Date(resetsAt).getTime() - now;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 24 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
+}
 
 function UsageStat({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
   const left = untilReset(resetsAt);
