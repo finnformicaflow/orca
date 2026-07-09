@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
-  prMenuActions, promptFor, resolveConflictsPrompt, sanitizeAiTitle, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, titleFromModelJson, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
 
@@ -51,13 +51,14 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude`);
 });
 
-test("sanitizeAiTitle: keeps short names, strips preambles/quotes, rejects sentences", () => {
-  expect(sanitizeAiTitle("Dark Mode Toggle")).toBe("Dark Mode Toggle");
-  expect(sanitizeAiTitle('Here\'s a title: "Add Usage Meter"')).toBe("Add Usage Meter"); // preamble + quotes stripped
-  expect(sanitizeAiTitle("add dark mode.")).toBe("Add dark mode"); // capitalised, trailing punctuation dropped
-  // a whole-sentence reply isn't a title → null so the caller falls back to the prompt-derived title
-  expect(sanitizeAiTitle("This task adds a dark mode toggle to the settings page for users")).toBeNull();
-  expect(sanitizeAiTitle("")).toBeNull();
+test("titleFromModelJson: parses the title field, tolerates fences/prose, rejects junk/sentences", () => {
+  expect(titleFromModelJson('{"title":"Dark Mode Toggle"}')).toBe("Dark Mode Toggle");
+  expect(titleFromModelJson('```json\n{"title":"Add Usage Meter"}\n```')).toBe("Add Usage Meter"); // fenced
+  expect(titleFromModelJson('Sure! {"title":"add dark mode"}')).toBe("Add dark mode"); // prose around it + capitalised
+  // a sentence in the title field still isn't a title → null so the caller falls back to the prompt
+  expect(titleFromModelJson('{"title":"This task adds a dark mode toggle to the settings page for users"}')).toBeNull();
+  expect(titleFromModelJson("not json at all")).toBeNull();
+  expect(titleFromModelJson("")).toBeNull();
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

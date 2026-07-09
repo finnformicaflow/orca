@@ -229,23 +229,20 @@ export function titleFromText(text: string): string {
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
 
-/** Clean + VALIDATE a model's title suggestion. The summariser sometimes ignores "2–5 words" and
- *  replies with a whole sentence (or a "Here's a title:" preamble); we'd rather fall back to a
- *  prompt-derived title than show that. Returns a tidy title, or null when the reply doesn't look
- *  like a short name (too many words / too long) so the caller can fall back. */
-export function sanitizeAiTitle(raw: string): string | null {
-  const first = (raw.split("\n").map((l) => l.trim()).find(Boolean) ?? "")
-    .replace(/^(sure|okay|ok)[\s,!.:-]*/i, "") // conversational lead-in: "Sure! ", "Okay, "
-    .replace(/^[^:\n]{0,30}:\s+/, "")          // a leading "Here's a title: " / "Name: " label
-    .replace(/[`*_#>[\]]/g, "")                // markdown
-    .replace(/["'“”‘’]/g, "")                  // quotes
-    .replace(/[.!?…:;]+$/, "")                 // trailing sentence punctuation
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!first) return null;
-  // A real title is a few words. Reject sentence-like replies (fall back to the prompt title).
-  if (first.split(" ").length > 6 || first.length > 48) return null;
-  return first.charAt(0).toUpperCase() + first.slice(1);
+/** Extract the title from the summariser's reply. We ask the model for JSON (`{"title":"…"}`) and
+ *  pull the `title` field out of it, rather than scrubbing free text with an open-ended regex list:
+ *  it targets the intended value and tolerates prose/```fences around the object. Returns null when
+ *  there's no parseable object, the field isn't a string, or it's clearly not a title (a sentence in
+ *  the field) — so the caller falls back to the prompt-derived title. */
+export function titleFromModelJson(raw: string): string | null {
+  const match = raw.match(/\{[\s\S]*?\}/); // first {...} object, wherever the model buried it
+  if (!match) return null;
+  let title: unknown;
+  try { title = (JSON.parse(match[0]) as { title?: unknown }).title; } catch { return null; }
+  if (typeof title !== "string") return null;
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t || t.split(" ").length > 6 || t.length > 48) return null; // sanity cap: a title, not a sentence
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 /** Slugify a title into a git branch name. */

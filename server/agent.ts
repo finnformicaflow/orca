@@ -2,7 +2,7 @@
 // UI can show done/error and "Copy CLI" can resume the exact conversation (mid-run too, since
 // we choose the session id up front). Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
-import { sanitizeAiTitle } from "../web/src/workstream";
+import { titleFromModelJson } from "../web/src/workstream";
 
 export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; startedAt?: number; finishedAt?: number };
 type Run = RunState & { proc?: Bun.Subprocess };
@@ -44,12 +44,12 @@ export const runAgent = (worktreePath: string, prompt: string) => launch(worktre
 export async function summarize(prompt: string): Promise<string | null> {
   try {
     const proc = Bun.spawn(
-      ["claude", "-p", `Reply with ONLY a 2-5 word Title Case name for this task — no sentence, no punctuation, no quotes, no preamble:\n\n${prompt}`, "--model", "haiku", "--output-format", "json"],
+      ["claude", "-p", `Respond with ONLY minified JSON: {"title":"<a 2-5 word Title Case name for this task>"}. No other text.\n\n${prompt}`, "--model", "haiku", "--output-format", "json"],
       { env: process.env, stdout: "pipe", stderr: "ignore" },
     );
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    return sanitizeAiTitle(String(JSON.parse(out.trim()).result ?? "")); // validates: null if sentence-y
+    return titleFromModelJson(String(JSON.parse(out.trim()).result ?? "")); // parse the title field; null if junk/sentence
   } catch {
     return null;
   }

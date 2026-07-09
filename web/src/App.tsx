@@ -96,34 +96,32 @@ function UsageMeter() {
     return () => clearInterval(t);
   }, []);
   if (!usage) return null;
+  // A statusline, à la the CLI: monospace, dim labels, coloured figures — no boxes/badges.
   return (
-    <div className="hidden items-center gap-1 sm:flex" aria-label="Claude usage limits">
-      <UsagePill label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
-      <UsagePill label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
-      {usage.extra && <SpendPill extra={usage.extra} />}
+    <div className="text-muted-foreground hidden items-center gap-3 font-mono text-xs sm:flex" aria-label="Claude usage limits">
+      <UsageStat label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
+      <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
+      {usage.extra && <SpendStat extra={usage.extra} />}
     </div>
   );
 }
 
 // Traffic-light zone by how much of the allowance is burned: green (fine) → amber (caution, ≥75%)
-// → red (the "red-zone", ≥90%). Tints the whole pill so it's glanceable at the edge of vision.
+// → red (the "red-zone", ≥90%). Colours the figure only — statusline style, not a badge.
 function usageZone(pct: number): "ok" | "warn" | "danger" {
   return pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok";
 }
-const ZONE_CLASS: Record<"ok" | "warn" | "danger", string> = {
-  ok: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-  warn: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  danger: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-400",
+const ZONE_TEXT: Record<"ok" | "warn" | "danger", string> = {
+  ok: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  danger: "text-red-600 dark:text-red-400",
 };
-const pillClass = (pct: number) =>
-  `inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs ${ZONE_CLASS[usageZone(pct)]}`;
 
-function UsagePill({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
+function UsageStat({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
   const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
   return (
-    <span className={pillClass(pct)} title={`Claude ${label} usage: ${pct}%${resets}`}>
-      <span className="opacity-60">{label}</span>
-      <span className="font-semibold tabular-nums">{pct}%</span>
+    <span title={`Claude ${label} usage: ${pct}%${resets}`}>
+      {label} <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>{pct}%</span>
     </span>
   );
 }
@@ -138,15 +136,13 @@ function formatMoney(minor: number, exponent: number, currency: string): string 
   }
 }
 
-// Pay-as-you-go spend this month, shown as actual money (£/$/€…) and coloured by how much of the
-// extra-usage cap is used — same red-zone treatment as the rate-limit pills.
-function SpendPill({ extra }: { extra: ExtraUsage }) {
+// Pay-as-you-go spend this month as actual money (£/$/€…), coloured by how much of the cap is used.
+function SpendStat({ extra }: { extra: ExtraUsage }) {
   const used = formatMoney(extra.usedMinor, extra.exponent, extra.currency);
   const limit = formatMoney(extra.limitMinor, extra.exponent, extra.currency);
   return (
-    <span className={pillClass(extra.utilization)} title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
-      <span className="opacity-60">extra</span>
-      <span className="font-semibold tabular-nums">{used}</span>
+    <span title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
+      extra <span className={`font-semibold ${ZONE_TEXT[usageZone(extra.utilization)]}`}>{used}</span>
     </span>
   );
 }
