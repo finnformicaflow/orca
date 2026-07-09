@@ -331,10 +331,10 @@ test("R3 review-queue: a failed cold fetch surfaces the error (not a silent empt
   expect(after.map((p) => p.number)).toEqual([40]);
 });
 
-test("P1 preview isolation: node_modules links per-entry so each worktree owns its .vite cache", async () => {
+test("P1 preview isolation: node_modules is CoW-cloned so worktrees can't perturb each other's deps", async () => {
   const src = await mkdtemp(join(tmpdir(), "orca-src-"));
   const wt = await mkdtemp(join(tmpdir(), "orca-wt-"));
-  // shared main-repo node_modules: a package + Vite's dep-optimize cache
+  // main-repo node_modules: a package + Vite's dep-optimize cache
   await mkdir(join(src, "frontend/node_modules/somepkg"), { recursive: true });
   await writeFile(join(src, "frontend/node_modules/somepkg/index.js"), "module.exports=1");
   await mkdir(join(src, "frontend/node_modules/.vite/deps"), { recursive: true });
@@ -342,14 +342,19 @@ test("P1 preview isolation: node_modules links per-entry so each worktree owns i
   await linkToWorktree(src, wt, ["frontend/node_modules"]);
 
   const nm = join(wt, "frontend/node_modules");
-  // a real directory, NOT one symlink to the shared dir — so .vite can be worktree-local
+  // a real directory, NOT a symlink to the shared dir
   expect((await lstat(nm)).isSymbolicLink()).toBe(false);
   expect((await lstat(nm)).isDirectory()).toBe(true);
-  // packages still resolve, via per-entry symlinks to the shared copy
+  // packages resolve from the clone, and .vite comes along (now worktree-local, no shared cache)
   expect(await readFile(join(nm, "somepkg/index.js"), "utf8")).toBe("module.exports=1");
-  // .vite is deliberately NOT linked — Vite writes a per-worktree cache instead of stomping the
-  // shared one (concurrent previews sharing .vite/deps 504 → blank screen).
-  await expect(lstat(join(nm, ".vite"))).rejects.toThrow();
+  expect((await lstat(join(nm, ".vite/deps"))).isDirectory()).toBe(true);
+  // isolation — the clone is independent both ways: a write in the worktree doesn't reach the
+  // source, and a mutation of the source (a concurrent `npm install`) doesn't reach the worktree.
+  // That severed link is what stops the shared-tree corruption ("only abstract entities" / 504s).
+  await writeFile(join(nm, "somepkg/added.js"), "x");
+  await expect(readFile(join(src, "frontend/node_modules/somepkg/added.js"), "utf8")).rejects.toThrow();
+  await writeFile(join(src, "frontend/node_modules/somepkg/index.js"), "module.exports=2");
+  expect(await readFile(join(nm, "somepkg/index.js"), "utf8")).toBe("module.exports=1");
 });
 
 test("P2 preview cleanup: killTree reaps the whole subtree incl. a backgrounded loop", async () => {

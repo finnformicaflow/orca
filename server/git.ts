@@ -130,16 +130,21 @@ export async function copyToWorktree(repoPath: string, worktreePath: string, pat
 }
 
 /**
- * Symlink heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
- * checkout has none, and a per-worktree install is slow + disk-heavy. Deps resolve through the
- * link; safe while the branch hasn't changed its lockfile. Best-effort per path.
+ * Provision heavy shared dirs (e.g. `node_modules`) from the main repo into a worktree — a fresh
+ * checkout has none, and a real per-worktree install is slow + disk-heavy. Best-effort per path.
  *
- * `node_modules` is special-cased: rather than one symlink to the whole shared dir, each entry is
- * linked individually, so the worktree gets its OWN `node_modules/.vite` (Vite's dep-optimize
- * cache). A single shared symlink makes every concurrent preview write to one `.vite/deps` and
- * stomp each other's versioned chunks — the browser then 504s on an "Outdated Optimize Dep" and
- * the app renders a blank screen. Package dirs stay shared via the per-entry links; only Vite's
- * caches (`.vite*`) are kept worktree-local.
+ * `node_modules` is special-cased: it's CLONED, not symlinked, via APFS copy-on-write (`cp -c`).
+ * A copy-on-write clone is near-instant and shares disk blocks with the source until a file is
+ * modified, so it costs almost nothing — but each worktree gets a fully INDEPENDENT tree. That
+ * isolation is the point: when worktrees shared one node_modules (a whole-dir symlink, or even
+ * per-entry symlinks), any process mutating it — an `npm install` self-heal, an agent adding a
+ * dep, Vite rewriting `.vite/deps` — corrupted every other concurrent preview reading the same
+ * files. The worst symptom was mikro-orm's "only abstract entities discovered" when a preview ran
+ * `cache:generate` while the shared `@mikro-orm/core` was mid-rewrite, plus Vite 504s from a shared
+ * `.vite/deps`. With a per-worktree clone, no worktree can perturb another's deps.
+ *
+ * Falls back to the old per-entry symlink if the clone fails (e.g. a non-APFS volume where `cp -c`
+ * isn't supported) — shared but functional. Other (non-node_modules) paths stay symlinked.
  */
 export async function linkToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
   await Promise.all(paths.map(async (rel) => {
@@ -147,14 +152,21 @@ export async function linkToWorktree(repoPath: string, worktreePath: string, pat
     const dest = join(worktreePath, rel);
     await mkdir(dirname(dest), { recursive: true }).catch(() => {});
     await rm(dest, { recursive: true, force: true }).catch(() => {}); // replace any stale entry
-    if (basename(rel) === "node_modules") {
+    if (basename(rel) !== "node_modules") {
+      await symlink(src, dest).catch(() => {});
+      return;
+    }
+    // APFS CoW clone: instant, block-shared, but a fully independent tree per worktree.
+    try {
+      await run(["cp", "-c", "-R", src, dest]);
+    } catch {
+      // Non-APFS / clone unsupported → degrade to the old per-entry symlink (keeps .vite local).
+      await rm(dest, { recursive: true, force: true }).catch(() => {});
       await mkdir(dest, { recursive: true }).catch(() => {});
       const entries = await readdir(src).catch(() => [] as string[]);
       await Promise.all(entries
-        .filter((e) => !e.startsWith(".vite")) // keep Vite's optimize cache per-worktree, not shared
+        .filter((e) => !e.startsWith(".vite"))
         .map((e) => symlink(join(src, e), join(dest, e)).catch(() => {})));
-    } else {
-      await symlink(src, dest).catch(() => {});
     }
   }));
 }

@@ -23,10 +23,11 @@ export type RepoConfig = {
    */
   copyToWorktree?: string[];
   /**
-   * Heavy shared dirs to symlink (not copy) from the main repo into each worktree — a fresh
-   * checkout has no `node_modules`, and installing per-worktree is slow/huge. Repo-relative paths.
-   * Deps resolve through the link as if in the main repo; safe as long as the branch hasn't
-   * changed its lockfile (else run a real install in the worktree).
+   * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
+   * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
+   * `node_modules` is CoW-cloned (APFS `cp -c`) so each worktree gets an independent, block-shared
+   * copy — isolated, so no worktree's install/build can corrupt another's deps (see git.ts). Other
+   * paths are symlinked. Safe while the branch hasn't changed its lockfile (else install in the WT).
    */
   linkToWorktree?: string[];
 };
