@@ -8,6 +8,7 @@ import { api } from "./api";
 import type { ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
+import { TestMasterMenu } from "./views/PreviewControl";
 import { Review } from "./views/Review";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
@@ -29,6 +30,7 @@ export function App() {
         <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
         {topLevel && <Nav active={route.name} />}
         <div className="ml-auto flex items-center gap-2">
+          {topLevel && <TestMasterMenu />}
           <UsageMeter />
           {topLevel && <RepoFilter />}
           <ProfileMenu />

@@ -5,9 +5,10 @@ import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
+import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
 import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
+import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
@@ -205,6 +206,28 @@ test("S1 source-of-truth: listWorktrees returns live worktrees under the root", 
   expect(wts.every((w) => w.worktreePath.includes("/.worktrees/"))).toBe(true); // main repo excluded
 });
 
+test("M1 test-master: baseWorktree makes a detached checkout of the latest base, invisible to the board", async () => {
+  const repoM = await makeScratchRepo(); // isolated so the extra commit doesn't touch the shared repo
+  const root = join(repoM, ".worktrees");
+  // Advance main so we can prove the base worktree tracks the newest tip, not a stale one.
+  await writeFile(join(repoM, "bug.txt"), "repro\n");
+  await run(["git", "-C", repoM, "add", "."]);
+  await run(["git", "-C", repoM, "commit", "-m", "add bug"]);
+  const mainTip = (await run(["git", "-C", repoM, "rev-parse", "main"])).trim();
+
+  const { worktreePath } = await baseWorktree(repoM, root, "main");
+  expect(await stat(join(worktreePath, "bug.txt")).then(() => true)).toBe(true); // real checkout on disk…
+  expect((await run(["git", "-C", worktreePath, "rev-parse", "HEAD"])).trim()).toBe(mainTip); // …at main's tip
+
+  // Detached → no `branch refs/heads/…` line → never surfaces as a Local workstream card.
+  expect((await listWorktrees(repoM, root)).map((w) => w.branch)).not.toContain("main");
+
+  // Reusable: a second call refreshes the SAME path (kept in place with its env/node_modules).
+  const again = await baseWorktree(repoM, root, "main");
+  expect(again.worktreePath).toBe(worktreePath);
+  await removeWorktree(repoM, worktreePath).catch(() => {});
+});
+
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   await setPrListFixture([
     { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
@@ -298,6 +321,41 @@ test("P2 preview cleanup: killTree reaps the whole subtree incl. a backgrounded 
   await new Promise((r) => setTimeout(r, 250));
   const alive = [proc.pid, ...kids].filter((p) => { try { process.kill(p, 0); return true; } catch { return false; } });
   expect(alive).toEqual([]); // wrapper AND every descendant reaped
+});
+
+// A fake bridge that just holds a port, spawned from a path we control so its argv either does or
+// doesn't look like an Orca bridge (server/index.ts). Waits until it's actually bound.
+const LISTENER = "const p=Number(process.argv[2]);Bun.serve({port:p,fetch:()=>new Response('ok')});await new Promise(()=>{});";
+async function spawnListener(scriptPath: string, port: number): Promise<Bun.Subprocess> {
+  await writeFile(scriptPath, LISTENER);
+  const proc = Bun.spawn(["bun", scriptPath, String(port)], { stdout: "ignore", stderr: "ignore" });
+  for (let i = 0; i < 60 && (await portFree(port)); i++) await new Promise((r) => setTimeout(r, 50));
+  return proc;
+}
+
+test("N1 bridge-port reclaim: a stale bridge on the API port is killed so a fresh one can bind", async () => {
+  // The "Test master 404" bug: a bridge from another checkout squatted the API port, so the fresh
+  // bridge lost the bind and the UI proxied to old, routeless code. Reclaim must free the port.
+  const dir = await mkdtemp(join(tmpdir(), "orca-bridge-"));
+  await mkdir(join(dir, "server"), { recursive: true });
+  const port = await freePort([20_000, 60_000]);
+  await spawnListener(join(dir, "server", "index.ts"), port); // argv → …/server/index.ts (looks like a bridge)
+
+  expect(await portFree(port)).toBe(false); // squatting
+  expect(reclaimBridgePort(port)).toBe(true); // matched an Orca bridge → killed it
+  expect(await waitForPortFree(port)).toBe(true); // …and the port is now bindable
+});
+
+test("N2 bridge-port reclaim: an unrelated service on the port is left alone", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "orca-decoy-"));
+  const port = await freePort([20_000, 60_000]);
+  const proc = await spawnListener(join(dir, "decoy.ts"), port); // argv does NOT look like a bridge
+  try {
+    expect(reclaimBridgePort(port)).toBe(false); // not an Orca bridge → don't touch it
+    expect(await portFree(port)).toBe(false); // still bound
+  } finally {
+    killTree(proc.pid!); // it wasn't reaped by reclaim, so clean it up
+  }
 });
 
 test("D1 pr-detail: gh view json maps to a detail object", async () => {

@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import type { PreviewSvc } from "../api";
-import { previewStatus, stopPreview, testLocally, type Row } from "../store";
+import { baseBranch, previewStatus, stopPreview, testLocally, testMaster, useRepos, type Row } from "../store";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
-// Shared preview lifecycle: start in the background, poll status, expose ready/failed/link.
-function usePreview(row: Row) {
+// Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
+// by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
+// a branch preview (key known up front) and the "test master" preview (key learned on start).
+function usePreview(initialKey: string | undefined, starter: () => Promise<{ key: string; svcs: PreviewSvc[] }>) {
+  const [key, setKey] = useState(initialKey);
   const [svcs, setSvcs] = useState<PreviewSvc[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,14 +17,17 @@ function usePreview(row: Row) {
   // the ref dedupes the auto-reap and freezes the poll so a stale in-flight response can't revive it.
   const reaping = useRef(false);
 
+  // Adopt the caller's key when it lands (e.g. a row gains a worktree after adoption).
+  useEffect(() => { if (initialKey) setKey(initialKey); }, [initialKey]);
+
   useEffect(() => {
-    if (!row.worktreePath) { setSvcs([]); return; }
+    if (!key) { setSvcs([]); return; }
     let cancelled = false;
-    const tick = () => { if (reaping.current) return; void previewStatus(row.worktreePath!).then((s) => !cancelled && setSvcs(s)).catch(() => {}); };
+    const tick = () => { if (reaping.current) return; void previewStatus(key).then((s) => !cancelled && setSvcs(s)).catch(() => {}); };
     tick();
     const t = setInterval(tick, 2500); // reflects "starting → ready" without a manual refresh
     return () => { cancelled = true; clearInterval(t); };
-  }, [row.worktreePath]);
+  }, [key]);
 
   const open = svcs.find((s) => s.open) ?? svcs[0];
   const crashed = svcs.find((s) => !s.running);
@@ -32,23 +39,23 @@ function usePreview(row: Row) {
   // otherwise have to hit Stop. Capture the service's log for the debug panel, drop back to the idle
   // "Retry" state immediately (no lingering Stop button), and reap procs/ports in the background.
   useEffect(() => {
-    if (!crashed || !row.worktreePath || reaping.current) return;
+    if (!crashed || !key || reaping.current) return;
     reaping.current = true;
     setError(crashed.error ?? "a service failed to start");
     setSvcs([]);
-    void stopPreview(row.worktreePath).catch(() => {});
-  }, [crashed, row.worktreePath]);
+    void stopPreview(key).catch(() => {});
+  }, [crashed, key]);
 
   const start = async () => {
     setBusy(true); setError(null); reaping.current = false; // fresh run: re-enable polling, clear the last error
-    try { setSvcs(await testLocally(row)); }
+    try { const r = await starter(); setKey(r.key); setSvcs(r.svcs); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); } // don't revert silently
     finally { setBusy(false); }
   };
   const stop = async () => {
-    if (!row.worktreePath) return;
+    if (!key) return;
     setBusy(true); reaping.current = true; // stop polling; nothing left to reflect
-    try { await stopPreview(row.worktreePath); setSvcs([]); } finally { setBusy(false); }
+    try { await stopPreview(key); setSvcs([]); } finally { setBusy(false); }
   };
 
   // Tick once a second while starting so the elapsed timer updates (shows if a boot is hanging).
@@ -88,7 +95,7 @@ function ErrorLog({ error }: { error: string }) {
 
 /** Compact "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). */
 export function PreviewControl({ row }: { row: Row }) {
-  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(row);
+  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
 
   // Idle (incl. after a failure — the crashed preview auto-stops, so there's no Stop button here,
   // just Retry + the expandable log).
@@ -120,9 +127,92 @@ export function PreviewControl({ row }: { row: Row }) {
   );
 }
 
+// The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview
+// failed — show log"). The menu is tight, so — unlike the card's inline <details> expand — the log
+// opens in a popover floating above the row. Copy button included.
+function LogPopover({ error }: { error: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { /* clipboard unavailable */ }
+  };
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button type="button" className="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">Preview failed — show log</button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96 text-xs">
+        <div className="relative">
+          <button onClick={() => void copy()} title="Copy log" className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </button>
+          <pre className="bg-muted max-h-48 overflow-auto rounded-md p-2 pr-8 whitespace-pre-wrap">{error}</pre>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** One repo's row in the Test-master menu: its base branch + a Test/Starting/Open·Stop control
+ *  (and, on failure, Retry + a Log popover). Each row owns an independent preview lifecycle keyed by
+ *  that repo's base worktree. */
+export function TestMasterRow({ repo }: { repo: string }) {
+  const base = baseBranch(repo);
+  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(undefined, () => testMaster(repo));
+
+  return (
+    <div className="space-y-1">
+      <div className="text-muted-foreground text-xs font-medium">{repo}</div>
+      {!active && !busy ? (
+        <div className="w-full space-y-1">
+          <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
+            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+            {error ? `Retry ${base}` : `Test ${base}`}
+          </Button>
+          {error && <LogPopover error={error} />}
+        </div>
+      ) : (
+        <div className="inline-flex w-full">
+          {ready && open ? (
+            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open the ${base} preview on :${open.port}`}>
+              <ExternalLink className="size-3.5" /> Open {base}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
+              <Loader2 className="size-3.5 animate-spin" /> Starting… {starting && elapsed > 0 ? `${elapsed}s` : ""}
+            </Button>
+          )}
+          <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Top-right "Test master" menu: a flask-icon trigger that opens a popover with one row per repo,
+ *  each able to spin up a preview of that repo's base branch itself — to sanity-check whether a bug
+ *  reproduces on a clean main, without a feature branch in the way. */
+export function TestMasterMenu() {
+  const repos = useRepos();
+  if (repos.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="icon" variant="outline" className="size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
+          <FlaskConical className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 space-y-3">
+        <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Test master</div>
+        {repos.map((r) => <TestMasterRow key={r.name} repo={r.name} />)}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /** Full panel for the detail Preview tab: embeds the running frontend once it's ready. */
 export function PreviewPanel({ row }: { row: Row }) {
-  const { open, active, ready, failed, busy, error, start, stop } = usePreview(row);
+  const { open, active, ready, failed, busy, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
 
   return (
     <div className="space-y-2 pt-3">

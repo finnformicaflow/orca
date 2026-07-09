@@ -18,12 +18,17 @@ export const apiFake = {
   prsData: [] as unknown[],
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
+  // Preview services served by api.previewMaster (on start) + api.previewStatus (the poll) — tests set
+  // these to drive the Test-master menu through its ready state.
+  previewSvcs: [] as unknown[],
+  // When set, api.previewMaster rejects with it — the failed-start path (Retry + Log popover).
+  previewMasterError: null as null | string,
   // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.claudePrompts = []; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -40,8 +45,13 @@ mock.module("@/api", () => ({
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {
       apiFake.calls.push(`discard:${branch}`); if (branch) apiFake.worktrees.delete(branch); return { ok: true };
     },
+    previewMaster: async (repo: string) => {
+      apiFake.calls.push(`previewMaster:${repo}`);
+      if (apiFake.previewMasterError) throw new Error(apiFake.previewMasterError);
+      return { worktreePath: `/wt/${repo}-main`, svcs: apiFake.previewSvcs };
+    },
     previewStop: async () => ({ ok: true }),
-    previewStatus: async () => [],
+    previewStatus: async () => apiFake.previewSvcs,
     summary: async () => apiFake.summaryData,
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };

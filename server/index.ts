@@ -4,10 +4,18 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
+import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import { mergeSafe, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 
 const cfg = await loadConfig();
+// Take the API port from a stale bridge (a prior dev run, or another checkout's instance) before
+// binding — otherwise a fresh bridge with newer routes silently loses the bind and the UI proxies
+// `/api` to the old code, 404ing on anything new (this is what made "Test master" report "not found").
+if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
+  console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
+  await waitForPortFree(API_PORT);
+}
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
@@ -115,6 +123,16 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/preview") {
     await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
     return json(await preview.status(body.key));
+  }
+  if (req.method === "POST" && p === "/api/preview/master") {
+    // "Test master": spin up a preview of the base branch itself, in a detached worktree of the
+    // latest base. Same machinery as a branch preview (copy env, link node_modules, start services),
+    // keyed by the worktree path — so status/stop go through the existing /api/preview endpoints.
+    const { worktreePath } = await git.baseWorktree(repo.repoPath, repo.worktreeRoot, repo.baseBranch);
+    await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
+    await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
+    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
+    return json({ worktreePath, svcs: await preview.status(worktreePath) });
   }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");

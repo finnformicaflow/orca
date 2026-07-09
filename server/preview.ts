@@ -11,10 +11,10 @@
 //   2. Port collisions. Picking a port from the in-memory map alone hands out ports those orphans
 //      (or anything else on the machine) still hold, so the new server crashes on bind. We probe
 //      the OS for a genuinely free port instead.
-import { createServer } from "node:net";
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { portFree } from "./net";
 import type { PreviewService } from "./config";
 
 // Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
@@ -64,18 +64,6 @@ export async function reattach(): Promise<void> {
     if (live.length) previews.set(key, live);
   }
   persist(); // rewrite pruned of the dead / foreign
-}
-
-/** True if nothing is currently bound to `port`, checked against the OS (so an orphaned server from
- *  a prior run counts as taken — the in-memory map can't know about it after a restart). */
-function portFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const srv = createServer();
-    srv.once("error", () => resolve(false));
-    srv.once("listening", () => srv.close(() => resolve(true)));
-    // listen() throws synchronously for out-of-range ports (>65535) — treat as "not free", re-roll.
-    try { srv.listen(port, "0.0.0.0"); } catch { resolve(false); }
-  });
 }
 
 // Pick a random port in the range. With a wide range (~90k) two previews launched close together
