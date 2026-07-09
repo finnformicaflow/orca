@@ -59,6 +59,26 @@ describe("optimistic follow-up submit", () => {
     expect(localStorage.getItem(draftKey)).toBeNull(); // succeeded → draft dropped
   });
 
+  test("shows a spinner on the Follow up button while the launch is in flight", async () => {
+    apiFake.holdClaude = true; // block the launch so we can observe the in-flight state
+    mount();
+    await click(btn("Follow up")!);
+    await flush();
+    await type(textarea()!, "please retry");
+    await click(container!.querySelector('button[title^="Send"]')!);
+
+    // Box closed, launch still running: the Follow up button shows a spinner and is disabled.
+    expect(textarea()).toBeNull();
+    const follow = btn("Follow up")!;
+    expect(follow.querySelector(".animate-spin")).not.toBeNull();
+    expect((follow as HTMLButtonElement).disabled).toBe(true);
+
+    // Launch resolves: the spinner clears and the button is usable again.
+    await act(async () => { apiFake.releaseClaude!(); await flush(); });
+    expect(btn("Follow up")!.querySelector(".animate-spin")).toBeNull();
+    expect((btn("Follow up")! as HTMLButtonElement).disabled).toBe(false);
+  });
+
   test("reopens with the previous prompt (and an error) when the launch fails", async () => {
     apiFake.claudeError = "worktree busy";
     mount();

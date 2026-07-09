@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
   merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, type Row,
@@ -25,6 +25,10 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
+  // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
+  // upload + claude) runs for a few seconds. Show a spinner on the Follow up button meanwhile, so the
+  // work isn't invisible.
+  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Wrap every action so it (a) surfaces errors — menu items are fire-and-forget, so a failed
   // promote/merge would otherwise vanish silently — and (b) reports busy up to the card, which
@@ -64,7 +68,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="soft" onClick={() => setComposing((v) => !v)}>Follow up</Button>
+        <Button size="sm" variant="soft" disabled={submitting} onClick={() => setComposing((v) => !v)}>
+          {submitting && <Loader2 className="size-4 animate-spin" />}Follow up
+        </Button>
         {/* Second-class, lane-contextual action right after Follow up. */}
         {row.lane === "IN_REVIEW" && (
           <Button size="sm" variant={bumpDue ? "default" : "outline"} onClick={run(() => sendSlack(row, notified ? "bump" : "notify"))}>
@@ -166,6 +172,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
           onClose={() => setComposing(false)}
           // Launch failed: reopen with the (still-persisted) prompt and surface why.
           onFail={(msg) => { setErr(msg); setComposing(true); }}
+          onSubmitting={setSubmitting}
         />
       )}
     </div>
@@ -191,7 +198,9 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
   );
 }
 
-export function FollowUpComposer({ row, onClose, onFail }: { row: Row; onClose: () => void; onFail: (msg: string) => void }) {
+export function FollowUpComposer(
+  { row, onClose, onFail, onSubmitting }: { row: Row; onClose: () => void; onFail: (msg: string) => void; onSubmitting: (busy: boolean) => void },
+) {
   const key = followUpDraftKey(row);
   return (
     <ChatComposer
@@ -201,11 +210,14 @@ export function FollowUpComposer({ row, onClose, onFail }: { row: Row; onClose: 
       placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
       // Optimistic submit: close the box the instant you send (launching the agent takes a few
       // seconds — ensureWorktree + upload). The draft stays persisted, so a failed launch reopens
-      // it with the same prompt; a success drops it.
+      // it with the same prompt; a success drops it. `onSubmitting` drives the Follow up button's
+      // spinner for the duration, so the in-flight launch isn't invisible after the box closes.
       onSubmit={async (instruction, images) => {
         onClose();
+        onSubmitting(true);
         try { await followUp(row, instruction, images); clearDraft(key); }
         catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
+        finally { onSubmitting(false); }
       }}
       onCancel={onClose}
     />

@@ -28,9 +28,13 @@ export const apiFake = {
   claudePrompts: [] as string[],
   // When set, api.claude rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
+  // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
+  // (e.g. the Follow up button's spinner) while the launch is still running.
+  holdClaude: false,
+  releaseClaude: null as null | (() => void),
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.claudeError = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -61,6 +65,7 @@ mock.module("@/api", () => ({
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
+      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
       return { status: "ok" };
     },
   },
