@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
+import { App } from "@/App";
 import { TestMasterRow } from "@/views/PreviewControl";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,11 +25,27 @@ async function mount() {
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const button = (label: string) => [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes(label));
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
   apiFake.reset();
+  localStorage.clear();
+  await act(async () => { await store.refresh(); });
+});
+
+test("TM3 header: the Test master button sits by the repo controls, after the usage meter", async () => {
+  apiFake.usageData = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 20, resetsAt: null } };
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
+
+  const meter = container.querySelector("[aria-label='Claude usage limits']")!;
+  const testMaster = container.querySelector("[aria-label='Test master']")!;
+  expect(meter).toBeTruthy();
+  expect(testMaster).toBeTruthy();
+  // Test master moved to the right of the usage meter (next to the repo selector), not before it.
+  expect(meter.compareDocumentPosition(testMaster) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("TM1 test-master row: launches the base preview and opens once ready", async () => {
