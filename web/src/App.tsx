@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
-import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
+import { repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
 import type { ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { TestMasterMenu } from "./views/PreviewControl";
-import { Review } from "./views/Review";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 import { Button } from "@/components/ui/button";
@@ -22,13 +21,12 @@ import {
 
 export function App() {
   const route = useRoute();
-  const topLevel = route.name === "board" || route.name === "review";
+  const topLevel = route.name === "board";
   return (
     <div className="w-full px-4 py-4 md:px-6">
       <header className="mb-6 flex items-center gap-3">
-        <h1 className="text-xl font-semibold">🐳 Orca</h1>
+        <Wordmark />
         <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
-        {topLevel && <Nav active={route.name} />}
         {/* Right cluster reads as two groups: read-only usage status, then a divider, then controls. */}
         <div className="ml-auto flex items-center gap-3">
           <UsageMeter />
@@ -41,31 +39,27 @@ export function App() {
       </header>
       {route.name === "pr" ? <PrDetail repo={route.repo} number={route.number} sub={route.sub} />
         : route.name === "local" ? <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />
-        : route.name === "review" ? <Review />
         : <Board />}
     </div>
   );
 }
 
-// Top-level nav: your own kanban ("Board"), the same board stacked as lists ("List"), and the
-// coworker review queue ("Review"). Board/List both live on "/" and just flip the display mode.
-function Nav({ active }: { active: "board" | "review" }) {
-  const [view, setView] = useAtom(boardViewAtom);
-  const onBoard = active === "board";
-  const link = (isActive: boolean, onClick: () => void, label: string) => (
-    <button
-      className={`rounded-md px-2.5 py-1 text-sm font-medium ${isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-      onClick={onClick}
-    >
-      {label}
+// The mark: a geometric orca silhouette (single-fill, currentColor, eye punched out via evenodd so
+// it reads on any theme) beside a monospace "Orca" wordmark. The whole lockup links home to the board.
+function Wordmark() {
+  return (
+    <button onClick={() => navigate("/")} className="flex items-center gap-2" title="Orca — board" aria-label="Orca — go to board">
+      <OrcaMark className="text-foreground size-6" />
+      <span className="font-mono text-xl font-semibold tracking-tight">Orca</span>
     </button>
   );
+}
+
+function OrcaMark({ className }: { className?: string }) {
   return (
-    <nav className="flex items-center gap-1">
-      {link(onBoard && view === "board", () => { setView("board"); navigate("/"); }, "Board")}
-      {link(onBoard && view === "list", () => { setView("list"); navigate("/"); }, "List")}
-      {link(active === "review", () => navigate("/review"), "Review")}
-    </nav>
+    <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className} aria-hidden="true">
+      <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
+    </svg>
   );
 }
 

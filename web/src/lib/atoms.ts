@@ -6,6 +6,3 @@ export const draftRepoAtom = atomWithStorage("orca.draftRepo", "");
 
 // Board repo filter ("all" or a repo name), persisted. Scopes the board + the Done-lane copy.
 export const repoFilterAtom = atomWithStorage("orca.repoFilter", "all");
-
-// Board display: side-by-side kanban columns ("board") or lanes stacked as lists ("list"). Persisted.
-export const boardViewAtom = atomWithStorage<"board" | "list">("orca.boardView", "board");

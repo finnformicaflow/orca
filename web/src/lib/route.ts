@@ -6,15 +6,13 @@ export type PrTab = "overview" | "files" | "checks" | "preview";
 export type LocalTab = "overview" | "files" | "preview";
 export type Route =
   | { name: "board" }
-  | { name: "review" }
   | { name: "pr"; repo: string; number: number; sub: PrTab }
   | { name: "local"; repo: string; branch: string; sub: LocalTab };
 
 function parse(): Route {
-  // board at "/" (all repos); coworker review queue at "/review"; PR detail at /{repo}/prs/{n}[/files|/checks];
+  // board at "/" (all repos); PR detail at /{repo}/prs/{n}[/files|/checks];
   // local-session detail at /{repo}/local/{branch}[/files|/preview] (branch is URI-encoded — may contain "/")
   const parts = location.pathname.split("/").filter(Boolean);
-  if (parts[0] === "review") return { name: "review" };
   if (parts[1] === "prs" && parts[2]) {
     return { name: "pr", repo: parts[0]!, number: Number(parts[2]), sub: (parts[3] as PrTab) ?? "overview" };
   }
