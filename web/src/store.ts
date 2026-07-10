@@ -37,6 +37,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
+  followDraft?: string; // in-progress follow-up composer text — kept here (small, durable) so it survives even when the image-carrying composerDraft blows the localStorage quota
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -63,6 +64,17 @@ function deleteEnrich(repo: string, branch: string) {
 }
 // Adopt another tab's writes so our in-memory map (and the board) stay in sync without a refresh.
 window.addEventListener("storage", (e) => { if (e.key === KEY) { enrichMap = load(); notify(); } });
+
+/** Persist an in-progress follow-up composer draft in the (small, durable) enrichment blob, keyed
+ *  repo::branch — the same place the original prompt lives, and unlike the composerDraft entry it
+ *  carries no images, so it can't blow the localStorage quota and lose the text. Quiet: no notify,
+ *  since only the composer reads it (seeded on mount). Empty text clears the field. */
+export function setFollowDraft(repo: string, branch: string, text: string) {
+  const k = ekey(repo, branch);
+  const fresh = load(); // merge against the freshest blob (another tab may have written) — see patchEnrich
+  enrichMap = { ...fresh, [k]: { ...fresh[k], followDraft: text.trim() ? text : undefined } };
+  localStorage.setItem(KEY, JSON.stringify(enrichMap));
+}
 
 // Branches mid-removal (close/discard) — optimistically hidden so a poll that lands between "PR
 // closed" and "worktree removed" doesn't flash the row back as a bare Local worktree.
@@ -178,6 +190,7 @@ export type Row = {
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
   following?: boolean;
+  followDraft?: string;
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -227,7 +240,7 @@ export function useWorkstreams(): Row[] {
         mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following,
+        following: e.following, followDraft: e.followDraft,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };
