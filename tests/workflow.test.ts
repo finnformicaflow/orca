@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
+import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody } from "../server/git";
 import { convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
@@ -133,6 +133,34 @@ test("W3 promote-to-pr: gh pr create returns number + url", async () => {
   const pr = await createPr(wt, { title: "Feat", body: "b", base: "main", head: "feat-pr" });
   expect(pr.number).toBe(42);
   expect(pr.url).toEndWith("/42");
+});
+
+test("W3b promote body: no blank PRs — commit summary by default, the repo's PR template if present", async () => {
+  const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-body", "main");
+  const base = await resolveBase(repo, "main");
+
+  // No commits yet, no template → a placeholder, never blank.
+  expect(await resolvePrBody(wt, base, "")).toBe("_No commits yet._");
+
+  // A caller-supplied body always wins untouched.
+  expect(await resolvePrBody(wt, base, "hand written")).toBe("hand written");
+
+  // Commits but no template → a "what changed" overview from the commit subjects, oldest-first.
+  await writeFile(join(wt, "a.ts"), "export const a = 1;\n");
+  await run(["git", "-C", wt, "add", "."]);
+  await run(["git", "-C", wt, "commit", "-m", "add a"]);
+  await writeFile(join(wt, "b.ts"), "export const b = 2;\n");
+  await run(["git", "-C", wt, "add", "."]);
+  await run(["git", "-C", wt, "commit", "-m", "add b"]);
+  const summary = await resolvePrBody(wt, base, "");
+  expect(summary).toContain("- add a");
+  expect(summary).toContain("- add b");
+  expect(summary.indexOf("add a")).toBeLessThan(summary.indexOf("add b")); // oldest-first
+
+  // A checked-in PR template becomes the body (the repo's own guidelines win over the summary).
+  await mkdir(join(wt, ".github"), { recursive: true });
+  await writeFile(join(wt, ".github/PULL_REQUEST_TEMPLATE.md"), "## Why\n\n## What\n");
+  expect(await resolvePrBody(wt, base, "")).toBe("## Why\n\n## What");
 });
 
 describe("W4 poll-status: gh json → state machine", () => {

@@ -3,6 +3,7 @@ import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { dlopen, FFIType, suffix } from "bun:ffi";
 import { run } from "./run";
+import { defaultPrBody } from "../web/src/workstream";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
@@ -225,6 +226,30 @@ export async function mergeLocal(repoPath: string, base: string, branch: string)
 
 /** Diff + commit summary of a worktree's branch against `base`. */
 /** Full patch of the branch vs its base — powers the Files tab on the local-session detail view. */
+// GitHub's standard PR-template locations (root, docs/, .github/), tried in that order. Read from
+// the worktree so it reflects the template checked in on this branch.
+const PR_TEMPLATE_PATHS = [
+  ".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md",
+  "docs/PULL_REQUEST_TEMPLATE.md", "docs/pull_request_template.md",
+  "PULL_REQUEST_TEMPLATE.md", "pull_request_template.md",
+];
+
+/** The description Orca gives a new PR when the caller didn't supply one: the repo's PR template if
+ *  it has one (its own guidelines), else a "what changed" overview from the branch's commits — so a
+ *  promoted PR never opens with a blank body. A caller-provided body wins untouched. */
+export async function resolvePrBody(worktreePath: string, base: string, provided?: string): Promise<string> {
+  if (provided?.trim()) return provided;
+  for (const rel of PR_TEMPLATE_PATHS) {
+    const f = Bun.file(join(worktreePath, rel));
+    if (await f.exists()) {
+      const text = (await f.text()).trim();
+      if (text) return text;
+    }
+  }
+  const { commits } = await changeSummary(worktreePath, base);
+  return defaultPrBody(commits.map((c) => c.subject).reverse()); // changeSummary is newest-first
+}
+
 export const worktreeDiff = (worktreePath: string, base: string) =>
   run(["git", "-C", worktreePath, "diff", `${base}...HEAD`]);
 

@@ -73,8 +73,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/promote") {
     await git.pushBranch(body.worktreePath, body.branch); // the branch must exist on origin for `gh pr create`
+    // No body from the UI → fill it from the repo's PR template (its guidelines) or a commit summary,
+    // so the PR never opens blank.
+    const prBody = await git.resolvePrBody(body.worktreePath, await git.resolveBase(repo.repoPath, repo.baseBranch), body.body);
     const pr = await gh.createPr(body.worktreePath, {
-      title: body.title, body: body.body ?? "", base: repo.baseBranch, head: body.branch, draft: body.draft,
+      title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
     if (body.addPreviewLabel) await gh.addLabel(repo.repoPath, pr.number, repo.previewLabel ?? "preview").catch(() => {});
     return json(pr);
