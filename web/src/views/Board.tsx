@@ -45,10 +45,11 @@ export function Board() {
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
               {/* Pin the new-draft box to the top of the (scrolling) Local column so it stays reachable
-                  no matter how many sessions pile up below. The composer's own bg-card is opaque, so
-                  cards scroll cleanly beneath it. */}
+                  no matter how many sessions pile up below. The negative margins + padding bleed the
+                  solid backdrop over the column's p-2 so cards scroll cleanly *under* the bar instead
+                  of peeking through the composer's rounded corners and gaps. */}
               {lane === "LOCAL" && (
-                <div className="sticky top-0 z-20">
+                <div className="bg-background sticky top-0 z-20 -mx-2 -mt-2 px-2 pt-2 pb-2">
                   <NewDraft />
                 </div>
               )}

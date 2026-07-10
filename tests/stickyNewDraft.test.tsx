@@ -38,5 +38,7 @@ describe("sticky new-draft box", () => {
     const sticky = textarea!.closest(".sticky");
     expect(sticky).not.toBeNull();
     expect(sticky!.className).toContain("top-0"); // pinned to the top of the scroll container
+    // A solid (opaque) backdrop, so cards scroll *under* the bar instead of showing through it.
+    expect(sticky!.className).toMatch(/\bbg-background\b/);
   });
 });
