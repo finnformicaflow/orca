@@ -37,8 +37,10 @@ describe("sticky new-draft box", () => {
     // Walk up to the sticky wrapper that keeps it reachable while the column scrolls.
     const sticky = textarea!.closest(".sticky");
     expect(sticky).not.toBeNull();
-    expect(sticky!.className).toContain("top-0"); // pinned to the top of the scroll container
-    // A solid (opaque) backdrop, so cards scroll *under* the bar instead of showing through it.
+    expect(sticky!.className).toMatch(/-?top-2|top-0/); // pinned to the top of the scroll container
+    // A solid (opaque) backdrop that full-bleeds over the column padding (negative margins), so cards
+    // scroll *under* the bar instead of peeking through above it or at the sides.
     expect(sticky!.className).toMatch(/\bbg-background\b/);
+    expect(sticky!.className).toMatch(/-mx-2/);
   });
 });
