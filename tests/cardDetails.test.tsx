@@ -1,6 +1,7 @@
-// E2E for the enriched swimlane card details: the worktree name (click-to-copy) and a coloured
-// diffstat must render on every lane EXCEPT Done, on their own lines. Driven against the fake api
-// (tests/apiFake.ts) — the card polls api.summary — rendered into a real DOM. See Board.WorkstreamCard.
+// E2E for the enriched swimlane card details: the worktree name (read-only context) + a coloured
+// diffstat render on every lane EXCEPT Done, and the top-right copy menu offers the PR link (when
+// there's a PR) + the worktree name. Driven against the fake api (tests/apiFake.ts) — the card polls
+// api.summary — rendered into a real DOM. See Board.WorkstreamCard.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -14,6 +15,13 @@ import type { Row } from "@/store";
 beforeAll(() => store.configReady); // cfg (repo "r") populated before the first render
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
+// The top-right copy affordance is a Radix dropdown — open it with a real PointerEvent (Radix opens
+// menus on pointerdown, not click) so its items (portalled to document.body) render.
+const openCopyMenu = async () => {
+  const trigger = container!.querySelector<HTMLElement>('button[title="Copy…"]')!;
+  await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+};
 
 let copied = "";
 Object.defineProperty(globalThis.navigator, "clipboard", {
@@ -44,14 +52,14 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("a non-local (In Review) card shows the worktree name and a coloured diffstat", async () => {
+  test("a non-local (In Review) card shows the worktree name as context and a coloured diffstat", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);
 
-    const name = container!.querySelector<HTMLElement>('button[title="Copy worktree name"]');
-    expect(name?.textContent).toContain("enrich-cards-1");
+    // The worktree/branch name renders as read-only context (copying is in the top-right menu now).
+    expect(container!.querySelector("code")?.textContent).toBe("enrich-cards-1");
 
-    // Diffstat is a SEPARATE line from the name, with green additions + red deletions and a file count.
+    // Green additions + red deletions and a file count.
     const add = container!.querySelector(".text-emerald-700");
     const del = container!.querySelector(".text-destructive");
     expect(add?.textContent).toBe("+12");
@@ -59,33 +67,37 @@ describe("swimlane card details", () => {
     expect(container!.textContent).toContain("2 files");
   });
 
-  test("clicking the worktree name copies it", async () => {
+  test("a PR card's copy menu offers Copy PR link, which copies the PR url", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base);
-    const name = container!.querySelector<HTMLElement>('button[title="Copy worktree name"]')!;
-    await act(async () => { name.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-    expect(copied).toBe("enrich-cards-1");
-  });
-
-  test("a PR card shows a copy-link icon that copies the PR url", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount(base);
-    const btn = container!.querySelector<HTMLElement>('button[title="Copy PR link"]')!;
-    expect(btn).not.toBeNull();
-    await act(async () => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    await openCopyMenu();
+    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy PR link"]')!;
+    expect(item).not.toBeNull();
+    await click(item);
     expect(copied).toBe("https://x/7");
   });
 
-  test("a local card with no PR has no copy-link icon", async () => {
+  test("a PR card's copy menu also offers Copy worktree name", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
-    expect(container!.querySelector('button[title="Copy PR link"]')).toBeNull();
+    await mount(base);
+    await openCopyMenu();
+    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy worktree name"]')!;
+    expect(item).not.toBeNull();
+    await click(item);
+    expect(copied).toBe("enrich-cards-1");
   });
 
-  test("a Done card shows neither the copy-name control nor the diffstat", async () => {
+  test("a local card's copy menu has no Copy PR link option, only the worktree name", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
+    await openCopyMenu();
+    expect(document.body.querySelector('[role="menuitem"][title="Copy PR link"]')).toBeNull();
+    expect(document.body.querySelector('[role="menuitem"][title="Copy worktree name"]')).not.toBeNull();
+  });
+
+  test("a Done card shows no diffstat", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 5, deletions: 5 };
     await mount({ ...base, lane: "DONE", mergedAt: new Date().toISOString() });
-    expect(container!.querySelector('button[title="Copy worktree name"]')).toBeNull();
     expect(container!.textContent).not.toContain("+5");
   });
 });
