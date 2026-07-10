@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree } from "../server/git";
-import { convertToDraft, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followUpPrompt, launchPrompt,
+  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, launchPrompt,
   prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -232,6 +232,44 @@ describe("W10 active-following (followAction)", () => {
     expect(p).toContain("feat-x");
     expect(p).toContain("gh pr view 7 --comments");
   });
+});
+
+describe("W11 follow decisions (followDecision — blockers + new-comment triggering)", () => {
+  const green = { mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "approved" } as const;
+  test("a blocker fires regardless of feedback, tagging the sig with the count", () => {
+    expect(followDecision({ ...green, ciStatus: "failing", externalFeedback: 2 }, undefined))
+      .toEqual({ action: "fixCi", sig: "fixCi#2" });
+  });
+  test("first follow of a green PR with existing comments addresses them once", () => {
+    // prevSig undefined (just enabled / cleared) → pending feedback is picked up
+    expect(followDecision({ ...green, externalFeedback: 3 }, undefined)).toEqual({ action: "addressReview", sig: "ok#3" });
+  });
+  test("a steady state never re-fires — same sig → no action (survives reloads)", () => {
+    expect(followDecision({ ...green, externalFeedback: 3 }, "ok#3")).toEqual({ action: null, sig: "ok#3" });
+  });
+  test("a NEW comment (feedback ↑ since last acted) fires addressReview again", () => {
+    expect(followDecision({ ...green, externalFeedback: 4 }, "ok#3")).toEqual({ action: "addressReview", sig: "ok#4" });
+  });
+  test("feedback dropping (a deleted comment) records the sig but does not fire", () => {
+    expect(followDecision({ ...green, externalFeedback: 2 }, "ok#3")).toEqual({ action: null, sig: "ok#2" });
+  });
+});
+
+test("countExternalFeedback tallies others' comments/reviews, ignoring the author and bots", () => {
+  const author = "me";
+  const comments = [
+    { author: { login: "me" } },        // self — ignored
+    { author: { login: "coworker" } },  // human — counts
+    { author: { login: "vercel[bot]" } }, // bot — ignored
+  ];
+  const reviews = [
+    { author: { login: "reviewer" }, state: "CHANGES_REQUESTED" }, // counts
+    { author: { login: "reviewer2" }, state: "COMMENTED" },        // counts
+    { author: { login: "reviewer3" }, state: "APPROVED" },         // approval isn't "feedback to address"
+    { author: { login: "me" }, state: "COMMENTED" },               // self — ignored
+  ];
+  expect(countExternalFeedback(author, comments, reviews)).toBe(3); // 1 comment + 2 reviews
+  expect(countExternalFeedback(author, [], [])).toBe(0);
 });
 
 test("W8 draft-toggle: markReady/convertToDraft shell out to `gh pr ready` (± --undo)", async () => {

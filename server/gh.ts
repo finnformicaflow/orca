@@ -28,12 +28,27 @@ export async function createPr(
   return { number, url };
 }
 
-export type PrSummary = PrStatus & { number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean; previewUrl?: string };
+export type PrSummary = PrStatus & { number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean; previewUrl?: string; externalFeedback: number };
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
 function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefined {
   const urls = comments.flatMap((c) => [...(c.body ?? "").matchAll(/https?:\/\/[^\s)\]<]+/g)].map((m) => m[0]));
   return urls.find((u) => /\.preview\./.test(u) && !/api\.preview/.test(u) && !/\.(png|jpe?g|gif|svg)(\?|$)/i.test(u));
+}
+
+/** Count HUMAN feedback on a PR: issue comments + reviews left by someone other than the author,
+ *  excluding bots (login ends in `[bot]` — CI/preview/coverage). Drives "Follow PR": a rise in this
+ *  count means a coworker left new feedback to address. Excluding the author (and thus Orca's own
+ *  agent, which acts as you) is what stops the follow loop re-triggering on its own replies. */
+export function countExternalFeedback(
+  authorLogin: string,
+  comments: Array<{ author?: { login?: string } }> = [],
+  reviews: Array<{ author?: { login?: string }; state?: string }> = [],
+): number {
+  const isOther = (login?: string) => Boolean(login) && login !== authorLogin && !login!.endsWith("[bot]");
+  const c = comments.filter((x) => isOther(x.author?.login)).length;
+  const r = reviews.filter((x) => isOther(x.author?.login) && (x.state === "COMMENTED" || x.state === "CHANGES_REQUESTED")).length;
+  return c + r;
 }
 
 // High-level PR fields, cheap to list. Deliberately EXCLUDES the two per-PR fields gh fetches one
@@ -46,7 +61,9 @@ type RawPr = {
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
   autoMergeRequest?: { enabledAt?: string } | null;
   statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
-  comments?: Array<{ body?: string }>;
+  author?: { login?: string };
+  comments?: Array<{ author?: { login?: string }; body?: string }>;
+  reviews?: Array<{ author?: { login?: string }; state?: string }>;
 };
 const mapSummary = (j: RawPr): PrSummary => ({
   number: j.number,
@@ -60,12 +77,14 @@ const mapSummary = (j: RawPr): PrSummary => ({
   reviewStatus: mapReview(j.reviewDecision ?? ""),
   mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
   previewUrl: j.comments ? extractPreviewUrl(j.comments) : undefined,
+  externalFeedback: countExternalFeedback(j.author?.login ?? "", j.comments, j.reviews),
 });
 
-/** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI +
- *  comments too (there are few of your own PRs) so the board shows checks + links the deploy preview. */
+/** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI,
+ *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
+ *  preview, and "Follow PR" can react to new reviewer feedback. */
 export async function listPrs(cwd: string): Promise<PrSummary[]> {
-  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments`);
+  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments,author,reviews`);
   return (JSON.parse(raw) as RawPr[]).map(mapSummary);
 }
 

@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  addressReviewPrompt, deriveKanbanState, followAction, followUpPrompt, launchPrompt, resolveCiPrompt,
+  addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
   resolveConflictsPrompt, slackPrompt, titleFromPrompt, withAttachments,
 } from "./workstream";
 
@@ -36,6 +36,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; following?: boolean;
+  followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -113,29 +114,28 @@ setInterval(() => void refresh(), 8_000);
 
 // ---- active PR following ----
 // A "followed" card is on autopilot: each poll, if its PR has a blocker (conflict / failing CI /
-// requested changes) and no agent is already working the branch, Orca fires the same action you'd
-// click. `followHandled` records the condition last acted on so it fires once per distinct state —
-// a genuinely new failure (state changed then recurred) re-triggers, but a steady blocker doesn't
-// stack runs. Followed rows fire from `live` (not the assembled rows) so this stays poll-driven.
-const followHandled = new Map<string, string>(); // repo::branch -> last condition acted on ("ok" when clear)
+// requested changes) OR a coworker has left new feedback since we last acted, and no agent is
+// already working the branch, Orca fires the same action you'd click. The state it last acted on is
+// a signature persisted in enrichment (`followSig`) — so it fires once per distinct state, a new
+// comment re-triggers, a steady state doesn't stack runs, and a page reload can't replay a storm of
+// launches. Followed rows fire from `live` (not the assembled rows) so this stays poll-driven.
 
-/** Toggle whether Orca actively follows a PR's card (auto-fixing conflicts/CI/review). */
+/** Toggle whether Orca actively follows a PR's card (auto-fixing conflicts/CI/review, addressing new
+ *  comments). Clears the acted-on signature when turning off so re-enabling addresses current state. */
 export function toggleFollow(row: Row) {
-  patchEnrich(row.repo, row.branch, { following: !enrichOf(row.repo, row.branch).following });
+  const following = !enrichOf(row.repo, row.branch).following;
+  patchEnrich(row.repo, row.branch, following ? { following } : { following, followSig: undefined });
 }
 
 function runFollowers() {
   for (const rl of live) {
     const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
     for (const pr of rl.prs) {
-      const key = ekey(rl.repo, pr.branch);
       const e = enrichOf(rl.repo, pr.branch);
-      if (!e.following) { followHandled.delete(key); continue; }
+      if (!e.following) continue;
       if (wtByBranch.get(pr.branch)?.agentStatus === "running") continue; // let the current run finish
-      const action = followAction(pr);
-      const sig = action ?? "ok";
-      if (followHandled.get(key) === sig) continue; // already handled this exact state
-      followHandled.set(key, sig);
+      const { action, sig } = followDecision(pr, e.followSig);
+      if (e.followSig !== sig) patchEnrich(rl.repo, pr.branch, { followSig: sig }); // record before firing → no double-fire
       if (!action) continue;
       const wt = wtByBranch.get(pr.branch);
       const row: Row = {

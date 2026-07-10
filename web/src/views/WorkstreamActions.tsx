@@ -91,7 +91,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
                 conflicts / fix CI / address review comments as they appear. */}
             {isPr && (
               <>
-                <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}>
+                <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
+                  title="Autopilot: every ~8s Orca checks this PR and launches the agent to resolve conflicts, fix failing CI, and address new review comments as they land — no click needed.">
                   Follow PR (auto-fix)
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />

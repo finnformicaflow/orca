@@ -212,6 +212,27 @@ export function followAction(
   return null;
 }
 
+/** What a followed PR should do now, plus a signature to remember it by. A blocker (conflict / CI /
+ *  formal change request) fires whenever present. Otherwise a rise in `externalFeedback` — a
+ *  coworker's new comment or review since we last acted — fires `addressReview`. The signature folds
+ *  the blocker state and the feedback count, so:
+ *   - nothing changed (same sig) → no action (never re-fires a steady state, incl. across reloads),
+ *   - a NEW comment (feedback ↑) → addressReview, once per new comment,
+ *   - the agent's own reply/commit (author-authored, so not counted) never re-triggers.
+ *  `prevSig` is the last signature acted on (persisted per card); undefined on first follow, where
+ *  any existing feedback/blocker is picked up so enabling Follow cleans up an already-commented PR. */
+export function followDecision(
+  pr: { isDraft?: boolean; mergeable?: Mergeable; ciStatus?: CiStatus; reviewStatus?: ReviewStatus; externalFeedback?: number },
+  prevSig?: string,
+): { action: FollowAction | null; sig: string } {
+  const blocker = followAction(pr);
+  const feedback = pr.externalFeedback ?? 0;
+  const sig = `${blocker ?? "ok"}#${feedback}`;
+  if (prevSig === sig) return { action: null, sig };
+  const prevFeedback = Number(prevSig?.split("#")[1] ?? 0);
+  return { action: blocker ?? (feedback > prevFeedback ? "addressReview" : null), sig };
+}
+
 /** Derive a short human title from text's first non-empty line (no AI): strip markdown,
  *  drop trailing punctuation, truncate on a word boundary, capitalise. Used for both the
  *  provisional title from a prompt and the final title from the agent's response text. */
