@@ -29,6 +29,7 @@ afterEach(async () => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
+  await store.stopMaster("r"); // clear the module-level master-preview state + poll timer between tests
   apiFake.reset();
   localStorage.clear();
   await act(async () => { await store.refresh(); });
@@ -68,45 +69,38 @@ test("TM2 test-master row: a failed start shows Retry + a Log popover trigger", 
   expect(button("Preview failed — show log")).toBeTruthy(); // …with the card-styled log trigger below it (opens a popover)
 });
 
-test("TM4 test-master row: reconnects to the background preview after the popover reopens", async () => {
-  const ready = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: true, startedAt: 1 }];
-  apiFake.previewSvcs = []; // idle at first (a prior test may have remembered a key) → poll finds nothing
+test("TM4 test-master row: survives the popover closing — no reset, no duplicate launch", async () => {
+  apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: true, startedAt: 1 }];
   await mount();
   expect(button("Test main")).toBeTruthy();
-  apiFake.previewSvcs = ready;
   await click(button("Test main")!);
   expect(button("Open main")).toBeTruthy();
   const starts = () => apiFake.calls.filter((c) => c === "previewMaster:r").length;
   const launched = starts();
 
-  // Closing the popover unmounts the row (its lifecycle state is gone) — but the detached preview
-  // keeps running server-side, so reopening must re-adopt it, not show idle and relaunch a duplicate.
+  // Closing the popover unmounts the row — but the preview lifecycle lives in the store, so the
+  // detached preview keeps running and a reopened row re-reads it instead of resetting/relaunching.
   act(() => root!.unmount());
   await mount();
-  expect(button("Open main")).toBeTruthy(); // reconnected to the still-running preview
-  expect(button("Test main")).toBeFalsy();  // not back to the idle "launch" affordance
+  expect(button("Open main")).toBeTruthy(); // still connected to the running preview
+  expect(button("Test main")).toBeFalsy();  // NOT reset to the idle "launch" affordance
   expect(starts()).toBe(launched);          // no second base-preview launch
 });
 
-test("TM5 menu trigger: badge while a base preview runs, spinner while it boots", async () => {
-  await store.testMaster("r"); // start + remember the key so the always-on menu poller finds it
+test("TM5 menu trigger: spinner while a base preview boots, badge once it's live", async () => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<TestMasterMenu />); await flush(); });
+  const trigger = () => container!.querySelector("[aria-label='Test master']")!;
 
-  const render = async () => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    await act(async () => { root = createRoot(container!); root.render(<TestMasterMenu />); await flush(); await flush(); });
-    return container.querySelector("[aria-label='Test master']")!;
-  };
-
-  // Fully up → badge dot, flask icon (no spinner).
-  apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: true, startedAt: 1 }];
-  let trigger = await render();
-  expect(trigger.querySelector("[aria-label='a base preview is running']")).toBeTruthy();
-  expect(trigger.querySelector(".animate-spin")).toBeFalsy();
-  act(() => root!.unmount());
-
-  // Mid-boot (running but not ready) → spinner replaces the flask.
+  // Booting (running, not yet ready) → spinner in place of the flask.
   apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: false, startedAt: 1 }];
-  trigger = await render();
-  expect(trigger.querySelector(".animate-spin")).toBeTruthy();
+  await act(async () => { await store.startMaster("r"); await flush(); });
+  expect(trigger().querySelector(".animate-spin")).toBeTruthy();
+
+  // Fully up → badge dot, no spinner.
+  apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: true, startedAt: 1 }];
+  await act(async () => { await store.startMaster("r"); await flush(); });
+  expect(trigger().querySelector(".animate-spin")).toBeFalsy();
+  expect(trigger().querySelector("[aria-label='a base preview is running']")).toBeTruthy();
 });

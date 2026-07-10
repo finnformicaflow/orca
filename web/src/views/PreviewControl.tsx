@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
-import type { PreviewSvc, RepoInfo } from "../api";
-import { baseBranch, masterKey, previewStatus, stopPreview, testLocally, testMaster, useRepos, type Row } from "../store";
+import type { PreviewSvc } from "../api";
+import { baseBranch, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -153,21 +153,39 @@ function LogPopover({ error }: { error: string }) {
   );
 }
 
+// Live "Ns" counter while a preview boots (shows if it's hanging). Kept local to the row since it's
+// pure display; the preview state itself lives in the store so it survives the popover closing.
+function useElapsed(active: boolean, svcs: PreviewSvc[]): number {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  const startedAt = svcs.reduce((min, s) => Math.min(min, s.startedAt || Infinity), Infinity);
+  return active && Number.isFinite(startedAt) ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+}
+
 /** One repo's row in the Test-master menu: its base branch + a Test/Starting/Open·Stop control
- *  (and, on failure, Retry + a Log popover). Each row owns an independent preview lifecycle keyed by
- *  that repo's base worktree. */
+ *  (and, on failure, Retry + a Log popover). Reads the shared store lifecycle (see store.startMaster),
+ *  so closing the popover mid-spin-up doesn't kill or forget the preview. */
 export function TestMasterRow({ repo }: { repo: string }) {
   const base = baseBranch(repo);
-  // Seed with the last master-preview path (if any) so reopening the popover re-adopts a preview
-  // that kept running in the background rather than showing "idle" and re-launching a duplicate.
-  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(masterKey(repo), () => testMaster(repo));
+  const { svcs, busy, error } = useMaster(repo);
+  const open = svcs.find((s) => s.open) ?? svcs[0];
+  const ready = svcs.length > 0 && svcs.every((s) => s.ready); // whole stack up
+  const starting = busy || (svcs.length > 0 && !ready);
+  const active = busy || svcs.length > 0;
+  const elapsed = useElapsed(starting, svcs);
+  const start = () => void startMaster(repo);
+  const stop = () => void stopMaster(repo);
 
   return (
     <div className="space-y-1">
       <div className="text-muted-foreground text-xs font-medium">{repo}</div>
-      {!active && !busy ? (
+      {!active ? (
         <div className="w-full space-y-1">
-          <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
+          <Button size="sm" variant="outline" className="w-full justify-center" onClick={start} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
             {error ? `Retry ${base}` : `Test ${base}`}
           </Button>
@@ -184,42 +202,23 @@ export function TestMasterRow({ repo }: { repo: string }) {
               <Loader2 className="size-3.5 animate-spin" /> Starting… {starting && elapsed > 0 ? `${elapsed}s` : ""}
             </Button>
           )}
-          <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+          <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={stop} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
         </div>
       )}
     </div>
   );
 }
 
-// Poll every repo's known master preview so the menu trigger reflects background activity even while
-// the popover is closed (the rows that normally poll are unmounted then): a spinner in place of the
-// flask while any base preview is booting, and a badge dot while one is live. Keys come from the
-// store, populated on first start — so a preview kicked off then dismissed still shows here.
-function useMasterActivity(repos: RepoInfo[]) {
-  const [state, setState] = useState({ loading: false, active: false });
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      const keys = repos.map((r) => masterKey(r.name)).filter((k): k is string => Boolean(k));
-      const groups = await Promise.all(keys.map((k) => previewStatus(k).catch(() => [] as PreviewSvc[])));
-      if (cancelled) return;
-      const active = groups.some((g) => g.some((s) => s.running));
-      const loading = groups.some((g) => g.length > 0 && g.some((s) => s.running) && !g.every((s) => s.ready));
-      setState({ active, loading });
-    };
-    void tick();
-    const t = setInterval(tick, 2500);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [repos]);
-  return state;
-}
-
 /** Top-right "Test master" menu: a flask-icon trigger that opens a popover with one row per repo,
  *  each able to spin up a preview of that repo's base branch itself — to sanity-check whether a bug
- *  reproduces on a clean main, without a feature branch in the way. */
+ *  reproduces on a clean main, without a feature branch in the way. The trigger reads the shared
+ *  store state (not the popover's rows, which unmount on close) so it spins the instant a base
+ *  preview is booting and shows a badge dot while one is live — even with the popover shut. */
 export function TestMasterMenu() {
   const repos = useRepos();
-  const { loading, active } = useMasterActivity(repos);
+  const masters = useMasters();
+  const loading = masters.some((m) => m.busy || (m.svcs.length > 0 && !m.svcs.every((s) => s.ready)));
+  const active = masters.some((m) => m.svcs.some((s) => s.running));
   if (repos.length === 0) return null;
   return (
     <Popover>

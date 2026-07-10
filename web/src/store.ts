@@ -313,18 +313,73 @@ export async function testLocally(row: Row): Promise<{ key: string; svcs: Previe
   return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath) };
 }
 
-// Last master-preview worktree path per repo. Module-level (not component state) so it survives the
-// Test-master popover closing mid-spin-up: the detached preview keeps running server-side, and the
-// row re-adopts it on reopen instead of showing "idle" (and re-launching a duplicate).
-const masterKeys = new Map<string, string>();
-export const masterKey = (repo: string) => masterKeys.get(repo);
+// ---- master previews ("test master": preview a repo's base branch itself) ----
+// The whole lifecycle lives HERE, as module state, not in the popover's components. The popover
+// unmounts its rows every time it closes, so any state held there is lost mid-spin-up — which is
+// why the preview "reset" on click-off. Keeping it in the store (polled at module level, read via
+// useSyncExternalStore) means the detached preview keeps running AND the UI reconnects to it, and
+// lets the always-mounted menu trigger reflect a spinner/badge without the popover being open.
+export type MasterPreview = { key?: string; svcs: PreviewSvc[]; busy: boolean; error: string | null };
+const EMPTY_MASTER: MasterPreview = { svcs: [], busy: false, error: null };
+const masters = new Map<string, MasterPreview>();
+const masterTimers = new Map<string, ReturnType<typeof setInterval>>();
 
-/** Spin up a preview of the repo's base branch itself ("test master"), in a fresh detached checkout
- *  of the latest base. Same shape as testLocally so the same preview control drives it. */
-export async function testMaster(repo: string): Promise<{ key: string; svcs: PreviewSvc[] }> {
-  const { worktreePath, svcs } = await api.previewMaster(repo);
-  masterKeys.set(repo, worktreePath); // remember so a reopened popover reconnects to this run
-  return { key: worktreePath, svcs };
+export const useMaster = (repo: string): MasterPreview =>
+  useSyncExternalStore(subscribe, () => masters.get(repo) ?? EMPTY_MASTER);
+/** Snapshot of every repo's master preview — for the menu trigger's aggregate spinner/badge. */
+export const useMasters = (): MasterPreview[] => useSyncExternalStore(subscribe, mastersSnapshot);
+let mastersCache: { key: number; value: MasterPreview[] } = { key: -1, value: [] };
+function mastersSnapshot(): MasterPreview[] {
+  // Stable reference between notifies (useSyncExternalStore compares with Object.is), rebuilt only
+  // when `version` bumps — so the trigger re-renders on real changes, not on every poll of an unrelated row.
+  if (mastersCache.key !== version) mastersCache = { key: version, value: [...masters.values()] };
+  return mastersCache.value;
+}
+
+// Immutable update: replace the entry (never mutate in place) so useSyncExternalStore sees the change.
+const setMaster = (repo: string, patch: Partial<MasterPreview>) => {
+  masters.set(repo, { ...(masters.get(repo) ?? EMPTY_MASTER), ...patch });
+  notify();
+};
+
+function pollMaster(repo: string) {
+  if (masterTimers.has(repo)) return; // already polling this repo
+  const tick = async () => {
+    const key = masters.get(repo)?.key;
+    if (!key) return;
+    let svcs: PreviewSvc[];
+    try { svcs = await api.previewStatus(key); } catch { return; }
+    if (masters.get(repo)?.key !== key) return; // stopped/restarted while in flight
+    const crashed = svcs.find((s) => !s.running);
+    // A crashed service leaves its siblings running + ports held; reap the whole group and surface
+    // the log, dropping back to Retry — mirrors the old per-row auto-reap.
+    if (crashed) void stopMaster(repo, crashed.error ?? "a service failed to start");
+    else setMaster(repo, { svcs });
+  };
+  masterTimers.set(repo, setInterval(() => void tick(), 2500));
+  void tick();
+}
+
+/** Spin up (or restart) a preview of the repo's base branch. Sets `busy` immediately so the trigger
+ *  spins the instant it's clicked, then polls in the background until stopped. */
+export async function startMaster(repo: string): Promise<void> {
+  setMaster(repo, { busy: true, error: null, svcs: [] });
+  try {
+    const { worktreePath, svcs } = await api.previewMaster(repo);
+    setMaster(repo, { key: worktreePath, svcs, busy: false });
+    pollMaster(repo);
+  } catch (e) {
+    setMaster(repo, { busy: false, svcs: [], error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Tear down a repo's base preview (manual Stop, or an auto-reap after a crash carries the error). */
+export async function stopMaster(repo: string, error: string | null = null): Promise<void> {
+  const t = masterTimers.get(repo);
+  if (t) { clearInterval(t); masterTimers.delete(repo); }
+  const key = masters.get(repo)?.key;
+  setMaster(repo, { key: undefined, svcs: [], busy: false, error });
+  if (key) { try { await api.previewStop(key); } catch { /* already gone */ } }
 }
 
 /** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */
