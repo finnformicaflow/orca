@@ -8,7 +8,7 @@ import { api } from "./api";
 import type { ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
-import { TestMasterMenu } from "./views/PreviewControl";
+import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,13 @@ export function App() {
         <div className="ml-auto flex items-center gap-3">
           <UsageMeter />
           <div className="flex items-center gap-2">
-            {topLevel && <TestMasterMenu />}
+            {/* Test master + running-previews read as one segmented control (connected borders). */}
+            {topLevel && (
+              <div className="inline-flex -space-x-px [&>button]:rounded-none [&>button:first-of-type]:rounded-l-md [&>button:last-of-type]:rounded-r-md">
+                <TestMasterMenu />
+                <PreviewManagerMenu />
+              </div>
+            )}
             {topLevel && <RepoFilter />}
             <ProfileMenu />
           </div>
