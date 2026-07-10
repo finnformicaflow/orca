@@ -44,7 +44,14 @@ export function Board() {
               {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
-              {lane === "LOCAL" && <NewDraft />}
+              {/* Pin the new-draft box to the top of the (scrolling) Local column so it stays reachable
+                  no matter how many sessions pile up below. The composer's own bg-card is opaque, so
+                  cards scroll cleanly beneath it. */}
+              {lane === "LOCAL" && (
+                <div className="sticky top-0 z-20">
+                  <NewDraft />
+                </div>
+              )}
               {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
             </div>
           </div>
