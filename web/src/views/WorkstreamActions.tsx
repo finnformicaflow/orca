@@ -208,6 +208,9 @@ export function FollowUpComposer(
       autoFocus
       optimistic
       persistKey={key}
+      // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
+      // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
+      history={row.followUps}
       placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
       // Optimistic submit: close the box the instant you send (launching the agent takes a few
       // seconds — ensureWorktree + upload). The draft stays persisted, so a failed launch reopens

@@ -37,7 +37,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
-  lastFollowUp?: string; // the follow-up prompt last SENT for this branch — recorded on send (see followUp), kept until the branch is merged/discarded, so it's never lost to a launch/agent error
+  followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -92,13 +92,18 @@ let live: RepoLive[] = [];
 
 export async function refresh() {
   const repos = cfg?.repos ?? [];
-  live = await Promise.all(repos.map(async (r) => ({
-    repo: r.name,
-    hasRemote: r.hasRemote,
-    agents: await api.agents(r.name).catch(() => [] as LiveAgent[]),
-    prs: await api.prs(r.name).catch(() => [] as PrSummary[]),
-    merged: r.hasRemote ? await api.mergedPrs(r.name).catch(() => [] as MergedPr[]) : [],
-  })));
+  // Settle each fetch to {ok, v} instead of catch-to-empty, so GC can tell a genuinely-empty repo
+  // from a transient fetch failure (which must NOT be read as "everything's gone" and wipe enrichment).
+  const settle = <T>(p: Promise<T>, fallback: T) => p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
+  const polled = await Promise.all(repos.map(async (r) => {
+    const [ag, pr, mg] = await Promise.all([
+      settle(api.agents(r.name), [] as LiveAgent[]),
+      settle(api.prs(r.name), [] as PrSummary[]),
+      r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }),
+    ]);
+    return { repo: r.name, hasRemote: r.hasRemote, agents: ag.v, prs: pr.v, merged: mg.v, ok: ag.ok && pr.ok && mg.ok };
+  }));
+  live = polled.map(({ ok: _ok, ...rl }) => rl);
   // Persist any fresh session id so "Copy CLI" can resume it after a restart (in-memory only otherwise).
   // The title stays the Haiku summary of the PROMPT set at creation — deriving it from the agent's
   // final response text instead ("Done! I've added…") produced awkward, sentence-fragment titles.
@@ -108,10 +113,37 @@ export async function refresh() {
       if (a.sessionId && e.sessionId !== a.sessionId) patchEnrich(rl.repo, a.branch, { sessionId: a.sessionId });
     }
   }
+  gcEnrichment(polled);
   runFollowers(); // auto-drive any followed PRs off the status we just polled
   notify();
 }
 setInterval(() => void refresh(), 8_000);
+
+// Prune enrichment for branches that no longer exist — merged / closed / branch-deleted, whether via
+// Orca or (the leaky case) directly on GitHub. Without this, every finished branch's prompt/title/
+// followUps lingered forever. Safe by construction: only prune a repo that polled cleanly this cycle
+// (a transient fetch failure would otherwise read as "no branches" and wipe live enrichment), and
+// keep very recent keys — a just-created draft's enrichment lands before its worktree shows in `live`.
+const GC_GRACE_MS = 2 * 60_000;
+function gcEnrichment(polled: { repo: string; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[]; ok: boolean }[]) {
+  const fresh = load();
+  let changed = false;
+  for (const r of polled) {
+    if (!r.ok) continue; // partial/failed poll — don't judge this repo's branches as gone
+    const alive = new Set<string>([...r.agents.map((a) => a.branch), ...r.prs.map((p) => p.branch), ...r.merged.map((m) => m.branch)]);
+    for (const key of Object.keys(fresh)) {
+      const sep = key.indexOf("::");
+      if (sep < 0 || key.slice(0, sep) !== r.repo) continue; // key belongs to a different (or unconfigured) repo
+      const branch = key.slice(sep + 2);
+      if (alive.has(branch)) continue;
+      const created = fresh[key]!.createdAt;
+      if (created && Date.now() - Date.parse(created) < GC_GRACE_MS) continue; // too new to have appeared in `live` yet
+      delete fresh[key];
+      changed = true;
+    }
+  }
+  if (changed) { enrichMap = fresh; localStorage.setItem(KEY, JSON.stringify(enrichMap)); }
+}
 
 // ---- active PR following ----
 // A "followed" card is on autopilot: each poll, if its PR has a blocker (conflict / failing CI /
@@ -179,7 +211,7 @@ export type Row = {
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
   following?: boolean;
-  lastFollowUp?: string;
+  followUps?: string[];
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -229,7 +261,7 @@ export function useWorkstreams(): Row[] {
         mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, lastFollowUp: e.lastFollowUp,
+        following: e.following, followUps: e.followUps,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };
@@ -385,12 +417,17 @@ export async function stopMaster(repo: string, error: string | null = null): Pro
 }
 
 /** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */
+/** Cap on the per-branch follow-up history — enough to walk with ↑, small enough to stay tiny. */
+const FOLLOWUP_HISTORY = 25;
+
 export async function followUp(row: Row, instruction: string, images: File[] = []) {
   // Record the SENT prompt in enrichment first thing — before the upload/adopt/launch, any of which
   // can throw (a failed worktree adopt, a claude launch error) or "succeed" only to have the headless
   // run error moments later. Kept until the branch is merged/discarded (deleteEnrich wipes the key),
-  // so a follow-up is never lost to a downstream failure. See Enrichment.lastFollowUp.
-  patchEnrich(row.repo, row.branch, { lastFollowUp: instruction });
+  // so a follow-up is never lost to a downstream failure, and ↑ in the composer can resend it.
+  const prev = enrichOf(row.repo, row.branch).followUps ?? [];
+  const followUps = prev.at(-1) === instruction ? prev : [...prev, instruction].slice(-FOLLOWUP_HISTORY);
+  patchEnrich(row.repo, row.branch, { followUps });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
   await api.claude(row.repo, wt, withAttachments(followUpPrompt(instruction), paths), wt, row.sessionId);
@@ -419,6 +456,7 @@ export async function autoMerge(row: Row) {
 export async function merge(row: Row) {
   if (row.prNumber) await api.merge(row.repo, row.prNumber, row.worktreePath);
   else await api.mergeLocal(row.repo, row.branch, row.worktreePath);
+  deleteEnrich(row.repo, row.branch); // the branch is done — drop its enrichment (Done cards render from gh data, not enrichment)
   await refresh();
 }
 

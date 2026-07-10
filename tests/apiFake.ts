@@ -16,6 +16,8 @@ export const apiFake = {
   summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
   // Open PRs served by api.prs (the board's source of truth) — tests set this before mounting.
   prsData: [] as unknown[],
+  // When set, api.prs rejects — lets a GC test simulate a transient poll failure (must NOT prune).
+  prsError: null as null | string,
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
   // Preview services served by api.previewMaster (on start) + api.previewStatus (the poll) — tests set
@@ -39,7 +41,7 @@ export const apiFake = {
   releaseClaude: null as null | (() => void),
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -47,8 +49,10 @@ mock.module("@/api", () => ({
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
-    prs: async () => apiFake.prsData,
+    prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },
     mergedPrs: async () => [],
+    merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); return { ok: true }; },
+    mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
     createWorktree: () =>
       new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; }),
     runAgent: async () => { apiFake.calls.push("runAgent"); return { status: "ok" }; },

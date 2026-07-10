@@ -8,8 +8,16 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts images by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
+/** Shell-style history step: ↑ walks toward older (from newest when not yet walking), ↓ toward newer
+ *  and off the end back to an empty box (null). Pure, so it's unit-tested without a DOM. */
+export function stepHistory(idx: number | null, dir: "up" | "down", len: number): number | null {
+  if (len === 0) return null;
+  if (dir === "up") return idx === null ? len - 1 : Math.max(0, idx - 1);
+  return idx === null || idx >= len - 1 ? null : idx + 1; // ↓ past newest → cleared box
+}
+
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history,
 }: {
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
@@ -22,8 +30,11 @@ export function ChatComposer({
   // The parent closes the box immediately and owns the outcome — it keeps the persisted draft so a
   // failure can reopen with the same text, and clears it on success. Used by the follow-up box.
   optimistic?: boolean;
+  // Past submissions (oldest→newest) recallable with ↑/↓ from an empty box — resend a prior prompt.
+  history?: string[];
 }) {
   const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
+  const [histIdx, setHistIdx] = useState<number | null>(null); // position while walking `history`, else null
   const [images, setImages] = useState<File[]>([]);
   const [hydrated, setHydrated] = useState(!persistKey);
   const [busy, setBusy] = useState(false);
@@ -81,13 +92,22 @@ export function ChatComposer({
       await onSubmit(value.trim(), images);
       setValue("");
       setImages([]);
+      setHistIdx(null);
       if (persistKey) clearDraft(persistKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally { setBusy(false); }
   };
+  // Recall a history entry (or clear to empty at idx null) into the box.
+  const recall = (idx: number | null) => { setHistIdx(idx); setValue(idx === null ? "" : (history?.[idx] ?? "")); };
   const onKey = (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void submit(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void submit(); return; }
+    const len = history?.length ?? 0;
+    if (!len) return;
+    // ↑/↓ walk past follow-ups — but only from an empty box (or once already walking), so ↑ never
+    // clobbers a draft or hijacks normal caret movement inside multiline text.
+    if (e.key === "ArrowUp" && (value === "" || histIdx !== null)) { e.preventDefault(); recall(stepHistory(histIdx, "up", len)); }
+    else if (e.key === "ArrowDown" && histIdx !== null) { e.preventDefault(); recall(stepHistory(histIdx, "down", len)); }
   };
   // Cancel is an explicit dismissal, so drop the persisted draft too — otherwise it would
   // reopen on the next reload (open-state is derived from whether a draft exists).
@@ -113,7 +133,7 @@ export function ChatComposer({
           className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
           placeholder={placeholder}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => { setValue(e.target.value); setHistIdx(null); }}
           onKeyDown={onKey}
           onPaste={onPaste}
         />
