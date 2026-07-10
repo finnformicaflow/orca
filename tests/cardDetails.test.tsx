@@ -14,6 +14,13 @@ import type { Row } from "@/store";
 beforeAll(() => store.configReady); // cfg (repo "r") populated before the first render
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
+// The top-right copy affordance is a Radix dropdown — open it with a real PointerEvent (Radix opens
+// menus on pointerdown, not click) so its items (portalled to document.body) render.
+const openCopyMenu = async () => {
+  const trigger = container!.querySelector<HTMLElement>('button[title="Copy…"]')!;
+  await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+};
 
 let copied = "";
 Object.defineProperty(globalThis.navigator, "clipboard", {
@@ -67,19 +74,32 @@ describe("swimlane card details", () => {
     expect(copied).toBe("enrich-cards-1");
   });
 
-  test("a PR card shows a copy-link icon that copies the PR url", async () => {
+  test("a PR card's copy menu offers Copy PR link, which copies the PR url", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base);
-    const btn = container!.querySelector<HTMLElement>('button[title="Copy PR link"]')!;
-    expect(btn).not.toBeNull();
-    await act(async () => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    await openCopyMenu();
+    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy PR link"]')!;
+    expect(item).not.toBeNull();
+    await click(item);
     expect(copied).toBe("https://x/7");
   });
 
-  test("a local card with no PR has no copy-link icon", async () => {
+  test("a PR card's copy menu also offers Copy worktree name", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount(base);
+    await openCopyMenu();
+    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy worktree name"]')!;
+    expect(item).not.toBeNull();
+    await click(item);
+    expect(copied).toBe("enrich-cards-1");
+  });
+
+  test("a local card's copy menu has no Copy PR link option, only the worktree name", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
-    expect(container!.querySelector('button[title="Copy PR link"]')).toBeNull();
+    await openCopyMenu();
+    expect(document.body.querySelector('[role="menuitem"][title="Copy PR link"]')).toBeNull();
+    expect(document.body.querySelector('[role="menuitem"][title="Copy worktree name"]')).not.toBeNull();
   });
 
   test("a Done card shows neither the copy-name control nor the diffstat", async () => {

@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 
@@ -92,19 +93,28 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
   </a>
 );
 
-// Small copy-to-clipboard icon — sits next to the PR link so you can grab the URL without visiting it.
-function CopyLink({ url }: { url: string }) {
+// Copy icon (top-right) → a small dropdown: grab the PR link or the worktree name without leaving
+// the board. The PR-link entry only appears once there's a PR; worktree name is always copyable.
+function CopyMenu({ prUrl, name }: { prUrl?: string; name: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(url).then(() => {
+  const copy = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }, () => window.prompt("Copy the PR link:", url));
+    }, () => window.prompt(`Copy the ${label}:`, text));
   };
   return (
-    <button type="button" onClick={copy} title="Copy PR link" className="text-muted-foreground hover:text-foreground">
-      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-    </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" title="Copy…" className="text-muted-foreground hover:text-foreground">
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {prUrl && <DropdownMenuItem onSelect={() => copy(prUrl, "PR link")} title="Copy PR link">Copy PR link</DropdownMenuItem>}
+        <DropdownMenuItem onSelect={() => copy(name, "worktree name")} title="Copy worktree name">Copy worktree name</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -270,7 +280,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         <div className="flex shrink-0 items-center gap-3">
           {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
           {row.prNumber && <DestLink href={row.prUrl}>PR #{row.prNumber}</DestLink>}
-          {row.prUrl && <CopyLink url={row.prUrl} />}
+          <CopyMenu prUrl={row.prUrl} name={row.branch} />
         </div>
       </div>
 
@@ -310,22 +320,24 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {!isDone && (
         <div className="text-muted-foreground space-y-0.5 text-xs">
           <CopyName name={row.branch} />
-          {summary ? (
-            <Diffstat summary={summary} />
-          ) : isLocal ? (
-            <div>no changes yet</div>
-          ) : null}
-          {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
+          {/* File changes and the model + context share a line, justified to opposite ends. */}
+          <div className="flex items-center justify-between gap-2">
+            {summary ? (
+              <Diffstat summary={summary} />
+            ) : isLocal ? (
+              <div>no changes yet</div>
+            ) : <div />}
+            {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
+          </div>
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
-      {/* Local preview: its own full-width row, sitting between the session context and the actions. */}
-      {!isDone && <PreviewControl row={row} />}
-
-      {/* Actions: PR/agent verbs, below a divider — separated from the info + preview above. */}
+      {/* Preview + actions, below a divider — separated from the session info above. The preview
+          (Test locally) leads, then the PR/agent verbs. */}
       {!isDone && (
-        <div className="border-t pt-2.5">
+        <div className="space-y-2 border-t pt-2.5">
+          <PreviewControl row={row} />
           <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
         </div>
       )}
