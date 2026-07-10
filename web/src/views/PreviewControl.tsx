@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
-import type { PreviewSvc } from "../api";
-import { baseBranch, previewStatus, stopPreview, testLocally, testMaster, useRepos, type Row } from "../store";
+import type { PreviewSvc, RepoInfo } from "../api";
+import { baseBranch, masterKey, previewStatus, stopPreview, testLocally, testMaster, useRepos, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -158,7 +158,9 @@ function LogPopover({ error }: { error: string }) {
  *  that repo's base worktree. */
 export function TestMasterRow({ repo }: { repo: string }) {
   const base = baseBranch(repo);
-  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(undefined, () => testMaster(repo));
+  // Seed with the last master-preview path (if any) so reopening the popover re-adopts a preview
+  // that kept running in the background rather than showing "idle" and re-launching a duplicate.
+  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(masterKey(repo), () => testMaster(repo));
 
   return (
     <div className="space-y-1">
@@ -189,17 +191,42 @@ export function TestMasterRow({ repo }: { repo: string }) {
   );
 }
 
+// Poll every repo's known master preview so the menu trigger reflects background activity even while
+// the popover is closed (the rows that normally poll are unmounted then): a spinner in place of the
+// flask while any base preview is booting, and a badge dot while one is live. Keys come from the
+// store, populated on first start — so a preview kicked off then dismissed still shows here.
+function useMasterActivity(repos: RepoInfo[]) {
+  const [state, setState] = useState({ loading: false, active: false });
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const keys = repos.map((r) => masterKey(r.name)).filter((k): k is string => Boolean(k));
+      const groups = await Promise.all(keys.map((k) => previewStatus(k).catch(() => [] as PreviewSvc[])));
+      if (cancelled) return;
+      const active = groups.some((g) => g.some((s) => s.running));
+      const loading = groups.some((g) => g.length > 0 && g.some((s) => s.running) && !g.every((s) => s.ready));
+      setState({ active, loading });
+    };
+    void tick();
+    const t = setInterval(tick, 2500);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [repos]);
+  return state;
+}
+
 /** Top-right "Test master" menu: a flask-icon trigger that opens a popover with one row per repo,
  *  each able to spin up a preview of that repo's base branch itself — to sanity-check whether a bug
  *  reproduces on a clean main, without a feature branch in the way. */
 export function TestMasterMenu() {
   const repos = useRepos();
+  const { loading, active } = useMasterActivity(repos);
   if (repos.length === 0) return null;
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="icon" variant="outline" className="size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
-          <FlaskConical className="size-4" />
+        <Button size="icon" variant="outline" className="relative size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
+          {loading ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
+          {active && <span className="bg-primary ring-background absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2" aria-label="a base preview is running" />}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 space-y-3">

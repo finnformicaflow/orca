@@ -313,10 +313,17 @@ export async function testLocally(row: Row): Promise<{ key: string; svcs: Previe
   return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath) };
 }
 
+// Last master-preview worktree path per repo. Module-level (not component state) so it survives the
+// Test-master popover closing mid-spin-up: the detached preview keeps running server-side, and the
+// row re-adopts it on reopen instead of showing "idle" (and re-launching a duplicate).
+const masterKeys = new Map<string, string>();
+export const masterKey = (repo: string) => masterKeys.get(repo);
+
 /** Spin up a preview of the repo's base branch itself ("test master"), in a fresh detached checkout
  *  of the latest base. Same shape as testLocally so the same preview control drives it. */
 export async function testMaster(repo: string): Promise<{ key: string; svcs: PreviewSvc[] }> {
   const { worktreePath, svcs } = await api.previewMaster(repo);
+  masterKeys.set(repo, worktreePath); // remember so a reopened popover reconnects to this run
   return { key: worktreePath, svcs };
 }
 
