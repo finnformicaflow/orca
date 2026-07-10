@@ -9,7 +9,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 // Accepts images by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, initialText, onTextChange,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic,
 }: {
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
@@ -22,13 +22,8 @@ export function ChatComposer({
   // The parent closes the box immediately and owns the outcome — it keeps the persisted draft so a
   // failure can reopen with the same text, and clears it on success. Used by the follow-up box.
   optimistic?: boolean;
-  // Durable text backup (used by the follow-up box): `initialText` seeds the box when the local
-  // composerDraft is empty (e.g. its image payload blew the localStorage quota and lost the text),
-  // and `onTextChange` mirrors every edit somewhere durable. Text-only, so it always fits.
-  initialText?: string;
-  onTextChange?: (text: string) => void;
 }) {
-  const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : "") || (initialText ?? ""));
+  const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
   const [images, setImages] = useState<File[]>([]);
   const [hydrated, setHydrated] = useState(!persistKey);
   const [busy, setBusy] = useState(false);
@@ -118,7 +113,7 @@ export function ChatComposer({
           className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
           placeholder={placeholder}
           value={value}
-          onChange={(e) => { setValue(e.target.value); onTextChange?.(e.target.value); }}
+          onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
         />

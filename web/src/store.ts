@@ -37,7 +37,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
-  followDraft?: string; // in-progress follow-up composer text — kept here (small, durable) so it survives even when the image-carrying composerDraft blows the localStorage quota
+  lastFollowUp?: string; // the follow-up prompt last SENT for this branch — recorded on send (see followUp), kept until the branch is merged/discarded, so it's never lost to a launch/agent error
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -64,17 +64,6 @@ function deleteEnrich(repo: string, branch: string) {
 }
 // Adopt another tab's writes so our in-memory map (and the board) stay in sync without a refresh.
 window.addEventListener("storage", (e) => { if (e.key === KEY) { enrichMap = load(); notify(); } });
-
-/** Persist an in-progress follow-up composer draft in the (small, durable) enrichment blob, keyed
- *  repo::branch — the same place the original prompt lives, and unlike the composerDraft entry it
- *  carries no images, so it can't blow the localStorage quota and lose the text. Quiet: no notify,
- *  since only the composer reads it (seeded on mount). Empty text clears the field. */
-export function setFollowDraft(repo: string, branch: string, text: string) {
-  const k = ekey(repo, branch);
-  const fresh = load(); // merge against the freshest blob (another tab may have written) — see patchEnrich
-  enrichMap = { ...fresh, [k]: { ...fresh[k], followDraft: text.trim() ? text : undefined } };
-  localStorage.setItem(KEY, JSON.stringify(enrichMap));
-}
 
 // Branches mid-removal (close/discard) — optimistically hidden so a poll that lands between "PR
 // closed" and "worktree removed" doesn't flash the row back as a bare Local worktree.
@@ -190,7 +179,7 @@ export type Row = {
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
   following?: boolean;
-  followDraft?: string;
+  lastFollowUp?: string;
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -240,7 +229,7 @@ export function useWorkstreams(): Row[] {
         mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, followDraft: e.followDraft,
+        following: e.following, lastFollowUp: e.lastFollowUp,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };
@@ -397,6 +386,11 @@ export async function stopMaster(repo: string, error: string | null = null): Pro
 
 /** Launch a follow-up agent run in the PR's worktree (adopting one if needed), resuming its session. */
 export async function followUp(row: Row, instruction: string, images: File[] = []) {
+  // Record the SENT prompt in enrichment first thing — before the upload/adopt/launch, any of which
+  // can throw (a failed worktree adopt, a claude launch error) or "succeed" only to have the headless
+  // run error moments later. Kept until the branch is merged/discarded (deleteEnrich wipes the key),
+  // so a follow-up is never lost to a downstream failure. See Enrichment.lastFollowUp.
+  patchEnrich(row.repo, row.branch, { lastFollowUp: instruction });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
   await api.claude(row.repo, wt, withAttachments(followUpPrompt(instruction), paths), wt, row.sessionId);

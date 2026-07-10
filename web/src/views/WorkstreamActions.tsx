@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  merge, promote, resolveConflicts, sendSlack, setFollowDraft, staleHours, toggleFollow, type Row,
+  merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, type Row,
 } from "../store";
 import { attachCommand, prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -23,9 +23,8 @@ import {
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
 
 export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void }) {
-  // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost —
-  // from either the composerDraft (text + images) or the durable enrichment text backup.
-  const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)) || Boolean(row.followDraft));
+  // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
+  const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
   // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
   // upload + claude) runs for a few seconds. Show a spinner on the Follow up button meanwhile, so the
   // work isn't invisible.
@@ -209,11 +208,6 @@ export function FollowUpComposer(
       autoFocus
       optimistic
       persistKey={key}
-      // Durable text backup in enrichment: seeds the box if composerDraft lost the text (its image
-      // payload can blow the localStorage quota), and mirrors every keystroke there so a failed
-      // launch — or a hard reload — never loses what you typed. See store.setFollowDraft.
-      initialText={row.followDraft}
-      onTextChange={(t) => setFollowDraft(row.repo, row.branch, t)}
       placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
       // Optimistic submit: close the box the instant you send (launching the agent takes a few
       // seconds — ensureWorktree + upload). The draft stays persisted, so a failed launch reopens
@@ -222,13 +216,13 @@ export function FollowUpComposer(
       onSubmit={async (instruction, images) => {
         onClose();
         onSubmitting(true);
-        try { await followUp(row, instruction, images); clearDraft(key); setFollowDraft(row.repo, row.branch, ""); }
+        // followUp records the sent prompt in enrichment before it can fail, so the local draft is
+        // safe to drop as soon as the send is handed off (a failed launch reopens the box from it).
+        try { await followUp(row, instruction, images); clearDraft(key); }
         catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
         finally { onSubmitting(false); }
       }}
-      // Explicit cancel = discard: drop the durable backup too (ChatComposer clears composerDraft),
-      // else the box would reopen from the lingering enrichment text on the next reload.
-      onCancel={() => { setFollowDraft(row.repo, row.branch, ""); onClose(); }}
+      onCancel={onClose}
     />
   );
 }
