@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
-import type { PreviewSvc } from "../api";
-import { baseBranch, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, type Row } from "../store";
+import { Check, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, TriangleAlert } from "lucide-react";
+import { api, type PreviewSvc } from "../api";
+import { baseBranch, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -95,7 +95,7 @@ function ErrorLog({ error }: { error: string }) {
 
 /** Compact "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). */
 export function PreviewControl({ row }: { row: Row }) {
-  const { busy, open, active, ready, starting, elapsed, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
+  const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
 
   // Idle (incl. after a failure — the crashed preview auto-stops, so there's no Stop button here,
   // just Retry + the expandable log).
@@ -111,20 +111,7 @@ export function PreviewControl({ row }: { row: Row }) {
     );
   }
   // Running/starting: the state button + Stop read as one connected control.
-  return (
-    <div className="inline-flex w-full">
-      {ready && open ? (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open local preview on :${open.port}`}>
-          <ExternalLink className="size-3.5" /> Open local
-        </Button>
-      ) : (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
-          <Loader2 className="size-3.5 animate-spin" /> Starting local… {starting && elapsed > 0 ? `${elapsed}s` : ""}
-        </Button>
-      )}
-      <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={() => void stop()} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
-    </div>
-  );
+  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open local" startingLabel="Starting local…" />;
 }
 
 // The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview
@@ -166,17 +153,38 @@ function useElapsed(active: boolean, svcs: PreviewSvc[]): number {
   return active && Number.isFinite(startedAt) ? Math.floor((Date.now() - startedAt) / 1000) : 0;
 }
 
+/** Running/starting state of a live preview: an Open button once the whole stack is up (else a
+ *  "Starting Ns" placeholder), joined to a Stop button so the pair reads as one connected control.
+ *  Shared by the card's Test-locally control, the Test-master rows, and the running-previews menu. */
+function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel }: {
+  svcs: PreviewSvc[]; busy: boolean; onStop: () => void; openLabel: string; startingLabel: string;
+}) {
+  const open = svcs.find((s) => s.open) ?? svcs[0];
+  const ready = svcs.length > 0 && svcs.every((s) => s.ready); // whole stack up (frontend AND backend)
+  const elapsed = useElapsed(!ready, svcs);
+  return (
+    <div className="inline-flex w-full">
+      {ready && open ? (
+        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open preview on :${open.port}`}>
+          <ExternalLink className="size-3.5" /> {openLabel}
+        </Button>
+      ) : (
+        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
+          <Loader2 className="size-3.5 animate-spin" /> {startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}
+        </Button>
+      )}
+      <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={onStop} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+    </div>
+  );
+}
+
 /** One repo's row in the Test-master menu: its base branch + a Test/Starting/Open·Stop control
  *  (and, on failure, Retry + a Log popover). Reads the shared store lifecycle (see store.startMaster),
  *  so closing the popover mid-spin-up doesn't kill or forget the preview. */
 export function TestMasterRow({ repo }: { repo: string }) {
   const base = baseBranch(repo);
   const { svcs, busy, error } = useMaster(repo);
-  const open = svcs.find((s) => s.open) ?? svcs[0];
-  const ready = svcs.length > 0 && svcs.every((s) => s.ready); // whole stack up
-  const starting = busy || (svcs.length > 0 && !ready);
   const active = busy || svcs.length > 0;
-  const elapsed = useElapsed(starting, svcs);
   const start = () => void startMaster(repo);
   const stop = () => void stopMaster(repo);
 
@@ -192,18 +200,7 @@ export function TestMasterRow({ repo }: { repo: string }) {
           {error && <LogPopover error={error} />}
         </div>
       ) : (
-        <div className="inline-flex w-full">
-          {ready && open ? (
-            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open the ${base} preview on :${open.port}`}>
-              <ExternalLink className="size-3.5" /> Open {base}
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
-              <Loader2 className="size-3.5 animate-spin" /> Starting… {starting && elapsed > 0 ? `${elapsed}s` : ""}
-            </Button>
-          )}
-          <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={stop} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
-        </div>
+        <PreviewLiveControl svcs={svcs} busy={busy} onStop={stop} openLabel={`Open ${base}`} startingLabel="Starting…" />
       )}
     </div>
   );
@@ -231,6 +228,57 @@ export function TestMasterMenu() {
       <PopoverContent align="end" className="w-72 space-y-3">
         <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Test master</div>
         {repos.map((r) => <TestMasterRow key={r.name} repo={r.name} />)}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** Top-right "Running previews" menu, sitting beside Test master as a button group: lists every live
+ *  local preview across repos (the cards' "Test locally" spins + any base-branch previews), each
+ *  labelled with its session title and offering Open / Stop via the shared control. A count badge on
+ *  the trigger tracks how many are running — polling the bridge (`/api/previews`) so it stays live
+ *  even with the popover shut. */
+export function PreviewManagerMenu() {
+  const [previews, setPreviews] = useState<{ key: string; svcs: PreviewSvc[] }[]>([]);
+  const rows = useWorkstreams();
+  // Previews are keyed by worktree path; match that to a row for the session title (fall back to the
+  // last path segment for adopted/base worktrees with no card).
+  const titleOf = (key: string) => rows.find((r) => r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
+
+  const load = () => void api.previews().then(setPreviews).catch(() => {});
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 2500); // reflects start/stop without a manual refresh
+    return () => clearInterval(t);
+  }, []);
+
+  const running = previews.filter((p) => p.svcs.some((s) => s.running));
+  const stop = async (key: string) => { await stopPreview(key).catch(() => {}); load(); };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="icon" variant="outline" className="relative size-8" title="Running previews" aria-label="Running previews">
+          <MonitorPlay className="size-4" />
+          {running.length > 0 && (
+            <span className="bg-primary text-primary-foreground ring-background absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold ring-2" aria-label={`${running.length} running previews`}>
+              {running.length}
+            </span>
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 space-y-3">
+        <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Running previews</div>
+        {running.length === 0 ? (
+          <div className="text-muted-foreground text-xs">No previews running.</div>
+        ) : (
+          running.map((p) => (
+            <div key={p.key} className="space-y-1">
+              <div className="text-muted-foreground truncate text-xs font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
+              <PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stop(p.key)} openLabel="Open" startingLabel="Starting…" />
+            </div>
+          ))
+        )}
       </PopoverContent>
     </Popover>
   );

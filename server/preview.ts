@@ -155,6 +155,12 @@ export async function status(key: string): Promise<SvcStatus[]> {
   }));
 }
 
+/** Every tracked preview, keyed by worktree path, with live status — for the running-previews menu.
+ *  Not repo-scoped: the map spans all repos, keyed by absolute path. */
+export async function list(): Promise<{ key: string; svcs: SvcStatus[] }[]> {
+  return Promise.all([...previews.keys()].map(async (key) => ({ key, svcs: await status(key) })));
+}
+
 export function stop(key: string): void {
   for (const s of previews.get(key) ?? []) {
     if (s.proc?.pid) { try { killTree(s.proc.pid); } catch { /* gone */ } } // reap the sh wrapper + ALL its children (nest/vite + the backgrounded reseed loop)

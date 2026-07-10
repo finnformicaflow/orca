@@ -23,6 +23,8 @@ export const apiFake = {
   previewSvcs: [] as unknown[],
   // When set, api.previewMaster rejects with it — the failed-start path (Retry + Log popover).
   previewMasterError: null as null | string,
+  // Running previews served by api.previews (the running-previews menu) — keyed by worktree path.
+  previewsData: [] as { key: string; svcs: unknown[] }[],
   // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
@@ -34,7 +36,7 @@ export const apiFake = {
   releaseClaude: null as null | (() => void),
   // Claude usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -56,8 +58,9 @@ mock.module("@/api", () => ({
       if (apiFake.previewMasterError) throw new Error(apiFake.previewMasterError);
       return { worktreePath: `/wt/${repo}-main`, svcs: apiFake.previewSvcs };
     },
-    previewStop: async () => ({ ok: true }),
+    previewStop: async (key: string) => { apiFake.calls.push(`previewStop:${key}`); apiFake.previewsData = apiFake.previewsData.filter((p) => p.key !== key); return { ok: true }; },
     previewStatus: async () => apiFake.previewSvcs,
+    previews: async () => apiFake.previewsData,
     summary: async () => apiFake.summaryData,
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };

@@ -57,6 +57,7 @@ export const api = {
   preview: (repo: string, key: string, worktree: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree }),
   previewMaster: (repo: string): Promise<{ worktreePath: string; svcs: PreviewSvc[] }> => post("/api/preview/master", { repo }),
   previewStatus: (key: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}`).then(res),
+  previews: (): Promise<{ key: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),

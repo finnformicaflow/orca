@@ -134,6 +134,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
     return json({ worktreePath, svcs: await preview.status(worktreePath) });
   }
+  if (req.method === "GET" && p === "/api/previews") {
+    return json(await preview.list()); // all running previews across repos (not repo-scoped)
+  }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
     return json(key ? await preview.status(key) : []);
