@@ -1,6 +1,7 @@
-// E2E for the enriched swimlane card details: the worktree name (click-to-copy) and a coloured
-// diffstat must render on every lane EXCEPT Done, on their own lines. Driven against the fake api
-// (tests/apiFake.ts) — the card polls api.summary — rendered into a real DOM. See Board.WorkstreamCard.
+// E2E for the enriched swimlane card details: a coloured diffstat renders on every lane EXCEPT Done,
+// and the top-right copy menu offers the PR link (when there's a PR) + the worktree name. Driven
+// against the fake api (tests/apiFake.ts) — the card polls api.summary — rendered into a real DOM.
+// See Board.WorkstreamCard.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -51,27 +52,16 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("a non-local (In Review) card shows the worktree name and a coloured diffstat", async () => {
+  test("a non-local (In Review) card shows a coloured diffstat", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);
 
-    const name = container!.querySelector<HTMLElement>('button[title="Copy worktree name"]');
-    expect(name?.textContent).toContain("enrich-cards-1");
-
-    // Diffstat is a SEPARATE line from the name, with green additions + red deletions and a file count.
+    // Green additions + red deletions and a file count.
     const add = container!.querySelector(".text-emerald-700");
     const del = container!.querySelector(".text-destructive");
     expect(add?.textContent).toBe("+12");
     expect(del?.textContent).toBe("−3");
     expect(container!.textContent).toContain("2 files");
-  });
-
-  test("clicking the worktree name copies it", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount(base);
-    const name = container!.querySelector<HTMLElement>('button[title="Copy worktree name"]')!;
-    await act(async () => { name.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-    expect(copied).toBe("enrich-cards-1");
   });
 
   test("a PR card's copy menu offers Copy PR link, which copies the PR url", async () => {
@@ -102,10 +92,9 @@ describe("swimlane card details", () => {
     expect(document.body.querySelector('[role="menuitem"][title="Copy worktree name"]')).not.toBeNull();
   });
 
-  test("a Done card shows neither the copy-name control nor the diffstat", async () => {
+  test("a Done card shows no diffstat", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 5, deletions: 5 };
     await mount({ ...base, lane: "DONE", mergedAt: new Date().toISOString() });
-    expect(container!.querySelector('button[title="Copy worktree name"]')).toBeNull();
     expect(container!.textContent).not.toContain("+5");
   });
 });

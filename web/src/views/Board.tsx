@@ -118,22 +118,6 @@ function CopyMenu({ prUrl, name }: { prUrl?: string; name: string }) {
   );
 }
 
-// Worktree/branch name, click to copy — the identifier you paste into `git worktree`/`checkout`.
-function CopyName({ name }: { name: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard.writeText(name);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <button type="button" onClick={copy} title="Copy worktree name" className="hover:text-foreground group flex max-w-full items-center gap-1">
-      <code className="truncate">{name}</code>
-      {copied ? <Check className="size-3 shrink-0" /> : <Copy className="size-3 shrink-0 opacity-0 group-hover:opacity-100" />}
-    </button>
-  );
-}
-
 // Coloured diffstat: green additions, red deletions, then the file count.
 function Diffstat({ summary }: { summary: ChangeSummary }) {
   return (
@@ -316,19 +300,15 @@ export function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
 
-      {/* Detail: worktree name (click to copy) on its own line, then the diffstat. All lanes but Done. */}
+      {/* Detail: file changes and the model + context share a line, justified to opposite ends. All lanes but Done. */}
       {!isDone && (
-        <div className="text-muted-foreground space-y-0.5 text-xs">
-          <CopyName name={row.branch} />
-          {/* File changes and the model + context share a line, justified to opposite ends. */}
-          <div className="flex items-center justify-between gap-2">
-            {summary ? (
-              <Diffstat summary={summary} />
-            ) : isLocal ? (
-              <div>no changes yet</div>
-            ) : <div />}
-            {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
-          </div>
+        <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
+          {summary ? (
+            <Diffstat summary={summary} />
+          ) : isLocal ? (
+            <div>no changes yet</div>
+          ) : <div />}
+          {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
