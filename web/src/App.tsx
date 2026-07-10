@@ -26,7 +26,7 @@ export function App() {
     <div className="w-full px-4 py-4 md:px-6">
       <header className="mb-6 flex items-center gap-3">
         <Wordmark />
-        <p className="text-muted-foreground hidden text-sm sm:block">agent + PR control plane</p>
+        <p className="text-muted-foreground hidden text-sm sm:block">the pod that ships</p>
         {/* Right cluster reads as two groups: read-only usage status, then a divider, then controls. */}
         <div className="ml-auto flex items-center gap-3">
           <UsageMeter />
