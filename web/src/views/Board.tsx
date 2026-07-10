@@ -300,15 +300,20 @@ export function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
 
-      {/* Detail: file changes and the model + context share a line, justified to opposite ends. All lanes but Done. */}
+      {/* Detail: worktree/branch name as context, then file changes + model/context. All lanes but Done. */}
       {!isDone && (
-        <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
-          {summary ? (
-            <Diffstat summary={summary} />
-          ) : isLocal ? (
-            <div>no changes yet</div>
-          ) : <div />}
-          {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
+        <div className="text-muted-foreground space-y-0.5 text-xs">
+          {/* Read-only — the identifier for this worktree; copying it lives in the top-right menu now. */}
+          <code className="block truncate" title={row.branch}>{row.branch}</code>
+          {/* File changes and the model + context share a line, justified to opposite ends. */}
+          <div className="flex items-center justify-between gap-2">
+            {summary ? (
+              <Diffstat summary={summary} />
+            ) : isLocal ? (
+              <div>no changes yet</div>
+            ) : <div />}
+            {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
+          </div>
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}

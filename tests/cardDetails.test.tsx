@@ -1,7 +1,7 @@
-// E2E for the enriched swimlane card details: a coloured diffstat renders on every lane EXCEPT Done,
-// and the top-right copy menu offers the PR link (when there's a PR) + the worktree name. Driven
-// against the fake api (tests/apiFake.ts) — the card polls api.summary — rendered into a real DOM.
-// See Board.WorkstreamCard.
+// E2E for the enriched swimlane card details: the worktree name (read-only context) + a coloured
+// diffstat render on every lane EXCEPT Done, and the top-right copy menu offers the PR link (when
+// there's a PR) + the worktree name. Driven against the fake api (tests/apiFake.ts) — the card polls
+// api.summary — rendered into a real DOM. See Board.WorkstreamCard.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -52,9 +52,12 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("a non-local (In Review) card shows a coloured diffstat", async () => {
+  test("a non-local (In Review) card shows the worktree name as context and a coloured diffstat", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);
+
+    // The worktree/branch name renders as read-only context (copying is in the top-right menu now).
+    expect(container!.querySelector("code")?.textContent).toBe("enrich-cards-1");
 
     // Green additions + red deletions and a file count.
     const add = container!.querySelector(".text-emerald-700");
