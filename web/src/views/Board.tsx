@@ -1,13 +1,13 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { boardViewAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { navigate } from "@/lib/route";
-import { Check, ChevronRight, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
+import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,55 +26,12 @@ const LANES: { lane: Lane; title: string }[] = [
 export function Board() {
   const all = useWorkstreams();
   const filter = useAtomValue(repoFilterAtom);
-  const view = useAtomValue(boardViewAtom);
-  // Which list-view sections are collapsed (Linear-style accordion). Empty by default = all expanded.
-  const [collapsed, setCollapsed] = useState<Set<Lane>>(new Set());
-  const toggleLane = (lane: Lane) =>
-    setCollapsed((s) => { const n = new Set(s); n.has(lane) ? n.delete(lane) : n.add(lane); return n; });
   const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
   const cardsFor = (lane: Lane) => {
     const cards = rows.filter((r) => r.lane === lane);
     if (lane === "DONE") cards.sort((a, b) => (b.mergedAt ?? "").localeCompare(a.mergedAt ?? "")); // recent first
     return cards;
   };
-
-  // List view: lanes stacked as collapsible sections rather than side-by-side columns. Only the
-  // list scrolls (sticky headers stay put); empty lanes are hidden (Local always shows, for the
-  // New-draft composer).
-  if (view === "list")
-    return (
-      <div className="mx-auto flex max-w-3xl flex-col overflow-hidden md:h-[calc(100dvh-6.5rem)]">
-        <div className="flex-1 space-y-1 overflow-y-auto px-1.5">
-          {LANES.map(({ lane, title }) => {
-            const cards = cardsFor(lane);
-            if (cards.length === 0 && lane !== "LOCAL") return null;
-            const isCollapsed = collapsed.has(lane);
-            return (
-              <section key={lane}>
-                <div className="bg-background sticky top-0 z-10 flex items-center gap-2 py-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleLane(lane)}
-                    aria-expanded={!isCollapsed}
-                    className="text-muted-foreground hover:text-foreground flex flex-1 items-center gap-2 text-xs font-semibold tracking-wide uppercase"
-                  >
-                    <ChevronRight className={`size-3.5 transition-transform ${isCollapsed ? "" : "rotate-90"}`} />
-                    {title} <span className="opacity-60">{cards.length}</span>
-                  </button>
-                  {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
-                </div>
-                {!isCollapsed && (
-                  <div className="space-y-2 py-2">
-                    {lane === "LOCAL" && <NewDraft />}
-                    {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </div>
-      </div>
-    );
 
   return (
     <div className="grid grid-cols-1 gap-3 md:h-[calc(100dvh-6.5rem)] md:grid-cols-3 xl:grid-cols-5">
