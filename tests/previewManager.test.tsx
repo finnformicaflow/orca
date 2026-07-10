@@ -68,6 +68,17 @@ test("PM2 badge counts running previews and lists each by its session title, wit
   expect(button("Open")).toBeTruthy();       // ready → Open link (shared PreviewLiveControl)
 });
 
+test("PM4 unreachable endpoint: a distinct 'API unavailable' hint, no badge, not the empty state", async () => {
+  apiFake.previewsError = "404"; // e.g. a self-preview whose bridge predates the /api/previews route
+  await mount();
+  expect(trigger().textContent).toBe(""); // count badge stays hidden while errored
+
+  await click(trigger());
+  const divs = [...document.body.querySelectorAll("div")].map((d) => d.textContent);
+  expect(divs.some((t) => t === "Previews API unavailable — run the bridge on this branch.")).toBeTruthy();
+  expect(divs.some((t) => t === "No previews running.")).toBeFalsy(); // distinct from the genuine empty state
+});
+
 test("PM3 Stop tears the preview down and drops it from the list", async () => {
   apiFake.previewsData = [{ key: "/wt/solo", svcs: [svc(5173)] }];
   await mount();

@@ -240,12 +240,16 @@ export function TestMasterMenu() {
  *  even with the popover shut. */
 export function PreviewManagerMenu() {
   const [previews, setPreviews] = useState<{ key: string; svcs: PreviewSvc[] }[]>([]);
+  // The endpoint is unreachable when Orca previews itself: its Vite proxies /api to whatever bridge
+  // is already running (:8787), which may predate this route and 404. Track that so the menu shows a
+  // legible "API unavailable" hint instead of a false "No previews running" empty state.
+  const [unavailable, setUnavailable] = useState(false);
   const rows = useWorkstreams();
   // Previews are keyed by worktree path; match that to a row for the session title (fall back to the
   // last path segment for adopted/base worktrees with no card).
   const titleOf = (key: string) => rows.find((r) => r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
 
-  const load = () => void api.previews().then(setPreviews).catch(() => {});
+  const load = () => void api.previews().then((p) => { setPreviews(p); setUnavailable(false); }).catch(() => setUnavailable(true));
   useEffect(() => {
     load();
     const t = setInterval(load, 2500); // reflects start/stop without a manual refresh
@@ -260,7 +264,7 @@ export function PreviewManagerMenu() {
       <PopoverTrigger asChild>
         <Button size="icon" variant="outline" className="relative size-8" title="Running previews" aria-label="Running previews">
           <MonitorPlay className="size-4" />
-          {running.length > 0 && (
+          {!unavailable && running.length > 0 && (
             <span className="bg-primary text-primary-foreground ring-background absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold ring-2" aria-label={`${running.length} running previews`}>
               {running.length}
             </span>
@@ -269,7 +273,9 @@ export function PreviewManagerMenu() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 space-y-3">
         <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Running previews</div>
-        {running.length === 0 ? (
+        {unavailable ? (
+          <div className="text-muted-foreground text-xs">Previews API unavailable — run the bridge on this branch.</div>
+        ) : running.length === 0 ? (
           <div className="text-muted-foreground text-xs">No previews running.</div>
         ) : (
           running.map((p) => (

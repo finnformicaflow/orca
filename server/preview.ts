@@ -156,7 +156,9 @@ export async function status(key: string): Promise<SvcStatus[]> {
 }
 
 /** Every tracked preview, keyed by worktree path, with live status — for the running-previews menu.
- *  Not repo-scoped: the map spans all repos, keyed by absolute path. */
+ *  Not repo-scoped: the map spans all repos, keyed by absolute path.
+ *  Only reflects previews started by THIS bridge process (the in-memory `previews` map) — previews
+ *  orphaned by a prior bridge aren't listed, by design. */
 export async function list(): Promise<{ key: string; svcs: SvcStatus[] }[]> {
   return Promise.all([...previews.keys()].map(async (key) => ({ key, svcs: await status(key) })));
 }
