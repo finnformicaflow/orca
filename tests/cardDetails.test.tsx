@@ -52,12 +52,12 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("a non-local (In Review) card shows the worktree name as context and a coloured diffstat", async () => {
+  test("a non-local (In Review) card shows a coloured diffstat, but not the (redundant) branch name", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);
 
-    // The worktree/branch name renders as read-only context (copying is in the top-right menu now).
-    expect(container!.querySelector("code")?.textContent).toBe("enrich-cards-1");
+    // The worktree/branch name is no longer rendered on the card (visual noise) — it's copy-only now.
+    expect(container!.textContent).not.toContain("enrich-cards-1");
 
     // Green additions + red deletions and a file count.
     const add = container!.querySelector(".text-emerald-700");
