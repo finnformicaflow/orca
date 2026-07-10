@@ -82,7 +82,7 @@ function CopyDone({ cards }: { cards: Row[] }) {
 }
 
 const Eyebrow = ({ repo }: { repo: string }) => (
-  <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
+  <div className="text-muted-foreground min-w-fit text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
 );
 
 // External destination link (opens elsewhere) — labelled + trailing arrow so it reads as "go there",
@@ -259,7 +259,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
       {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <Eyebrow repo={row.repo} />
         <div className="flex shrink-0 items-center gap-3">
           {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
