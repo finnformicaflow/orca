@@ -161,6 +161,16 @@ export function followUpPrompt(instruction: string): string {
   return `${instruction}\n\nWork autonomously. Commit and push your changes.\n${NO_PR}`;
 }
 
+/** A sensible default PR description when the repo has no PR template: a "what changed" overview
+ *  built from the branch's commit subjects (pass them oldest-first). No commits yet → a minimal
+ *  placeholder, so a promoted PR is never blank. */
+export function defaultPrBody(commitSubjects: string[]): string {
+  const subjects = commitSubjects.map((s) => s.trim()).filter(Boolean);
+  if (subjects.length === 0) return "_No commits yet._";
+  if (subjects.length === 1) return subjects[0]!; // one commit: its subject is the overview
+  return ["## Summary", "", ...subjects.map((s) => `- ${s}`)].join("\n");
+}
+
 /** Point the agent at pasted/dropped image files (absolute paths) for extra visual context. */
 export function withAttachments(prompt: string, imagePaths: string[]): string {
   if (!imagePaths.length) return prompt;
