@@ -2,6 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiStatus, Mergeable, ReviewStatus } from "../../server/gh";
+import { withOutcomeContract, type AgentOutcome } from "../../shared/agent";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -127,12 +128,12 @@ const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after c
 
 /** Prompt used to launch the headless agent — Orca already created it from the latest base. */
 export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">, base = "main"): string {
-  return [
+  return withOutcomeContract([
     promptFor(ws),
     "",
     `This worktree was created from the latest \`${base}\`. Work autonomously. Commit your changes with clear messages as you go.`,
     NO_PR,
-  ].join("\n");
+  ].join("\n"));
 }
 
 /** Exact provider-neutral Slack message. Copying it never spends another provider's quota. */
@@ -157,7 +158,29 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return `${instruction}\n\nWork autonomously. Commit and push your changes.\n${NO_PR}`;
+  return withOutcomeContract(`${instruction}\n\nWork autonomously. Commit and push your changes.\n${NO_PR}`);
+}
+
+/** Deterministic PR markdown grounded in the parsed run outcome and actual git summary. */
+export function outcomePrBody(input: {
+  outcome: AgentOutcome;
+  template?: string | null;
+  summary: { commits: { hash: string; subject: string }[]; files: { path: string }[] };
+}): string | undefined {
+  const o = input.outcome;
+  if (!o.outcome && !o.verification.length && !o.decisions.length && !o.remaining.length) return undefined;
+  const sections: string[] = [];
+  if (input.template?.trim()) sections.push(input.template.trim(), "---");
+  if (o.outcome) sections.push("## Summary", "", o.outcome);
+  if (input.summary.commits.length || input.summary.files.length) {
+    sections.push("## Changes", "");
+    if (input.summary.commits.length) sections.push(...input.summary.commits.slice().reverse().map((c) => `- ${c.hash.slice(0, 8)} ${c.subject}`));
+    if (input.summary.files.length) sections.push("", `Files changed: ${input.summary.files.slice(0, 20).map((f) => `\`${f.path}\``).join(", ")}${input.summary.files.length > 20 ? ", …" : ""}`);
+  }
+  if (o.verification.length) sections.push("## Testing", "", ...o.verification.map((v) => `- ${v}`));
+  if (o.decisions.length) sections.push("## Implementation notes", "", ...o.decisions.map((v) => `- ${v}`));
+  if (o.remaining.length) sections.push("## Known issues / follow-ups", "", ...o.remaining.map((v) => `- ${v}`));
+  return sections.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** A sensible default PR description when the repo has no PR template: a "what changed" overview

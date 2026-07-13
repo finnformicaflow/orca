@@ -1,14 +1,75 @@
 export const AGENT_PROVIDERS = ["claude", "codex", "agy"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
 
+export type AgentOutcome = {
+  outcome: string;
+  verification: string[];
+  decisions: string[];
+  remaining: string[];
+  commits: string[];
+};
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
   prompt: string;
   response: string;
+  structured?: AgentOutcome;
   startedAt?: number;
   finishedAt?: number;
 };
+
+const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;
+const sectionValue = (raw: string): string[] => raw
+  .split("\n")
+  .map((line) => line.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").trim())
+  .filter((line) => line && line.toLowerCase() !== "none");
+
+/** Tolerantly parse the compact Markdown contract without affecting run success. */
+export function parseAgentOutcome(raw: string): AgentOutcome | undefined {
+  const sections = new Map<string, string[]>();
+  let current: string | undefined;
+  for (const line of raw.split(/\r?\n/)) {
+    const heading = line.match(/^\s*##\s+(Outcome|Verification|Decisions|Remaining|Commits)\s*#*\s*$/i)?.[1]?.toLowerCase();
+    if (heading && OUTCOME_HEADINGS.includes(heading as typeof OUTCOME_HEADINGS[number])) {
+      current = heading;
+      sections.set(current, []);
+    } else if (current) {
+      sections.get(current)!.push(line);
+    }
+  }
+  const outcome = sectionValue((sections.get("outcome") ?? []).join("\n")).join("\n");
+  const parsed: AgentOutcome = {
+    outcome,
+    verification: sectionValue((sections.get("verification") ?? []).join("\n")),
+    decisions: sectionValue((sections.get("decisions") ?? []).join("\n")),
+    remaining: sectionValue((sections.get("remaining") ?? []).join("\n")),
+    commits: sectionValue((sections.get("commits") ?? []).join("\n")),
+  };
+  return parsed.outcome || parsed.verification.length || parsed.decisions.length || parsed.remaining.length || parsed.commits.length
+    ? parsed
+    : undefined;
+}
+
+export const OUTCOME_CONTRACT = [
+  "Finish your final response with these concise sections:",
+  "## Outcome",
+  "A concise description of what changed or what was discovered.",
+  "## Verification",
+  "- Commands/checks run and their results.",
+  "## Decisions",
+  "- Important implementation decisions or tradeoffs.",
+  "## Remaining",
+  "- Anything incomplete, blocked, or requiring attention. Use “None” when complete.",
+  "## Commits",
+  "- Commit hashes and subjects, if applicable. Use “None” when no commit was made.",
+].join("\n");
+
+/** Add the readable outcome contract once while preserving the caller's instruction verbatim. */
+export function withOutcomeContract(instruction: string): string {
+  if (/^\s*##\s+Outcome\s*$/im.test(instruction) && /^\s*##\s+Commits\s*$/im.test(instruction)) return instruction;
+  return `${instruction}\n\nAvoid unrelated cleanup.\n\n${OUTCOME_CONTRACT}`;
+}
 
 export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "agy" ? "Antigravity" : "Claude";
 
@@ -30,13 +91,20 @@ export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentPro
     "Treat the files, git status, commits, and test results in the worktree as the source of truth;",
     "verify the transcript against them before changing anything. Do not repeat already-completed work.",
   ].join(" ");
+  const renderOutcome = (turn: AgentTurn): string => turn.structured ? [
+    turn.structured.remaining.length ? `Remaining:\n${turn.structured.remaining.map((v) => `- ${v}`).join("\n")}` : "",
+    turn.structured.decisions.length ? `Decisions:\n${turn.structured.decisions.map((v) => `- ${v}`).join("\n")}` : "",
+    turn.structured.outcome ? `Outcome:\n${turn.structured.outcome}` : "",
+    turn.structured.verification.length ? `Verification:\n${turn.structured.verification.map((v) => `- ${v}`).join("\n")}` : "",
+    turn.structured.commits.length ? `Commits:\n${turn.structured.commits.map((v) => `- ${v}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n") : turn.response;
   const rendered = turns.map((t) => [
     `### ${agentLabel(t.provider)} turn`,
     "User / Orca instruction:",
     t.prompt,
     "",
     `${agentLabel(t.provider)} outcome:`,
-    t.response,
+    renderOutcome(t),
   ].join("\n"));
   // Preserve the newest decisions when history is large. Add whole turns until the cap is reached.
   const kept: string[] = [];

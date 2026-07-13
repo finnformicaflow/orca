@@ -6,20 +6,25 @@ import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
-import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
-import { AGENT_PROVIDERS, isAgentProvider } from "../shared/agent";
+import { mergeSafe, outcomePrBody, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { AGENT_PROVIDERS, isAgentProvider, type AgentOutcome } from "../shared/agent";
 
 /** The body for a promoted PR. A caller-supplied body wins untouched; otherwise the selected provider writes a
  *  filled description from the branch's diff (following the repo's PR template + conventions), and
  *  we fall back to the deterministic body (`resolvePrBody`) if the AI is unavailable or the branch
  *  has nothing to describe. */
-async function resolvePrDescription(provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string, provided?: string): Promise<string> {
-  if (provided?.trim()) return provided;
-  const [template, { commits }, diff] = await Promise.all([
+async function resolvePrDescription(provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string, provided?: string, outcome?: AgentOutcome): Promise<string> {
+  if (provided !== undefined) return provided;
+  const [template, summary, diff] = await Promise.all([
     git.readPrTemplate(worktreePath),
     git.changeSummary(worktreePath, base),
     git.worktreeDiff(worktreePath, base),
   ]);
+  const { commits } = summary;
+  if (outcome && diff.trim()) {
+    const deterministic = outcomePrBody({ outcome, template, summary });
+    if (deterministic) return deterministic;
+  }
   if (diff.trim()) {
     const ai = await agent.describePr(
       provider, prDescriptionPrompt({ template, diff, commits: commits.map((c) => c.subject).reverse() }), // oldest-first
@@ -103,7 +108,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
     const [, prBody] = await Promise.all([
       git.pushBranch(body.worktreePath, body.branch), // the branch must exist on origin for `gh pr create`
-      resolvePrDescription(provider, body.worktreePath, base, body.body),
+      resolvePrDescription(provider, body.worktreePath, base, body.body, body.outcome),
     ]);
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
@@ -214,6 +219,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         agentStatus,
         agentError: run.error,
         agentResult: run.result,
+        agentOutcome: run.structured,
         agentMeta: run.meta,
         agentStartedAt: run.startedAt,
         agentFinishedAt: run.finishedAt,

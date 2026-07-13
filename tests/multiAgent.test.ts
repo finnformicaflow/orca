@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, oneShotCommand, parseAgyOutput, parseCodexOutput } from "../server/agent";
-import { attachCommand, handoffPrompt, type AgentTurn } from "../shared/agent";
+import { attachCommand, handoffPrompt, parseAgentOutcome, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 
@@ -89,6 +89,35 @@ describe("provider adapters", () => {
     expect(prompt).toContain("source of truth");
   });
 
+  test("parses complete, partial, empty, and malformed structured outcomes tolerantly", () => {
+    expect(parseAgentOutcome("## outcome\nImplemented it.\n\n## Verification\n* bun test — passed\n\n## Decisions\n1. Kept the API stable\n\n## Remaining\nNone\n\n## Commits\n- abc123 Add it")).toEqual({
+      outcome: "Implemented it.", verification: ["bun test — passed"], decisions: ["Kept the API stable"], remaining: [], commits: ["abc123 Add it"],
+    });
+    expect(parseAgentOutcome("## Remaining\n- Fix the failing check")).toEqual({
+      outcome: "", verification: [], decisions: [], remaining: ["Fix the failing check"], commits: [],
+    });
+    expect(parseAgentOutcome("## Outcome\n\n## Remaining\nNone")).toBeUndefined();
+    expect(parseAgentOutcome("Implemented it without the requested headings")).toBeUndefined();
+  });
+
+  test("adds the final-response contract once without rewriting the instruction", () => {
+    const instruction = "Change only src/a.ts exactly as requested.";
+    const wrapped = withOutcomeContract(instruction);
+    expect(wrapped.startsWith(instruction)).toBe(true);
+    expect(wrapped.match(/## Outcome/g)?.length).toBe(1);
+    expect(withOutcomeContract(wrapped)).toBe(wrapped);
+  });
+
+  test("structured handoffs prefer compact state and omit the same turn's raw prose", () => {
+    const prompt = handoffPrompt([{
+      ...prior[0]!, response: "RAW RESPONSE SHOULD NOT BE COPIED",
+      structured: { outcome: "Cache implemented", verification: ["bun test passed"], decisions: ["Used LRU"], remaining: ["Add eviction"], commits: ["abc123 Cache"] },
+    }], "Continue", "claude", "codex");
+    expect(prompt).toContain("Remaining:\n- Add eviction");
+    expect(prompt.indexOf("Remaining:")).toBeLessThan(prompt.indexOf("Outcome:"));
+    expect(prompt).not.toContain("RAW RESPONSE SHOULD NOT BE COPIED");
+  });
+
   test("Copy CLI uses the active provider's native resume command", () => {
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", sessionId: "c-1" })).toBe('cd "/wt/x" && claude --resume c-1 --permission-mode auto');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", sessionId: "x-1" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox x-1');
@@ -103,6 +132,7 @@ describe("cross-provider continuation", () => {
     apiFake.agentsData = [{
       branch: "feat", worktreePath: "/wt/feat", agentStatus: "done", agentProvider: "claude",
       agentRunId: "run-1", agentPrompt: "build it", agentResult: "built it", sessionId: "c-1",
+      agentOutcome: { outcome: "Built it", verification: ["bun test passed"], decisions: [], remaining: [], commits: ["abc Built"] },
       agentStartedAt: 10, agentFinishedAt: 20,
     }];
     await store.refresh();
@@ -111,8 +141,24 @@ describe("cross-provider continuation", () => {
     expect(saved.agentProvider).toBe("claude");
     expect(saved.sessionId).toBe("c-1");
     expect(saved.transcript).toEqual([{
-      id: "run-1", provider: "claude", prompt: "build it", response: "built it", startedAt: 10, finishedAt: 20,
+      id: "run-1", provider: "claude", prompt: "build it", response: "built it",
+      structured: { outcome: "Built it", verification: ["bun test passed"], decisions: [], remaining: [], commits: ["abc Built"] },
+      startedAt: 10, finishedAt: 20,
     }]);
+  });
+
+  test("old transcript turns without structured outcomes still load", async () => {
+    localStorage.setItem("orca.enrichment", JSON.stringify({ "r::feat": { transcript: prior } }));
+    apiFake.agentsData = [{ branch: "feat", worktreePath: "/wt/feat", agentStatus: "idle" }];
+    await store.refresh();
+    expect(store.useWorkstreams).toBeDefined();
+    expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"].transcript).toEqual(prior);
+  });
+
+  test("promotion passes the latest useful structured outcome for deterministic reuse", async () => {
+    const outcome = { outcome: "Built it", verification: ["bun test passed"], decisions: [], remaining: [], commits: [] };
+    await store.promote({ ...row, hasRemote: true, agentOutcome: outcome });
+    expect(apiFake.promotions.at(-1)).toMatchObject({ provider: "claude", outcome });
   });
 
   test("same-provider Continue uses the native session id", async () => {
@@ -129,6 +175,20 @@ describe("cross-provider continuation", () => {
     expect(launch.provider).toBe("claude");
     expect(launch.resume).toBe("claude-session");
     expect(launch.prompt).toContain("Do not repeat completed work");
+  });
+
+  test("Run again includes bounded prior failure and unfinished verification evidence", async () => {
+    await store.rerunAgent({
+      ...row, agentError: "command exited 1", agentOutcome: {
+        outcome: "Implemented most of it", verification: ["bun test failed in cache.test.ts", "lint passed"],
+        decisions: [], remaining: ["Repair cache eviction"], commits: [],
+      },
+    });
+    const prompt = apiFake.agentLaunches.at(-1)!.prompt;
+    expect(prompt).toContain("Previous error:\ncommand exited 1");
+    expect(prompt).toContain("Repair cache eviction");
+    expect(prompt).toContain("bun test failed");
+    expect(prompt.length).toBeLessThan(8_000);
   });
 
   test("a high-context Claude session resets through the compact portable handoff", async () => {

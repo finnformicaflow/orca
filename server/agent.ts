@@ -3,7 +3,7 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { handoffPrompt, type AgentProvider, type AgentTurn } from "../shared/agent";
+import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
 import { homedir, tmpdir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
@@ -29,6 +29,7 @@ export type RunState = {
   prompt?: string;
   sessionId?: string;
   result?: string;
+  structured?: AgentOutcome;
   meta?: RunMeta;
   startedAt?: number;
   finishedAt?: number;
@@ -235,7 +236,8 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     }
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
-    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, meta, startedAt, finishedAt };
+    const structured = result ? parseAgentOutcome(result) : undefined;
+    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     runs.set(key, code === 0 && !isError
       ? { status: "done", ...common }
       : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
@@ -339,6 +341,6 @@ export const status = (key: string): RunState => {
   const r = runs.get(key);
   return r ? {
     status: r.status, error: r.error, provider: r.provider, runId: r.runId, prompt: r.prompt,
-    sessionId: r.sessionId, result: r.result, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt,
+    sessionId: r.sessionId, result: r.result, structured: r.structured, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt,
   } : { status: "idle" };
 };

@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, launchPrompt,
-  prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  outcomePrBody, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -209,6 +209,30 @@ test("W3c AI PR description: prompt is built from the diff, template + conventio
   const huge = prDescriptionPrompt({ template: null, diff: "x".repeat(20_000), commits });
   expect(huge).toContain("(diff truncated)");
   expect(huge.length).toBeLessThan(20_000);
+});
+
+test("W3d structured outcome produces a deterministic, git-grounded PR body", () => {
+  const body = outcomePrBody({
+    outcome: {
+      outcome: "Added bounded cache eviction.", verification: ["bun test — passed"],
+      decisions: ["Kept the public API stable"], remaining: ["Monitor hit rate"], commits: ["untrusted outcome commit"],
+    },
+    template: "## Repository checklist\n\n- [x] Tested",
+    summary: {
+      commits: [{ hash: "abcdef123456", subject: "Add cache eviction" }],
+      files: [{ path: "src/cache.ts" }],
+    },
+  })!;
+  expect(body).toContain("Added bounded cache eviction.");
+  expect(body).toContain("bun test — passed");
+  expect(body).toContain("abcdef12 Add cache eviction");
+  expect(body).toContain("`src/cache.ts`");
+  expect(body).toContain("Repository checklist");
+  expect(body).not.toContain("untrusted outcome commit");
+  expect(outcomePrBody({
+    outcome: { outcome: "", verification: [], decisions: [], remaining: [], commits: ["only prose"] },
+    summary: { commits: [], files: [] },
+  })).toBeUndefined();
 });
 
 describe("W4 poll-status: gh json → state machine", () => {

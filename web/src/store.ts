@@ -9,7 +9,7 @@ import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
   resolveConflictsPrompt, slackMessage, titleFromPrompt, withAttachments,
 } from "./workstream";
-import type { AgentProvider, AgentTurn } from "../../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -134,6 +134,7 @@ async function refreshOnce() {
           fields.transcript = [...transcript, {
             id: a.agentRunId, provider: a.agentProvider, prompt: a.agentPrompt,
             response: a.agentResult ?? a.agentError ?? "The run ended without a final response.",
+            structured: a.agentOutcome,
             startedAt: a.agentStartedAt, finishedAt: a.agentFinishedAt,
           }].slice(-25);
         }
@@ -237,6 +238,7 @@ export type Row = {
   agentStatus?: LiveAgent["agentStatus"];
   agentError?: string;
   agentResult?: string;
+  agentOutcome?: AgentOutcome;
   agentMeta?: LiveAgent["agentMeta"];
   agentStartedAt?: number;
   agentProvider?: AgentProvider;
@@ -299,7 +301,7 @@ export function useWorkstreams(): Row[] {
         title: pr?.title ?? e.title ?? branch,
         prompt: e.prompt ?? "",
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
-        agentResult: wt?.agentResult, agentMeta: wt?.agentMeta, agentStartedAt: wt?.agentStartedAt,
+        agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
@@ -369,13 +371,25 @@ export async function undoDraft(draft: OptimisticDraft) {
 
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
-  return launchOnRow(row, row.worktreePath, followUpPrompt("Inspect the current worktree and continue or repair the unfinished task. Do not repeat completed work."), row.agentProvider ?? "claude").then(refresh);
+  const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
+  const failedVerification = latest?.verification.filter((v) => /fail|error|non[- ]?zero|did not pass/i.test(v)).slice(0, 5) ?? [];
+  const evidence = [
+    row.agentError ? `Previous error:\n${row.agentError.slice(0, 1_000)}` : "",
+    latest?.remaining.length ? `Unfinished items:\n${latest.remaining.slice(0, 8).map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
+    failedVerification.length ? `Previous verification failures:\n${failedVerification.map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+  const instruction = [
+    "Inspect the current worktree and continue or repair the unfinished task. Continue from current files and commits; do not restart. Do not repeat completed work.",
+    evidence,
+  ].filter(Boolean).join("\n\n");
+  return launchOnRow(row, row.worktreePath, followUpPrompt(instruction), row.agentProvider ?? "claude").then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
   if (!row.worktreePath) return;
   if (row.hasRemote) {
-    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, provider: row.agentProvider ?? "claude", draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
+    const outcome = row.agentOutcome ?? row.transcript?.slice().reverse().find((turn) => turn.structured)?.structured;
+    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, provider: row.agentProvider ?? "claude", outcome, draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
   } else {
     patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready
   }
