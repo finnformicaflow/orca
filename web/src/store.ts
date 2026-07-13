@@ -42,7 +42,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
-  prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; transcript?: AgentTurn[]; following?: boolean;
+  prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; preferredProvider?: AgentProvider; transcript?: AgentTurn[]; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
   handedReviewThreadIds?: string[];
@@ -305,7 +305,7 @@ function runFollowers() {
       const row: Row = {
         repo: rl.repo, hasRemote: rl.hasRemote, branch: pr.branch, title: pr.title, prompt: e.prompt ?? "",
         lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
-        agentProvider: e.agentProvider ?? wt?.agentProvider, transcript: e.transcript,
+        agentProvider: e.agentProvider ?? wt?.agentProvider, preferredProvider: e.preferredProvider, transcript: e.transcript,
         prNumber: pr.number, prUrl: pr.url, following: true,
         failingChecks: pr.failingChecks, feedback: pr.feedback,
       };
@@ -335,6 +335,7 @@ export type Row = {
   agentMeta?: LiveAgent["agentMeta"];
   agentStartedAt?: number;
   agentProvider?: AgentProvider;
+  preferredProvider?: AgentProvider;
   sessionId?: string;
   transcript?: AgentTurn[];
   mergeClean?: "clean" | "conflict";
@@ -396,6 +397,7 @@ export function useWorkstreams(): Row[] {
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
         agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
+        preferredProvider: e.preferredProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
         mergeClean: wt?.mergeClean, promoted: e.promoted,
@@ -462,10 +464,25 @@ export async function undoDraft(draft: OptimisticDraft) {
   if (draft.created) await discardDraft({ repo: draft.repo, branch: draft.created.branch, worktreePath: draft.created.worktreePath } as Row);
 }
 
+/** The agent a card will use for its next action: the user's pin (when that provider is installed),
+ *  else the provider that last ran, else Claude. Read by every agent action AND Follow autopilot, so
+ *  one pinned choice drives Follow up / Fix CI / Resolve conflicts / Address review consistently. */
+export function providerFor(row: Row): AgentProvider {
+  if (row.preferredProvider && agentProviders().includes(row.preferredProvider)) return row.preferredProvider;
+  return row.agentProvider ?? "claude";
+}
+
+/** Pin the card to an agent (persisted per branch). A pin that differs from the provider that last
+ *  ran makes the next action hand off through launchOnRow's portable transcript — so switching agents
+ *  mid-workstream stays lossless; the worktree/git remain the source of truth. */
+export function setCardProvider(row: Row, provider: AgentProvider) {
+  patchEnrich(row.repo, row.branch, { preferredProvider: provider });
+}
+
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
-  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), row.agentProvider ?? "claude", { action: "rerun" }).then(refresh);
+  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), providerFor(row), { action: "rerun" }).then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
@@ -586,7 +603,7 @@ export async function followUp(
   patchEnrich(row.repo, row.branch, { followUps });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
-  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? row.agentProvider ?? "claude", { action: "followup" });
+  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup" });
   await refresh();
 }
 
@@ -664,7 +681,7 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
 
 export async function resolveConflicts(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), row.agentProvider ?? "claude", { action: "conflict" });
+  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), providerFor(row), { action: "conflict" });
   await refresh();
 }
 
@@ -676,7 +693,7 @@ export function addPreviewLabel(row: Row) {
 export async function fixCi(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
   const details = row.prNumber ? await api.ciEvidence(row.repo, row.prNumber).catch(() => []) : [];
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), row.agentProvider ?? "claude", { action: "ci", evidenceChars: JSON.stringify(details).length });
+  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), providerFor(row), { action: "ci", evidenceChars: JSON.stringify(details).length });
   await refresh();
 }
 
@@ -693,7 +710,7 @@ export async function addressReview(row: Row, manual = true) {
   await launchOnRow(
     row, wt,
     addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked),
-    row.agentProvider ?? "claude",
+    providerFor(row),
     { action: "review", evidenceChars: JSON.stringify(marked).length },
   );
   if (threads?.length) {

@@ -231,6 +231,25 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
+  test("pinning the card's agent routes every action through it, handing off from the last-run provider", async () => {
+    store.setCardProvider(row, "codex"); // persisted per branch, read by providerFor
+    expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"].preferredProvider).toBe("codex");
+    // Fix CI (not just Follow up) now honours the pin — it used to hard-default to the last-run provider.
+    await store.fixCi({ ...row, preferredProvider: "codex" });
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.provider).toBe("codex");
+    expect(launch.resume).toBeUndefined();  // switching agents → portable handoff, never a stale native resume
+    expect(launch.handoffFrom).toBe("claude");
+    expect(launch.history).toEqual(prior);
+  });
+
+  test("a pin matching the provider that last ran still resumes its native session", async () => {
+    await store.followUp({ ...row, preferredProvider: "claude" }, "keep going");
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.provider).toBe("claude");
+    expect(launch.resume).toBe("claude-session");
+  });
+
   test("missing native session starts a fresh chat with portable context automatically", async () => {
     await store.followUp({ ...row, sessionId: undefined }, "keep going", [], { provider: "claude" });
     const launch = apiFake.agentLaunches.at(-1)!;

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, useAgentProviders, type Row,
+  merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
 } from "../store";
 import { attachCommand, prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -210,13 +210,10 @@ export function FollowUpComposer(
 ) {
   const key = followUpDraftKey(row);
   const providers = useAgentProviders();
-  const [provider, setProvider] = useState<AgentProvider>(row.agentProvider ?? providers[0] ?? "claude");
-  useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
-  // A card can receive a newer provider while it is mounted (poll completes, or another run starts).
-  // Follow-ups inherit that active provider; a manual choice after opening remains untouched.
-  useEffect(() => {
-    if (row.agentProvider && providers.includes(row.agentProvider)) setProvider(row.agentProvider);
-  }, [row.agentProvider, providers]);
+  // The composer's picker IS the card's pin — one persisted choice, surfaced here and on the card
+  // header. Changing it re-pins the card, so every later action (Fix CI, Resolve conflicts, …) uses
+  // it too; the send below reads the same resolved provider, so no local mirror state to drift.
+  const provider = providerFor(row);
   return (
     <ChatComposer
       autoFocus
@@ -228,7 +225,7 @@ export function FollowUpComposer(
       placeholder="Continue this work…  (⌘+Enter)"
       leading={
         <div className="flex min-w-0 w-full items-center overflow-hidden">
-          <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
+          <Select value={provider} onValueChange={(v) => setCardProvider(row, v as AgentProvider)}>
             <SelectTrigger size="sm" aria-label="Agent provider" className="text-muted-foreground hover:bg-accent min-w-0 max-w-full border-0 shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
@@ -245,7 +242,7 @@ export function FollowUpComposer(
         onSubmitting(true);
         // followUp records the sent prompt in enrichment before it can fail, so the local draft is
         // safe to drop as soon as the send is handed off (a failed launch reopens the box from it).
-        try { await followUp(row, instruction, images, { provider }); clearDraft(key); }
+        try { await followUp(row, instruction, images); clearDraft(key); }
         catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
         finally { onSubmitting(false); }
       }}

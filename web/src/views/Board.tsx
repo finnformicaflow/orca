@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, ensureWorktree, rerunAgent, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, ensureWorktree, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { attachCommand } from "../workstream";
@@ -139,23 +139,52 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
   );
 }
 
-// Provider-aware model + context for the last run. Claude exposes its actual model and context fill;
-// Codex currently exposes the provider but no trustworthy context-window percentage in exec JSONL.
-// Keep those states honest rather than leaving a stale Claude model on a Codex-run card.
-function AgentMeta({ meta, provider }: { meta?: Row["agentMeta"]; provider?: AgentProvider }) {
-  const parts: string[] = [];
-  const providerName = provider ? agentLabel(provider) : undefined;
-  if (providerName) parts.push(providerName);
-  if (meta?.model && meta.model.toLowerCase() !== providerName?.toLowerCase()) parts.push(meta.model);
-  if (typeof meta?.contextPct === "number") parts.push(`${meta.contextPct}% ctx`);
-  if (!parts.length) return null;
+// The card's agent, as a hover-reveal picker. At rest it reads as plain text (the provider name);
+// hovering/focusing reveals it's a dropdown, and choosing re-pins the card so every action — Follow
+// up, Fix CI, Resolve conflicts, Address review — uses it (store.setCardProvider / providerFor). It's
+// a real Select trigger, so it's keyboard-focusable, not hover-only. stopPropagation keeps a click
+// from bubbling to the card's row navigation.
+function ProviderPicker({ row }: { row: Row }) {
+  const providers = useAgentProviders();
+  const provider = providerFor(row);
+  return (
+    <Select value={provider} onValueChange={(v) => setCardProvider(row, v as AgentProvider)}>
+      <SelectTrigger
+        size="sm"
+        aria-label="Agent for this card"
+        onClick={(e) => e.stopPropagation()}
+        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -mx-1 h-auto w-fit gap-0.5 border-transparent bg-transparent px-1 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
+      >
+        {agentLabel(provider)}
+      </SelectTrigger>
+      <SelectContent onClick={(e) => e.stopPropagation()}>
+        {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}
+
+// The card's agent picker + model/context for the last run. Claude exposes its actual model and
+// context fill; Codex exposes the provider but no trustworthy context-window percentage in exec
+// JSONL — keep those states honest rather than leaving a stale Claude model on a Codex-run card.
+function AgentMeta({ row }: { row: Row }) {
+  const meta = row.agentMeta;
+  const providerName = agentLabel(providerFor(row));
+  const extra: string[] = [];
+  if (meta?.model && meta.model.toLowerCase() !== providerName.toLowerCase()) extra.push(meta.model);
+  if (typeof meta?.contextPct === "number") extra.push(`${meta.contextPct}% ctx`);
   const cost = typeof meta?.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
   const tokens = meta?.inputTokens != null || meta?.outputTokens != null
     ? `${(meta.inputTokens ?? 0).toLocaleString()} in / ${(meta.outputTokens ?? 0).toLocaleString()} out`
     : "";
   const cached = meta?.cacheReadTokens != null ? `${meta.cacheReadTokens.toLocaleString()} cached` : "";
   const tip = [cost, tokens, cached, meta?.numTurns != null ? `${meta.numTurns} turns` : "", meta?.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
-  return <div className="truncate" title={tip || undefined}>{parts.join(" · ")}</div>;
+  return (
+    <div className="flex min-w-0 items-center gap-1 truncate" title={tip || undefined}>
+      <ProviderPicker row={row} />
+      {extra.length > 0 && <span className="truncate">{" · "}{extra.join(" · ")}</span>}
+    </div>
+  );
 }
 
 function timeAgo(iso?: string): string {
@@ -337,7 +366,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : isLocal ? (
             <div>no changes yet</div>
           ) : <div />}
-          {(row.agentMeta || row.agentProvider) && <AgentMeta meta={row.agentMeta} provider={row.agentProvider} />}
+          {(row.agentMeta || row.agentProvider || row.worktreePath || row.prNumber) && <AgentMeta row={row} />}
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
