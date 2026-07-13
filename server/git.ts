@@ -234,11 +234,9 @@ const PR_TEMPLATE_PATHS = [
   "PULL_REQUEST_TEMPLATE.md", "pull_request_template.md",
 ];
 
-/** The description Orca gives a new PR when the caller didn't supply one: the repo's PR template if
- *  it has one (its own guidelines), else a "what changed" overview from the branch's commits — so a
- *  promoted PR never opens with a blank body. A caller-provided body wins untouched. */
-export async function resolvePrBody(worktreePath: string, base: string, provided?: string): Promise<string> {
-  if (provided?.trim()) return provided;
+/** The repo's checked-in PR template (its own guidelines), read from the worktree so it reflects
+ *  this branch, or null if there isn't one. Shared by the deterministic body and the AI writer. */
+export async function readPrTemplate(worktreePath: string): Promise<string | null> {
   for (const rel of PR_TEMPLATE_PATHS) {
     const f = Bun.file(join(worktreePath, rel));
     if (await f.exists()) {
@@ -246,6 +244,17 @@ export async function resolvePrBody(worktreePath: string, base: string, provided
       if (text) return text;
     }
   }
+  return null;
+}
+
+/** The description Orca gives a new PR when the caller didn't supply one: the repo's PR template if
+ *  it has one (its own guidelines), else a "what changed" overview from the branch's commits — so a
+ *  promoted PR never opens with a blank body. A caller-provided body wins untouched. Used as the
+ *  deterministic fallback when the AI writer (see agent.describePr) is unavailable. */
+export async function resolvePrBody(worktreePath: string, base: string, provided?: string): Promise<string> {
+  if (provided?.trim()) return provided;
+  const template = await readPrTemplate(worktreePath);
+  if (template) return template;
   const { commits } = await changeSummary(worktreePath, base);
   return defaultPrBody(commits.map((c) => c.subject).reverse()); // changeSummary is newest-first
 }

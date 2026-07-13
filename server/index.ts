@@ -6,7 +6,27 @@ import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
-import { mergeSafe, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+
+/** The body for a promoted PR. A caller-supplied body wins untouched; otherwise Claude writes a
+ *  filled description from the branch's diff (following the repo's PR template + conventions), and
+ *  we fall back to the deterministic body (`resolvePrBody`) if the AI is unavailable or the branch
+ *  has nothing to describe. */
+async function resolvePrDescription(worktreePath: string, base: string, provided?: string): Promise<string> {
+  if (provided?.trim()) return provided;
+  const [template, { commits }, diff] = await Promise.all([
+    git.readPrTemplate(worktreePath),
+    git.changeSummary(worktreePath, base),
+    git.worktreeDiff(worktreePath, base),
+  ]);
+  if (diff.trim()) {
+    const ai = await agent.describePr(
+      prDescriptionPrompt({ template, diff, commits: commits.map((c) => c.subject).reverse() }), // oldest-first
+    );
+    if (ai?.trim()) return ai.trim();
+  }
+  return git.resolvePrBody(worktreePath, base, ""); // no diff / AI failed → never blank
+}
 
 const cfg = await loadConfig();
 // Take the API port from a stale bridge (a prior dev run, or another checkout's instance) before
@@ -73,9 +93,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/promote") {
     await git.pushBranch(body.worktreePath, body.branch); // the branch must exist on origin for `gh pr create`
-    // No body from the UI → fill it from the repo's PR template (its guidelines) or a commit summary,
-    // so the PR never opens blank.
-    const prBody = await git.resolvePrBody(body.worktreePath, await git.resolveBase(repo.repoPath, repo.baseBranch), body.body);
+    // No body from the UI → Claude writes a filled description from the diff (its PR template +
+    // conventions), falling back to a template/commit summary, so the PR never opens blank.
+    const prBody = await resolvePrDescription(body.worktreePath, await git.resolveBase(repo.repoPath, repo.baseBranch), body.body);
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
