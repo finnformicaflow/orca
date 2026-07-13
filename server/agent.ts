@@ -4,6 +4,7 @@
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
+import * as lease from "./lease";
 import { homedir, tmpdir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
@@ -43,6 +44,7 @@ export type LaunchOptions = {
   history?: AgentTurn[];
   handoffFrom?: AgentProvider;
   timeoutMs?: number;
+  branch?: string; // recorded on the lease so restart recovery can match by branch
 };
 
 /** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
@@ -192,7 +194,9 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
 }
 
 export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
-  if (runs.get(key)?.status === "running") throw new Error("an agent is already running for this worktree");
+  // Reject an overlap whether we remember the run in-process OR a durable lease from before a restart
+  // says one is still live in this worktree.
+  if (runs.get(key)?.status === "running" || lease.leased(key)) throw new Error("an agent is already running for this worktree");
   const provider = options.provider ?? "claude";
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
   const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
@@ -206,6 +210,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
+  lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   void (async () => {
     const [out, err] = await Promise.all([
       provider === "codex" ? readCodexOutput(key, proc) : new Response(proc.stdout).text(),
@@ -238,6 +243,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
+    lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
     runs.set(key, code === 0 && !isError
       ? { status: "done", ...common }
       : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
@@ -248,7 +254,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
 export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions) => launch(worktreePath, worktreePath, prompt, options);
 
-export const isRunning = (key: string): boolean => runs.get(key)?.status === "running";
+export const isRunning = (key: string): boolean => runs.get(key)?.status === "running" || lease.leased(key);
 
 /** A provider-isolated one-shot: never falls through to a different provider. */
 export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: string, purpose: "title" | "description"): string[] {
@@ -320,6 +326,7 @@ export function stop(key: string): void {
   const r = runs.get(key);
   try { r?.proc?.kill(); } catch { /* already gone */ }
   runs.delete(key);
+  lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
 }
 
 /** Recognize the headless CLI forms Orca launches, including resumed Antigravity conversations. */
@@ -354,6 +361,9 @@ export async function detectRunning(branches: string[]): Promise<Set<string>> {
     const lines = out.split("\n").filter(isHeadlessAgentProcess);
     for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
   } catch { /* ps unavailable */ }
+  // Union in leased branches: a Claude follow-up's argv carries only its session id, so the ps
+  // branch-substring scan above can miss it — the lease records the branch explicitly.
+  for (const b of lease.liveBranches(branches)) found.add(b);
   return found;
 }
 

@@ -272,7 +272,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.runAgent(body.worktreePath, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
@@ -284,7 +284,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);

@@ -349,7 +349,7 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider)
+        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -516,6 +516,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
   const receipt = await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,
+    branch: row.branch,
     resume: sameNativeSession ? sessionId : undefined,
     history: !sameNativeSession ? transcript : undefined,
     handoffFrom: !sameNativeSession ? from : undefined,
