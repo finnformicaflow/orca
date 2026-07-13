@@ -105,6 +105,21 @@ test("run metadata: prettyModel + parseRunMeta surface model/context/cost from t
   }).contextPct).toBe(2);
   // missing/garbage input → all-undefined, never throws (line just doesn't render)
   expect(parseRunMeta({})).toEqual({ model: undefined, contextPct: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
+
+  // Multi-model run: Claude Code fires an auxiliary Haiku alongside the Opus work and lists it
+  // FIRST in modelUsage. The primary model = the one with the most output tokens (Opus), NOT the
+  // first key — else the card reads "Haiku" and the last Opus turn's 218k prompt is divided by
+  // Haiku's 200k window → 109%. With Opus's 1M window picked, it's a sane 22%.
+  const multi = parseRunMeta({
+    modelUsage: {
+      "claude-haiku-4-5-20251001": { contextWindow: 200000, outputTokens: 13 },
+      "claude-opus-4-8[1m]": { contextWindow: 1000000, outputTokens: 168 },
+    },
+    usage: { input_tokens: 4, cache_read_input_tokens: 213071, cache_creation_input_tokens: 4925 }, // 218000
+    total_cost_usd: 0.07, num_turns: 5, duration_ms: 9999,
+  });
+  expect(multi.model).toBe("Opus 4.8"); // not "Haiku 4.5"
+  expect(multi.contextPct).toBe(22); // 218000 / 1_000_000, not 218000 / 200_000 (= 109%)
 });
 
 test("W2 change-summary: commits produce a summary and flip DRAFTING → READY", async () => {

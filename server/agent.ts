@@ -30,8 +30,13 @@ export function prettyModel(id: string): string {
 /** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
 export function parseRunMeta(j: any): RunMeta {
   const mu = (j?.modelUsage && typeof j.modelUsage === "object") ? j.modelUsage as Record<string, any> : {};
-  const modelId = Object.keys(mu)[0];
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  // A single `claude -p` run reports usage for EVERY model it touched: Claude Code fires an
+  // auxiliary Haiku alongside the main model, and Haiku is usually listed FIRST. Pick the PRIMARY
+  // model — the one that generated the most output — not modelUsage's first key. Otherwise an Opus
+  // run gets mislabelled "Haiku" AND its last-turn prompt is divided by Haiku's 200k window instead
+  // of Opus's, pushing contextPct past 100%.
+  const modelId = Object.keys(mu).sort((a, b) => (num(mu[b]?.outputTokens) ?? 0) - (num(mu[a]?.outputTokens) ?? 0))[0];
   // Context occupancy = the LAST turn's prompt (read side: fresh input + cache read + cache
   // creation), NOT the top-level `usage` (which sums every turn and would overshoot the window).
   const iters = Array.isArray(j?.usage?.iterations) ? j.usage.iterations : [];
