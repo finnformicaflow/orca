@@ -75,6 +75,40 @@ export function parseRunMeta(j: any): RunMeta {
 
 const runs = new Map<string, Run>();
 
+function codexSessionId(line: string): string | undefined {
+  try {
+    const event = JSON.parse(line);
+    return event.type === "thread.started" && typeof event.thread_id === "string" ? event.thread_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read Codex JSONL without waiting for the process to finish. Codex chooses its own thread UUID
+ *  (there is no Claude-style `--session-id` flag), but emits it first. Publishing it into `runs`
+ *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
+async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<string> {
+  const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  let raw = "";
+  let pending = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    raw += value;
+    pending += value;
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      const sessionId = codexSessionId(line);
+      const current = runs.get(key);
+      if (sessionId && current?.proc === proc && current.sessionId !== sessionId) {
+        runs.set(key, { ...current, sessionId });
+      }
+    }
+  }
+  return raw;
+}
+
 /** Parse Codex's `exec --json` JSONL stream into the session id, final response, and card metadata. */
 export function parseCodexOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta: RunMeta } {
   let sessionId: string | undefined;
@@ -85,7 +119,7 @@ export function parseCodexOutput(raw: string): { sessionId?: string; result?: st
     if (!line.trim()) continue;
     try {
       const event = JSON.parse(line);
-      if (event.type === "thread.started" && typeof event.thread_id === "string") sessionId = event.thread_id;
+      sessionId = codexSessionId(line) ?? sessionId;
       if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") result = event.item.text;
       if (event.type === "turn.completed") turns++;
       if (event.type === "turn.failed" || event.type === "error") isError = true;
@@ -118,7 +152,10 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   );
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
   void (async () => {
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    const [out, err] = await Promise.all([
+      provider === "codex" ? readCodexOutput(key, proc) : new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
     const code = await proc.exited;
     if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
     let result: string | undefined, isError = false, meta: RunMeta | undefined, resolvedSessionId = sessionId;

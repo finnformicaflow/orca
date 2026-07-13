@@ -58,6 +58,10 @@ export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentPro
 
 export function attachCommand(input: { worktreePath: string; provider?: AgentProvider; sessionId?: string }): string {
   const cd = `cd "${input.worktreePath}" && `;
-  if (input.provider === "codex") return `${cd}codex${input.sessionId ? ` resume ${input.sessionId}` : ""}`;
+  // Orca launches Codex through `codex exec`, so its threads are marked non-interactive. The TUI's
+  // resume command excludes those by default; include them explicitly or it opens a blank session.
+  if (input.provider === "codex") {
+    return `${cd}codex resume --include-non-interactive ${input.sessionId ?? "--last"}`;
+  }
   return `${cd}claude${input.sessionId ? ` --resume ${input.sessionId}` : " --continue"}`;
 }

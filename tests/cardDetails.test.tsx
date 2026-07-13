@@ -120,6 +120,15 @@ describe("swimlane card details", () => {
     expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --resume abc-123`);
   });
 
+  test("Copy CLI includes non-interactive Codex exec sessions when resuming", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, agentProvider: "codex", sessionId: "codex-123" });
+    await openCopyMenu();
+    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
+    await click(item);
+    expect(copied).toBe(`cd "/wt/enrich-cards-1" && codex resume --include-non-interactive codex-123`);
+  });
+
   test("a local card's copy menu has no Copy PR link option, only the worktree name", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
