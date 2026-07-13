@@ -1,4 +1,4 @@
-export const AGENT_PROVIDERS = ["claude", "codex"] as const;
+export const AGENT_PROVIDERS = ["claude", "codex", "agy"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
 
 export type AgentTurn = {
@@ -10,7 +10,7 @@ export type AgentTurn = {
   finishedAt?: number;
 };
 
-export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : "Claude";
+export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "agy" ? "Antigravity" : "Claude";
 
 export function isAgentProvider(value: unknown): value is AgentProvider {
   return AGENT_PROVIDERS.includes(value as AgentProvider);
@@ -63,5 +63,6 @@ export function attachCommand(input: { worktreePath: string; provider?: AgentPro
   if (input.provider === "codex") {
     return `${cd}codex resume --include-non-interactive ${input.sessionId ?? "--last"}`;
   }
+  if (input.provider === "agy") return `${cd}agy${input.sessionId ? ` --conversation ${input.sessionId}` : " -c"}`;
   return `${cd}claude${input.sessionId ? ` --resume ${input.sessionId}` : " --continue"}`;
 }

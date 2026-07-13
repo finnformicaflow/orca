@@ -3,12 +3,12 @@
 A local control plane for the seam between **managing coding agents** and **managing PRs**.
 One kanban board over one lifecycle:
 
-- **Local / Draft** — create a git worktree per feature; choose Claude or Codex, let Orca launch it
+- **Local / Draft** — create a git worktree per feature; choose Claude, Codex, or Antigravity, let Orca launch it
   headlessly with your prompt, see what changed, then promote to a PR.
 - **PRs** — open PRs with CI/review status and one-click actions: Slack notify/bump, resolve
   conflicts, fix CI, follow up, and merge-when-green.
 
-Every agent action **runs your selected coding agent headlessly** (`claude -p` or `codex exec`,
+Every agent action **runs your selected coding agent headlessly** (`claude -p`, `codex exec`, or `agy -p`,
 using the CLI's existing login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
 run in the branch's worktree, **adopting one automatically if the PR doesn't have one locally**.
 "Copy CLI" is the escape hatch to continue the active provider's run interactively. A follow-up can
@@ -19,7 +19,7 @@ Orca infers which behavior is needed from the selected provider. See `CLAUDE.md`
 
 - [Bun](https://bun.sh) (this repo is Bun-native; Node is not required)
 - `git` and the [`gh` CLI](https://cli.github.com), already authenticated (`gh auth status`)
-- At least one authenticated agent CLI: `claude` or `codex`
+- At least one authenticated agent CLI: `claude`, `codex`, or `agy`
 
 ## Setup
 

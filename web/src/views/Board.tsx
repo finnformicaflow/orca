@@ -234,7 +234,7 @@ function NewDraft() {
             </SelectContent>
           </Select>
           <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
-            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 w-24 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 w-28 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>

@@ -5,6 +5,7 @@
 // exported `apiFake` handle. Files that never call the browser api are unaffected; server tests
 // don't import this module at all.
 import { mock } from "bun:test";
+import type { AgentProvider } from "../shared/agent";
 
 export const apiFake = {
   worktrees: new Map<string, { branch: string; worktreePath: string }>(),
@@ -33,7 +34,7 @@ export const apiFake = {
   // Prompts passed to the agent APIs (active-following fires agent actions through them) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
-  agentLaunches: [] as { key: string; prompt: string; provider: "claude" | "codex"; resume?: string; history?: unknown[]; handoffFrom?: "claude" | "codex" }[],
+  agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
@@ -50,7 +51,7 @@ export const apiFake = {
 
 mock.module("@/api", () => ({
   api: {
-    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex"] }),
+    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "agy"] }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },
@@ -59,7 +60,7 @@ mock.module("@/api", () => ({
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
     createWorktree: () =>
       new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; }),
-    runAgent: async (_worktree: string, prompt: string, provider: "claude" | "codex" = "claude") => {
+    runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude") => {
       apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider }); return { status: "ok" };
     },
     uploadAttachments: async () => [],
@@ -84,7 +85,7 @@ mock.module("@/api", () => ({
       if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
       return { status: "ok" };
     },
-    agent: async (_repo: string, key: string, prompt: string, options: { provider?: "claude" | "codex"; resume?: string; history?: unknown[]; handoffFrom?: "claude" | "codex" } = {}) => {
+    agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider } = {}) => {
       apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
       apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom });
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);

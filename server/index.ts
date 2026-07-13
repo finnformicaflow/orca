@@ -63,7 +63,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
   if (req.method === "GET" && p === "/api/usage") {
-    return json(await usage()); // Claude + Codex account usage; not repo-scoped
+    return json(await usage()); // Claude + Codex account usage; Antigravity has no bridge here
   }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({

@@ -1,9 +1,10 @@
-// Launches Claude or Codex headlessly (JSON/JSONL output) and tracks status + provider-native
+// Launches Claude, Codex, or Antigravity headlessly and tracks status + provider-native
 // session id, so the UI can show done/error and "Copy CLI" can resume the exact conversation.
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 import { handoffPrompt, type AgentProvider, type AgentTurn } from "../shared/agent";
+import { homedir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
 // cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
@@ -128,12 +129,41 @@ export function parseCodexOutput(raw: string): { sessionId?: string; result?: st
   return { sessionId, result, isError, meta: { model: "Codex", numTurns: turns || undefined } };
 }
 
+/** Antigravity print mode emits plain response text. Its workspace-scoped conversation UUID is
+ *  stored separately so `agy --conversation <id>` can resume the exact thread. */
+export function parseAgyOutput(raw: string): { result?: string; meta: RunMeta } {
+  const result = raw.trim() || undefined;
+  return { result, meta: { model: "Antigravity", numTurns: result ? 1 : undefined } };
+}
+
+export function agySessionIdFromCache(raw: string, cwd: string): string | undefined {
+  try {
+    const sessions = JSON.parse(raw);
+    return typeof sessions?.[cwd] === "string" ? sessions[cwd] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function agySessionId(cwd: string): Promise<string | undefined> {
+  try {
+    const file = Bun.file(`${homedir()}/.gemini/antigravity-cli/cache/last_conversations.json`);
+    if (!await file.exists()) return undefined;
+    return agySessionIdFromCache(await file.text(), cwd);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Provider-specific argv. Kept pure so tests pin the native resume contracts. */
 export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string): string[] {
   if (provider === "codex") {
     return resume
       ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, prompt]
       : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
+  }
+  if (provider === "agy") {
+    return ["agy", ...(resume ? ["--conversation", resume] : []), "-p", prompt, "--dangerously-skip-permissions"];
   }
   return ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json"];
 }
@@ -165,6 +195,11 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       isError = parsed.isError;
       meta = parsed.meta;
       resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
+    } else if (provider === "agy") {
+      const parsed = parseAgyOutput(out);
+      result = parsed.result;
+      meta = parsed.meta;
+      resolvedSessionId = await agySessionId(cwd);
     } else {
       try {
         const j = JSON.parse(out.trim());
@@ -252,7 +287,7 @@ export async function detectRunning(branches: string[]): Promise<Set<string>> {
     const proc = Bun.spawn(["ps", "-Ao", "command"], { env: process.env, stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    const lines = out.split("\n").filter((l) => l.includes("claude -p") || l.includes("codex exec"));
+    const lines = out.split("\n").filter((l) => l.includes("claude -p") || l.includes("codex exec") || l.includes("agy -p"));
     for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
   } catch { /* ps unavailable */ }
   return found;
