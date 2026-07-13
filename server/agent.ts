@@ -103,6 +103,28 @@ export function summarize(prompt: string): Promise<string | null> {
   return retryTitle(ask, 2); // validate + refetch once on a bad reply
 }
 
+/** Write a PR description from a prepared prompt (see `prDescriptionPrompt`) via a one-shot headless
+ *  `claude -p` on Sonnet — capable enough to read a diff and follow the template, without the cost
+ *  of a full agent loop. Returns the generated markdown, or null on any error / empty reply so the
+ *  caller can fall back to the deterministic `resolvePrBody`. */
+export async function describePr(prompt: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(
+      ["claude", "-p", prompt, "--model", "sonnet", "--output-format", "json"],
+      { env: process.env, stdout: "pipe", stderr: "ignore" },
+    );
+    const out = await new Response(proc.stdout).text();
+    const code = await proc.exited;
+    if (code !== 0) return null;
+    const j = JSON.parse(out.trim());
+    if (j.is_error) return null;
+    const body = String(j.result ?? "").trim();
+    return body || null;
+  } catch {
+    return null; // claude missing / bad JSON — caller falls back
+  }
+}
+
 /** Kill and forget a run (e.g. on discard). */
 export function stop(key: string): void {
   const r = runs.get(key);

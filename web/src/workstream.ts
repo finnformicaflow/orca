@@ -171,6 +171,57 @@ export function defaultPrBody(commitSubjects: string[]): string {
   return ["## Summary", "", ...subjects.map((s) => `- ${s}`)].join("\n");
 }
 
+// Cap the diff we paste into the description prompt so a big branch can't blow the context window;
+// the AI still sees the commit subjects + the leading (usually most telling) hunks.
+const PR_DIFF_LIMIT = 12_000;
+
+/** Build the instruction handed to a headless Claude to WRITE a PR description from the branch's
+ *  actual diff — this is what turns a promoted PR from "raw template / commit list" into a filled,
+ *  reviewer-ready description. When the repo ships a PR template, every section is filled from the
+ *  diff (HTML comments are guidance, not text to keep); otherwise a sensible section set is used.
+ *  Breaking changes go at the TOP; secrets are never emitted. The reply is the finished markdown. */
+export function prDescriptionPrompt(input: { template?: string | null; diff: string; commits: string[] }): string {
+  const commits = input.commits.map((s) => s.trim()).filter(Boolean);
+  const diff = input.diff.length > PR_DIFF_LIMIT
+    ? `${input.diff.slice(0, PR_DIFF_LIMIT)}\n…(diff truncated)…`
+    : input.diff;
+  const template = input.template?.trim();
+  const structure = template
+    ? [
+        "Write the body using this repo's PR template. Fill in EVERY section from the actual diff",
+        "(treat the HTML comments as guidance, not literal text to keep):",
+        "",
+        template,
+      ].join("\n")
+    : [
+        "Structure the body with these sections, each filled from the actual diff:",
+        "- **What & Why** — the user-facing problem and the motivation behind the change.",
+        "- **How It Works** — the approach; call out any API / data-model / migration changes.",
+        "- **What Changed** — file-level, grouped by area (backend / frontend / shared / migrations).",
+        "- **Testing & Verification** — the suites run and any manual steps.",
+        "- **Risks & Follow-ups**.",
+      ].join("\n");
+  return [
+    "Write a pull-request description for the change below. Output ONLY the description as",
+    "GitHub-flavored markdown — no preamble, no sign-off, no code fence wrapping the whole thing.",
+    "",
+    structure,
+    "",
+    "Rules:",
+    "- Put any breaking change, removed feature, or disabled workflow at the TOP, with the affected",
+    "  users and the migration/rollback path. Never bury it.",
+    "- Describe only code changes. Never include secrets — no credentials, tokens, env vars, or",
+    "  internal hostnames.",
+    "- Be concise and specific; base every claim on the diff, not guesses.",
+    commits.length ? `\nCommits (oldest first):\n${commits.map((c) => `- ${c}`).join("\n")}` : "",
+    "",
+    "Diff:",
+    "```diff",
+    diff,
+    "```",
+  ].join("\n");
+}
+
 /** Point the agent at pasted/dropped image files (absolute paths) for extra visual context. */
 export function withAttachments(prompt: string, imagePaths: string[]): string {
   if (!imagePaths.length) return prompt;

@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, launchPrompt,
-  prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  prDescriptionPrompt, prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -176,6 +176,33 @@ test("W3b promote body: no blank PRs — commit summary by default, the repo's P
   await mkdir(join(wt, ".github"), { recursive: true });
   await writeFile(join(wt, ".github/PULL_REQUEST_TEMPLATE.md"), "## Why\n\n## What\n");
   expect(await resolvePrBody(wt, base, "")).toBe("## Why\n\n## What");
+});
+
+test("W3c AI PR description: prompt is built from the diff, template + conventions", () => {
+  const diff = "diff --git a/server/pay.ts b/server/pay.ts\n+charge(user)";
+  const commits = ["add a", "add b"];
+
+  // No template → the AI is told the section set to fill, plus the diff + commits (oldest-first).
+  const noTemplate = prDescriptionPrompt({ template: null, diff, commits });
+  expect(noTemplate).toContain("What & Why");
+  expect(noTemplate).toContain("What Changed");
+  expect(noTemplate).toContain(diff);
+  expect(noTemplate.indexOf("- add a")).toBeLessThan(noTemplate.indexOf("- add b")); // oldest-first
+  // Safety conventions are always in the prompt.
+  expect(noTemplate).toContain("breaking change");
+  expect(noTemplate).toContain("TOP");
+  expect(noTemplate).toContain("Never include secrets");
+  expect(noTemplate).toContain("ONLY the description"); // no preamble → body is drop-in for gh
+
+  // A template is embedded verbatim so the AI fills the repo's own sections.
+  const withTemplate = prDescriptionPrompt({ template: "## Risks\n\n## Rollout", diff, commits });
+  expect(withTemplate).toContain("## Risks\n\n## Rollout");
+  expect(withTemplate).toContain("Fill in EVERY section");
+
+  // A huge diff is truncated so it can't blow the context window (commits still included).
+  const huge = prDescriptionPrompt({ template: null, diff: "x".repeat(20_000), commits });
+  expect(huge).toContain("(diff truncated)");
+  expect(huge.length).toBeLessThan(20_000);
 });
 
 describe("W4 poll-status: gh json → state machine", () => {
