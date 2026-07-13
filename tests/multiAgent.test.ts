@@ -243,6 +243,16 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
+  test("Copy CLI / Promote follow the pin, dropping a session id that belongs to another agent", async () => {
+    // Pin matches the last run → resume its native session.
+    expect(store.resumeTarget(row)).toEqual({ provider: "claude", sessionId: "claude-session" });
+    // Pin points at a different agent → no native session for it yet, so resume without an id
+    // (attachCommand then emits `codex resume --last`, never `codex resume <a-claude-session>`).
+    expect(store.resumeTarget({ ...row, preferredProvider: "codex" })).toEqual({ provider: "codex", sessionId: undefined });
+    // No runs yet, no pin → the stored session is implicitly Claude's.
+    expect(store.resumeTarget({ ...row, agentProvider: undefined })).toEqual({ provider: "claude", sessionId: "claude-session" });
+  });
+
   test("a pin matching the provider that last ran still resumes its native session", async () => {
     await store.followUp({ ...row, preferredProvider: "claude" }, "keep going");
     const launch = apiFake.agentLaunches.at(-1)!;

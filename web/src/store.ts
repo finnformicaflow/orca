@@ -479,6 +479,16 @@ export function setCardProvider(row: Row, provider: AgentProvider) {
   patchEnrich(row.repo, row.branch, { preferredProvider: provider });
 }
 
+/** Provider + native session to resume for a card, honouring the pin. The stored session belongs to
+ *  whoever ran LAST (row.agentProvider); if the pin points elsewhere there's no native session for it
+ *  yet, so resume without an id (a fresh `--continue`/`resume --last`) rather than feed one provider's
+ *  session id to another. Used by Copy CLI and by Promote's PR-description writer. */
+export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: string } {
+  const provider = providerFor(row);
+  const ranLast = row.agentProvider ?? "claude"; // the stored session belongs to whoever ran last
+  return { provider, sessionId: provider === ranLast ? row.sessionId : undefined };
+}
+
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
@@ -489,9 +499,10 @@ export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabe
   if (!row.worktreePath) return;
   if (row.hasRemote) {
     const outcome = row.agentOutcome ?? row.transcript?.slice().reverse().find((turn) => turn.structured)?.structured;
+    const { provider, sessionId } = resumeTarget(row); // PR body written by the pinned agent
     await api.promote(row.repo, {
       worktreePath: row.worktreePath, branch: row.branch, title: row.title,
-      provider: row.agentProvider ?? "claude", task: row.prompt, sessionId: row.sessionId, outcome,
+      provider, task: row.prompt, sessionId, outcome,
       draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel,
     });
   } else {

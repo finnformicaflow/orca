@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, ensureWorktree, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, ensureWorktree, providerFor, rerunAgent, resumeTarget, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { attachCommand } from "../workstream";
@@ -106,9 +106,10 @@ function CopyMenu({ row }: { row: Row }) {
     navigator.clipboard.writeText(text).then(flash, () => window.prompt(`Copy the ${label}:`, text));
   };
   // Copy CLI needs a worktree to cd into; adopt one if the branch doesn't have one yet (same as the
-  // agent actions), then resume the persisted session id when we have it.
+  // agent actions), then resume the pinned agent's session id when it's the one that last ran.
   const copyCli = async () => {
-    const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), provider: row.agentProvider, sessionId: row.sessionId });
+    const worktreePath = row.worktreePath ?? (await ensureWorktree(row));
+    const cmd = attachCommand({ worktreePath, ...resumeTarget(row) });
     try { await navigator.clipboard.writeText(cmd); flash(); } catch { window.prompt("Copy the CLI command:", cmd); }
   };
   return (
@@ -168,7 +169,9 @@ function ProviderPicker({ row }: { row: Row }) {
 // context fill; Codex exposes the provider but no trustworthy context-window percentage in exec
 // JSONL — keep those states honest rather than leaving a stale Claude model on a Codex-run card.
 function AgentMeta({ row }: { row: Row }) {
-  const meta = row.agentMeta;
+  // Model/context describe the LAST run; show them only when the pinned agent is the one that ran,
+  // else the card would read e.g. "Claude · Codex 45% ctx" — a pin over another agent's stale meta.
+  const meta = providerFor(row) === (row.agentProvider ?? "claude") ? row.agentMeta : undefined;
   const providerName = agentLabel(providerFor(row));
   const extra: string[] = [];
   if (meta?.model && meta.model.toLowerCase() !== providerName.toLowerCase()) extra.push(meta.model);
