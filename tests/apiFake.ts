@@ -6,6 +6,7 @@
 // don't import this module at all.
 import { mock } from "bun:test";
 import type { AgentOutcome, AgentProvider } from "../shared/agent";
+import type { CiFailureEvidence, ReviewThreadEvidence } from "../server/gh";
 
 export const apiFake = {
   worktrees: new Map<string, { branch: string; worktreePath: string }>(),
@@ -37,6 +38,10 @@ export const apiFake = {
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
   titleProviders: [] as AgentProvider[],
   promotions: [] as { provider: AgentProvider; outcome?: AgentOutcome; body?: string }[],
+  reviewEvidenceData: [] as ReviewThreadEvidence[],
+  reviewEvidenceError: null as string | null,
+  ciEvidenceData: [] as CiFailureEvidence[],
+  ciEvidenceError: null as string | null,
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
@@ -48,7 +53,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.titleProviders = []; this.promotions = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -58,6 +63,8 @@ mock.module("@/api", () => ({
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },
     mergedPrs: async () => [],
+    reviewEvidence: async () => { if (apiFake.reviewEvidenceError) throw new Error(apiFake.reviewEvidenceError); return apiFake.reviewEvidenceData; },
+    ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); return { ok: true }; },
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
     promote: async (_repo: string, input: { provider: AgentProvider; outcome?: AgentOutcome; body?: string }) => {

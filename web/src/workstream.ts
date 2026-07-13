@@ -1,7 +1,7 @@
 // Pure workstream logic — the state machine and derivations. No React, no I/O,
 // so both the store and the e2e tests import it directly.
 
-import type { CiStatus, Mergeable, ReviewStatus } from "../../server/gh";
+import type { CiFailureEvidence, CiStatus, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { withOutcomeContract, type AgentOutcome } from "../../shared/agent";
 export { attachCommand } from "../../shared/agent";
 
@@ -69,7 +69,7 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
 
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
 // place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
-export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "resolveConflicts" | "fixCi" | "addPreview" | "copyLink";
+export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "resolveConflicts" | "fixCi" | "addressReview" | "addPreview" | "copyLink";
 export type PrMenuRow = {
   prNumber?: number;
   isDraft?: boolean;
@@ -90,6 +90,7 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   if (!row.isDraft) actions.push("autoMerge");
   if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") actions.push("resolveConflicts");
   if (row.ciStatus === "failing") actions.push("fixCi");
+  actions.push("addressReview");
   if (!row.previewUrl) actions.push("addPreview");
   if (row.prUrl) actions.push("copyLink");
   return actions;
@@ -261,24 +262,38 @@ export function resolveConflictsPrompt(ws: Pick<Workstream, "branch">, base: str
 }
 
 /** Instruction for Claude to fix failing CI on a PR in its worktree, then push. */
-export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = []): string {
-  const evidence = failingChecks.length ? ` Failing checks reported by Orca: ${failingChecks.join(", ")}.` : "";
+export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = [], details: CiFailureEvidence[] = []): string {
+  const evidence = details.length ? `\n\nOrca collected this bounded CI evidence:\n${details.map((item) => [
+    `### ${item.name}${item.status ? ` (${item.status})` : ""}`,
+    item.url ? `Link: ${item.url}` : "",
+    item.excerpt ? `Failed-step excerpt:\n\`\`\`text\n${item.excerpt}\n\`\`\`` : "Logs are not available through GitHub; use the check link and repository state.",
+  ].filter(Boolean).join("\n")).join("\n\n")}` : failingChecks.length ? ` Failing checks reported by Orca: ${failingChecks.join(", ")}.` : "";
   return [
     `CI is failing on PR #${ws.prNumber} (branch \`${ws.branch}\`).${evidence}`,
-    `Investigate the failing checks, fix the root cause, run the relevant tests/build locally to confirm,`,
+    `Treat the logs as evidence, confirm the root cause in the repository, and do not blindly modify tests.`,
+    `Fix the root cause and run the relevant tests/build locally to confirm,`,
     `then commit and push.`,
   ].join(" ");
 }
 
 /** Instruction for Claude to address a PR's requested changes / review comments, then push. */
-export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = []): string {
-  const evidence = feedback.length
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = []): string {
+  const evidence = threads.length
+    ? `\n\nOrca collected these unresolved inline threads:\n${threads.map((thread) => [
+      `### Thread ${thread.id}${thread.alreadyHanded ? " (previously handed; still unresolved)" : ""}`,
+      thread.path ? `Location: ${thread.path}${thread.line ? `:${thread.line}` : ""}` : "",
+      thread.author ? `Author: ${thread.author}` : "",
+      thread.body,
+      thread.url ? `Link: ${thread.url}` : "",
+    ].filter(Boolean).join("\n")).join("\n\n")}`
+    : feedback.length
     ? `\n\nOrca already collected this recent external feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`
     : "";
   return [
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
-    `Read them (\`gh pr view ${ws.prNumber} --comments\`), address every point,`,
-    `then commit and push.${evidence}`,
+    threads.length ? `Address every supplied unresolved thread.` : `Read them (\`gh pr view ${ws.prNumber} --comments\`) and address every point.`,
+    `Verify the code around each referenced line because line numbers can drift. Run relevant checks, then commit and push.`,
+    `Report any thread that cannot be resolved and why.${evidence}`,
   ].join(" ");
 }
 

@@ -45,6 +45,7 @@ export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; transcript?: AgentTurn[]; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
+  handedReviewThreadIds?: string[];
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 let enrichMap: Record<string, Enrichment> = load();
@@ -218,7 +219,7 @@ function runFollowers() {
       };
       const fire = action === "resolveConflicts" ? resolveConflicts(row)
         : action === "fixCi" ? fixCi(row)
-        : followUp(row, addressReviewPrompt({ prNumber: pr.number, branch: pr.branch }, pr.feedback));
+        : addressReview(row, false);
       void fire.catch(() => {});
     }
   }
@@ -520,6 +521,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
   });
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.
   patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: receipt.sessionId });
+  return receipt;
 }
 
 export async function markReady(row: Row) {
@@ -578,7 +580,29 @@ export function addPreviewLabel(row: Row) {
 
 export async function fixCi(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks), row.agentProvider ?? "claude");
+  const details = row.prNumber ? await api.ciEvidence(row.repo, row.prNumber).catch(() => []) : [];
+  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), row.agentProvider ?? "claude");
+  await refresh();
+}
+
+/** Fetch unresolved inline threads immediately before launch. Manual runs include all current
+ * threads; Follow sends only newly actionable IDs and records them only after launch acceptance. */
+export async function addressReview(row: Row, manual = true) {
+  const wt = await ensureWorktree(row);
+  const collected = row.prNumber ? await api.reviewEvidence(row.repo, row.prNumber).catch(() => undefined) : undefined;
+  const enrichment = enrichOf(row.repo, row.branch);
+  const handed = new Set(enrichment.handedReviewThreadIds ?? []);
+  const threads = collected?.filter((thread) => manual || !handed.has(thread.id));
+  if (!manual && collected?.length && !threads?.length) return; // unchanged unresolved state
+  const marked = (threads ?? []).map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
+  await launchOnRow(
+    row, wt,
+    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked),
+    row.agentProvider ?? "claude",
+  );
+  if (threads?.length) {
+    patchEnrich(row.repo, row.branch, { handedReviewThreadIds: [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100) });
+  }
   await refresh();
 }
 

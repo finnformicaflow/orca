@@ -26,6 +26,9 @@ case "$1 $2" in
   "pr view") cat "$ORCA_GH_FIXTURE" ;;
   "pr list") cat "$ORCA_PRLIST_FIXTURE" ;;
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
+  "repo view") cat "$ORCA_GH_REPO_FIXTURE" ;;
+  "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
+  "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
   "pr merge") exit 0 ;;
   "pr ready") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
@@ -75,6 +78,22 @@ export async function setPrListFixture(prs: unknown[]): Promise<void> {
   const path = join(dir, "prs.json");
   await writeFile(path, JSON.stringify(prs));
   process.env.ORCA_PRLIST_FIXTURE = path;
+}
+
+async function fixtureEnv(prefix: string, value: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), `orca-${prefix}-`));
+  const path = join(dir, "fixture");
+  await writeFile(path, value);
+  return path;
+}
+
+export async function setReviewEvidenceFixture(obj: unknown): Promise<void> {
+  process.env.ORCA_GH_REPO_FIXTURE = await fixtureEnv("repo", JSON.stringify({ nameWithOwner: "acme/app" }));
+  process.env.ORCA_GH_GRAPHQL_FIXTURE = await fixtureEnv("graphql", JSON.stringify(obj));
+}
+
+export async function setRunLogFixture(log: string): Promise<void> {
+  process.env.ORCA_GH_RUN_LOG_FIXTURE = await fixtureEnv("run-log", log);
 }
 
 /** Start recording every fake-`gh` invocation's args; returns a reader for what's been logged. */

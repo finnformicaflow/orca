@@ -1,6 +1,6 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
-import type { MergedPr, PrDetail, PrSummary } from "../../server/gh";
+import type { CiFailureEvidence, MergedPr, PrDetail, PrSummary, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 
@@ -53,6 +53,8 @@ export const api = {
   mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),
   prDetail: (repo: string, n: number): Promise<PrDetail> => fetch(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => fetch(`/api/prs/${n}/diff${q(repo)}`).then(res),
+  reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => fetch(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),
+  ciEvidence: (repo: string, n: number): Promise<CiFailureEvidence[]> => fetch(`/api/prs/${n}/ci-evidence${q(repo)}`).then(res),
   localDiff: (repo: string, worktree: string): Promise<{ diff: string }> =>
     fetch(`/api/diff${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
   merge: (repo: string, pr: number, worktreePath?: string): Promise<{ ok: true }> => post("/api/merge", { repo, pr, worktreePath }),

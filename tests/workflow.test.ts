@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody } from "../server/git";
-import { convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus } from "../server/gh";
+import { ciEvidence, convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
@@ -16,7 +16,7 @@ import {
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
-import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setViewFixture } from "./helpers";
+import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setReviewEvidenceFixture, setRunLogFixture, setViewFixture } from "./helpers";
 
 let repo: string;
 beforeAll(async () => {
@@ -233,6 +233,34 @@ test("W3d structured outcome produces a deterministic, git-grounded PR body", ()
     outcome: { outcome: "", verification: [], decisions: [], remaining: [], commits: ["only prose"] },
     summary: { commits: [], files: [] },
   })).toBeUndefined();
+});
+
+test("W3e review evidence returns bounded unresolved human inline threads", async () => {
+  await setReviewEvidenceFixture({ data: { repository: { pullRequest: { reviewThreads: { nodes: [
+    { id: "open", isResolved: false, path: "src/a.ts", line: 9, comments: { nodes: [{ author: { login: "alice" }, body: "Please handle the edge case", url: "https://review/open" }] } },
+    { id: "resolved", isResolved: true, comments: { nodes: [{ author: { login: "bob" }, body: "old" }] } },
+    { id: "bot", isResolved: false, comments: { nodes: [{ author: { login: "ci[bot]" }, body: "noise" }] } },
+    { id: "bounded", isResolved: false, comments: { nodes: [{ author: { login: "carol" }, body: "z".repeat(5_000) }] } },
+  ] } } } } });
+  const threads = await reviewEvidence(repo, 42);
+  expect(threads.map((thread) => thread.id)).toEqual(["open", "bounded"]);
+  expect(threads[0]).toMatchObject({ path: "src/a.ts", line: 9, author: "alice", resolved: false });
+  expect(threads[1]!.body).toContain("(truncated)");
+  expect(JSON.stringify(threads).length).toBeLessThan(8_500);
+});
+
+test("W3f CI evidence includes failed-step excerpts and external-check fallback", async () => {
+  await setViewFixture({ statusCheckRollup: [
+    { name: "unit", conclusion: "FAILURE", detailsUrl: "https://github.com/acme/app/actions/runs/123/job/456" },
+    { context: "external", state: "ERROR", targetUrl: "https://ci.example.test/build/1" },
+    { name: "passing", conclusion: "SUCCESS" },
+  ] });
+  await setRunLogFixture(["setup", "running suite", "Error: expected true", "at cache.test.ts:4", "cleanup"].join("\n"));
+  const failures = await ciEvidence(repo, 42);
+  expect(failures).toHaveLength(2);
+  expect(failures[0]).toMatchObject({ name: "unit", status: "FAILURE" });
+  expect(failures[0]!.excerpt).toContain("Error: expected true");
+  expect(failures[1]).toEqual({ name: "external", status: "ERROR", url: "https://ci.example.test/build/1", excerpt: undefined });
 });
 
 describe("W4 poll-status: gh json → state machine", () => {
@@ -605,19 +633,19 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
   });
 
   test("open ready PR → draft toggle + auto-merge + copy link, plus preview when unlabeled", () => {
-    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "autoMerge", "addPreview", "copyLink"]);
+    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "autoMerge", "addressReview", "addPreview", "copyLink"]);
   });
 
   test("draft PR offers Mark ready instead of Move to draft, and no auto-merge (gh rejects it on a draft)", () => {
-    expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "copyLink"]);
+    expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "addressReview", "copyLink"]);
   });
 
   test("conflicts and failing CI add their fix actions, in order", () => {
     expect(prMenuActions({ prNumber: 5, mergeable: "CONFLICTING", ciStatus: "failing", previewUrl: "p", prUrl: "u" }))
-      .toEqual(["moveToDraft", "autoMerge", "resolveConflicts", "fixCi", "copyLink"]);
+      .toEqual(["moveToDraft", "autoMerge", "resolveConflicts", "fixCi", "addressReview", "copyLink"]);
   });
 
   test("no prUrl → no Copy link (nothing to copy)", () => {
-    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge"]);
+    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge", "addressReview"]);
   });
 });

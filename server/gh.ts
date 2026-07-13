@@ -4,6 +4,24 @@ export type CiStatus = "none" | "pending" | "passing" | "failing";
 export type ReviewStatus = "none" | "review_required" | "changes_requested" | "approved";
 export type Mergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 
+export type ReviewThreadEvidence = {
+  id: string;
+  path?: string;
+  line?: number;
+  author?: string;
+  body: string;
+  url?: string;
+  resolved: boolean;
+  alreadyHanded?: boolean;
+};
+
+export type CiFailureEvidence = {
+  name: string;
+  status?: string;
+  url?: string;
+  excerpt?: string;
+};
+
 export type PrStatus = {
   state: string; // OPEN | MERGED | CLOSED
   ciStatus: CiStatus;
@@ -12,6 +30,89 @@ export type PrStatus = {
 };
 
 const gh = (cwd: string, ...args: string[]) => run(["gh", ...args], cwd);
+
+const REVIEW_BODY_LIMIT = 1_200;
+const REVIEW_TOTAL_LIMIT = 8_000;
+const CI_EXCERPT_LIMIT = 2_000;
+const CI_TOTAL_LIMIT = 8_000;
+const botLogin = (login?: string) => !login || login.endsWith("[bot]") || /^(?:github-actions|dependabot)$/i.test(login);
+const truncate = (value: string, limit: number) => value.length > limit ? `${value.slice(0, limit - 16)}\n…(truncated)…` : value;
+
+/** Unresolved inline review threads for one PR. This GraphQL call is intentionally on-demand. */
+export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThreadEvidence[]> {
+  const repoRaw = await gh(cwd, "repo", "view", "--json", "nameWithOwner");
+  const nameWithOwner = JSON.parse(repoRaw).nameWithOwner as string;
+  const [owner, name] = nameWithOwner.split("/");
+  if (!owner || !name) throw new Error("could not resolve GitHub repository");
+  const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,path,line,originalLine,comments(first:20){nodes{author{login},body,url}}}}}}}`;
+  const raw = await gh(cwd, "api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${pr}`);
+  const nodes = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  const evidence: ReviewThreadEvidence[] = [];
+  let used = 0;
+  for (const thread of nodes) {
+    if (thread?.isResolved || typeof thread?.id !== "string") continue;
+    const comments = (thread.comments?.nodes ?? []).filter((comment: any) => !botLogin(comment?.author?.login));
+    if (!comments.length) continue;
+    const body = truncate(comments.slice(-3).map((comment: any) => {
+      const author = comment.author?.login;
+      return comments.length > 1 && author ? `${author}: ${comment.body ?? ""}` : String(comment.body ?? "");
+    }).join("\n\n").trim(), REVIEW_BODY_LIMIT);
+    if (!body) continue;
+    const item: ReviewThreadEvidence = {
+      id: thread.id, path: thread.path || undefined, line: thread.line ?? thread.originalLine ?? undefined,
+      author: comments.at(-1)?.author?.login, body, url: comments.at(-1)?.url || undefined, resolved: false,
+    };
+    const size = JSON.stringify(item).length;
+    if (used + size > REVIEW_TOTAL_LIMIT) break;
+    used += size;
+    evidence.push(item);
+  }
+  return evidence;
+}
+
+function usefulLogExcerpt(raw: string): string | undefined {
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return undefined;
+  const hits = lines.map((line, i) => /(?:error|fail|exception|panic|fatal|assert|exit code)/i.test(line) ? i : -1).filter((i) => i >= 0);
+  const selected = hits.length
+    ? [...new Set(hits.flatMap((i) => Array.from({ length: 7 }, (_, n) => i - 3 + n)).filter((i) => i >= 0 && i < lines.length))].map((i) => lines[i])
+    : lines.slice(-30);
+  return truncate(selected.join("\n"), CI_EXCERPT_LIMIT);
+}
+
+/** Failing checks plus bounded GitHub Actions failed-step logs for one PR, fetched on demand. */
+export async function ciEvidence(cwd: string, pr: number): Promise<CiFailureEvidence[]> {
+  const raw = await gh(cwd, "pr", "view", String(pr), "--json", "statusCheckRollup");
+  const checks = JSON.parse(raw)?.statusCheckRollup ?? [];
+  const failures = checks.filter((check: any) => checkOutcome(check) === "failing");
+  const result: CiFailureEvidence[] = [];
+  const logs = new Map<string, string | undefined>();
+  let used = 0;
+  for (const check of failures) {
+    const name = check.name ?? check.context ?? "unnamed check";
+    const url = check.detailsUrl ?? check.targetUrl ?? undefined;
+    const runId = typeof url === "string" ? url.match(/\/actions\/runs\/(\d+)/)?.[1] : undefined;
+    let excerpt: string | undefined;
+    if (runId) {
+      if (!logs.has(runId)) {
+        try { logs.set(runId, usefulLogExcerpt(await gh(cwd, "run", "view", runId, "--log-failed"))); }
+        catch { logs.set(runId, undefined); }
+      }
+      excerpt = logs.get(runId);
+    }
+    const item: CiFailureEvidence = { name, status: check.conclusion ?? check.state ?? undefined, url, excerpt };
+    const size = JSON.stringify(item).length;
+    if (used + size > CI_TOTAL_LIMIT) {
+      const withoutLog = { name, status: item.status, url };
+      if (used + JSON.stringify(withoutLog).length > CI_TOTAL_LIMIT) break;
+      result.push(withoutLog);
+      used += JSON.stringify(withoutLog).length;
+    } else {
+      result.push(item); used += size;
+    }
+  }
+  return result;
+}
 
 /** Open a PR from the worktree's branch. Returns PR number + url. */
 export async function createPr(

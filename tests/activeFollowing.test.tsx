@@ -67,3 +67,55 @@ test("acts once per condition — a steady blocker doesn't relaunch on every pol
   await poll(); // same failing state throughout
   expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-once")).toHaveLength(1);
 });
+
+test("review launch sends unresolved thread evidence and persists IDs only after acceptance", async () => {
+  seed("feat-threads", { reviewStatus: "changes_requested" });
+  apiFake.reviewEvidenceData = [{ id: "T1", path: "src/a.ts", line: 12, author: "alice", body: "Handle null", url: "https://review/T1", resolved: false }];
+  const row = { repo: "r", hasRemote: true, branch: "feat-threads", title: "threads", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-threads", prNumber: 1 } as store.Row;
+  await store.addressReview(row, false);
+  expect(apiFake.claudePrompts.at(-1)).toContain("Thread T1");
+  expect(apiFake.claudePrompts.at(-1)).toContain("src/a.ts:12");
+  expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat-threads"].handedReviewThreadIds).toEqual(["T1"]);
+
+  await store.addressReview(row, false);
+  expect(apiFake.calls.filter((call) => call === "agent:/wt/feat-threads")).toHaveLength(1);
+});
+
+test("manual review includes all unresolved threads and marks previously handed ones", async () => {
+  seed("feat-manual", {});
+  apiFake.reviewEvidenceData = [{ id: "T1", body: "Still open", resolved: false }];
+  const row = { repo: "r", hasRemote: true, branch: "feat-manual", title: "manual", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-manual", prNumber: 1 } as store.Row;
+  await store.addressReview(row, false);
+  await store.addressReview(row, true);
+  expect(apiFake.claudePrompts.at(-1)).toContain("previously handed; still unresolved");
+});
+
+test("failed review launch does not persist handed IDs", async () => {
+  seed("feat-reject", {});
+  apiFake.reviewEvidenceData = [{ id: "T-reject", body: "Change this", resolved: false }];
+  apiFake.claudeError = "launch rejected";
+  const row = { repo: "r", hasRemote: true, branch: "feat-reject", title: "reject", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-reject", prNumber: 1 } as store.Row;
+  await expect(store.addressReview(row, false)).rejects.toThrow("launch rejected");
+  expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat-reject"]?.handedReviewThreadIds).toBeUndefined();
+});
+
+test("evidence endpoint failure falls back to generic review discovery", async () => {
+  seed("feat-fallback", {});
+  apiFake.reviewEvidenceError = "GitHub unavailable";
+  const row = { repo: "r", hasRemote: true, branch: "feat-fallback", title: "fallback", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-fallback", prNumber: 1 } as store.Row;
+  await store.addressReview(row);
+  expect(apiFake.claudePrompts.at(-1)).toContain("gh pr view 1 --comments");
+});
+
+test("Fix CI includes bounded failed-step evidence and falls back to check names", async () => {
+  seed("feat-ci-evidence", { ciStatus: "failing" });
+  const row = { repo: "r", hasRemote: true, branch: "feat-ci-evidence", title: "ci", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-ci-evidence", prNumber: 1, failingChecks: ["unit"] } as store.Row;
+  apiFake.ciEvidenceData = [{ name: "unit", status: "FAILURE", url: "https://actions/run", excerpt: "Error: expected true" }];
+  await store.fixCi(row);
+  expect(apiFake.claudePrompts.at(-1)).toContain("Error: expected true");
+  expect(apiFake.claudePrompts.at(-1)).toContain("do not blindly modify tests");
+
+  apiFake.ciEvidenceError = "logs unavailable";
+  await store.fixCi(row);
+  expect(apiFake.claudePrompts.at(-1)).toContain("Failing checks reported by Orca: unit");
+});

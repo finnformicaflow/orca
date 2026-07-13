@@ -122,6 +122,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/prs/merged") {
     return json(await gh.listMerged(repo.repoPath));
   }
+  const reviewEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/review-evidence$/);
+  if (req.method === "GET" && reviewEvidenceMatch) {
+    return json(await gh.reviewEvidence(repo.repoPath, Number(reviewEvidenceMatch[1])));
+  }
+  const ciEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/ci-evidence$/);
+  if (req.method === "GET" && ciEvidenceMatch) {
+    return json(await gh.ciEvidence(repo.repoPath, Number(ciEvidenceMatch[1])));
+  }
   if (req.method === "GET" && p === "/api/prs/review") {
     return json(await gh.listReviewPrs(repo.repoPath)); // coworker PRs (the review queue)
   }
