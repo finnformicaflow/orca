@@ -3,9 +3,10 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, ensureWorktree, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
+import { attachCommand } from "../workstream";
 import { navigate } from "@/lib/route";
 import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -93,15 +94,21 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
   </a>
 );
 
-// Copy icon (top-right) → a small dropdown: grab the PR link or the worktree name without leaving
-// the board. The PR-link entry only appears once there's a PR; worktree name is always copyable.
-function CopyMenu({ prUrl, name }: { prUrl?: string; name: string }) {
+// Copy icon (top-right) → a small dropdown of copy-to-clipboard actions: the PR link (only once
+// there's a PR), the worktree name, and "Copy CLI" — the terminal command to resume the agent's
+// session in that worktree (ensures a worktree exists first). All the grab-and-go affordances live
+// here, off the card face, so the header stays uncluttered.
+function CopyMenu({ row }: { row: Row }) {
   const [copied, setCopied] = useState(false);
+  const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
   const copy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }, () => window.prompt(`Copy the ${label}:`, text));
+    navigator.clipboard.writeText(text).then(flash, () => window.prompt(`Copy the ${label}:`, text));
+  };
+  // Copy CLI needs a worktree to cd into; adopt one if the branch doesn't have one yet (same as the
+  // agent actions), then resume the persisted session id when we have it.
+  const copyCli = async () => {
+    const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
+    try { await navigator.clipboard.writeText(cmd); flash(); } catch { window.prompt("Copy the CLI command:", cmd); }
   };
   return (
     <DropdownMenu>
@@ -111,8 +118,9 @@ function CopyMenu({ prUrl, name }: { prUrl?: string; name: string }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {prUrl && <DropdownMenuItem onSelect={() => copy(prUrl, "PR link")} title="Copy PR link">Copy PR link</DropdownMenuItem>}
-        <DropdownMenuItem onSelect={() => copy(name, "worktree name")} title="Copy worktree name">Copy worktree name</DropdownMenuItem>
+        {row.prUrl && <DropdownMenuItem onSelect={() => copy(row.prUrl!, "PR link")} title="Copy PR link">Copy PR link</DropdownMenuItem>}
+        <DropdownMenuItem onSelect={() => copy(row.branch, "worktree name")} title="Copy worktree name">Copy worktree name</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void copyCli()} title="Copy CLI: resume this agent's session in a terminal">Copy CLI</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -264,7 +272,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         <div className="flex shrink-0 items-center gap-3">
           {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
           {row.prNumber && <DestLink href={row.prUrl}>PR #{row.prNumber}</DestLink>}
-          <CopyMenu prUrl={row.prUrl} name={row.branch} />
+          <CopyMenu row={row} />
         </div>
       </div>
 

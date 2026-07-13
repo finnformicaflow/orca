@@ -4,7 +4,7 @@ import {
   addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
   merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, type Row,
 } from "../store";
-import { attachCommand, prMenuActions, shouldBump } from "../workstream";
+import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,8 @@ import {
 // One organised action menu for every actionable workstream (open PR or local branch). Actions are
 // grouped: promote/merge at top, then a PR submenu (every PR-scoped action — draft toggle, resolve
 // conflicts, fix CI, add preview, copy link — see workstream.prMenuActions), an Agent submenu
-// (Claude-driven work + Copy CLI) and a Slack submenu. Keeps the card header uncluttered — the
+// (Claude-driven work + Copy worktree path; the Copy CLI command lives on the card's copy menu)
+// and a Slack submenu. Keeps the card header uncluttered — the
 // contextual state lives in badges, so the menu doesn't need per-item spinners.
 // localStorage key for a row's in-progress follow-up draft; whether one exists also drives
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
@@ -52,9 +53,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
 
-  const copyCli = async () => {
-    const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
-    try { await navigator.clipboard.writeText(cmd); } catch { window.prompt("Copy the CLI command:", cmd); }
+  // Copy the worktree's absolute path so you can `cd` into it yourself; adopt one first if the
+  // branch has none yet (same as the agent actions). Copy CLI lives on the card's copy menu now.
+  const copyWorktree = async () => {
+    const path = row.worktreePath ?? (await ensureWorktree(row));
+    try { await navigator.clipboard.writeText(path); } catch { window.prompt("Copy the worktree path:", path); }
   };
   const copyLink = async () => {
     if (!row.prUrl) return;
@@ -131,7 +134,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
+                <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
