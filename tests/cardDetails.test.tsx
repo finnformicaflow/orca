@@ -109,14 +109,14 @@ describe("swimlane card details", () => {
     expect(copied).toBe("enrich-cards-1");
   });
 
-  test("a card's copy menu offers Copy CLI, which copies the attach command for its worktree", async () => {
+  test("a card's copy menu offers Copy CLI; a card with no agent run yet gets a fresh session", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount(base);
+    await mount(base); // adopted PR: worktree but no agent has run here, so no conversation to continue
     await openCopyMenu();
     const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
     expect(item).not.toBeNull();
     await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --continue --permission-mode auto`);
+    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --permission-mode auto`); // fresh, NOT --continue
   });
 
   test("Copy CLI --resume's the persisted session id when there is one", async () => {

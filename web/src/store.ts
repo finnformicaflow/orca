@@ -479,14 +479,25 @@ export function setCardProvider(row: Row, provider: AgentProvider) {
   patchEnrich(row.repo, row.branch, { preferredProvider: provider });
 }
 
-/** Provider + native session to resume for a card, honouring the pin. The stored session belongs to
- *  whoever ran LAST (row.agentProvider); if the pin points elsewhere there's no native session for it
- *  yet, so resume without an id (a fresh `--continue`/`resume --last`) rather than feed one provider's
- *  session id to another. Used by Copy CLI and by Promote's PR-description writer. */
-export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: string } {
+/** How to (re)enter the pinned agent's CLI for a card. Honours the pin, and never hands one provider's
+ *  session id to another. Three outcomes: a known session id → resume it; no id but the pinned agent
+ *  HAS run in this worktree → continue its latest; `fresh` → the pinned agent has never run here (e.g.
+ *  right after switching the pin), so start a new session rather than emit a `--continue` that errors
+ *  with "no conversation to continue". Used by Copy CLI and Promote's PR-description writer. */
+export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: string; fresh: boolean } {
   const provider = providerFor(row);
-  const ranLast = row.agentProvider ?? "claude"; // the stored session belongs to whoever ran last
-  return { provider, sessionId: provider === ranLast ? row.sessionId : undefined };
+  // The active session pointer belongs to whoever ran last; an id stored with no provider is Claude's.
+  const sessionOwner = row.agentProvider ?? "claude";
+  const activeId = provider === sessionOwner ? row.sessionId : undefined;
+  // Else fall back to the newest transcript turn recorded under this provider (a session that ran
+  // earlier, before switching the pin away and back).
+  const turnId = (row.transcript ?? []).filter((t) => t.provider === provider).at(-1)?.sessionId;
+  const sessionId = activeId ?? turnId;
+  if (sessionId) return { provider, sessionId, fresh: false };
+  // No id. Only `--continue` if this provider genuinely ran here (strict — an undefined agentProvider
+  // means nothing ran, so an adopted PR / just-switched pin gets a fresh session, not a failing continue).
+  const ranHere = row.agentProvider === provider || (row.transcript ?? []).some((t) => t.provider === provider);
+  return { provider, fresh: !ranHere };
 }
 
 export function rerunAgent(row: Row) {

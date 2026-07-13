@@ -128,13 +128,22 @@ export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentPro
   ].join("\n");
 }
 
-export function attachCommand(input: { worktreePath: string; provider?: AgentProvider; sessionId?: string }): string {
+// Three cases: a known session id → resume it exactly; no id but the provider HAS run here → continue
+// its most recent conversation; `fresh` (the provider has never run in this worktree, e.g. right
+// after switching the pinned agent) → start a new session, since `--continue`/`resume --last`/`-c`
+// would error with "no conversation to continue".
+export function attachCommand(input: { worktreePath: string; provider?: AgentProvider; sessionId?: string; fresh?: boolean }): string {
   const cd = `cd "${input.worktreePath}" && `;
   // Orca launches Codex through `codex exec`, so its threads are marked non-interactive. The TUI's
   // resume command excludes those by default; include them explicitly or it opens a blank session.
   if (input.provider === "codex") {
-    return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId ?? "--last"}`;
+    if (input.sessionId) return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId}`;
+    return input.fresh ? `${cd}codex` : `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last`;
   }
-  if (input.provider === "agy") return `${cd}agy${input.sessionId ? ` --conversation ${input.sessionId}` : " -c"} --dangerously-skip-permissions`;
-  return `${cd}claude${input.sessionId ? ` --resume ${input.sessionId}` : " --continue"} --permission-mode auto`;
+  if (input.provider === "agy") {
+    if (input.sessionId) return `${cd}agy --conversation ${input.sessionId} --dangerously-skip-permissions`;
+    return `${cd}agy ${input.fresh ? "" : "-c "}--dangerously-skip-permissions`;
+  }
+  if (input.sessionId) return `${cd}claude --resume ${input.sessionId} --permission-mode auto`;
+  return `${cd}claude ${input.fresh ? "" : "--continue "}--permission-mode auto`;
 }

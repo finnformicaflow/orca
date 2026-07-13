@@ -136,6 +136,11 @@ describe("provider adapters", () => {
     expect(attachCommand({ worktreePath: "/wt/x", provider: "codex" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", sessionId: "a-1" })).toBe('cd "/wt/x" && agy --conversation a-1 --dangerously-skip-permissions');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "agy" })).toBe('cd "/wt/x" && agy -c --dangerously-skip-permissions');
+    // No id but the provider has run here → continue its latest; `fresh` → start a new session.
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude" })).toBe('cd "/wt/x" && claude --continue --permission-mode auto');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", fresh: true })).toBe('cd "/wt/x" && claude --permission-mode auto');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true })).toBe('cd "/wt/x" && codex');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", fresh: true })).toBe('cd "/wt/x" && agy --dangerously-skip-permissions');
   });
 });
 
@@ -243,14 +248,19 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
-  test("Copy CLI / Promote follow the pin, dropping a session id that belongs to another agent", async () => {
-    // Pin matches the last run → resume its native session.
-    expect(store.resumeTarget(row)).toEqual({ provider: "claude", sessionId: "claude-session" });
-    // Pin points at a different agent → no native session for it yet, so resume without an id
-    // (attachCommand then emits `codex resume --last`, never `codex resume <a-claude-session>`).
-    expect(store.resumeTarget({ ...row, preferredProvider: "codex" })).toEqual({ provider: "codex", sessionId: undefined });
-    // No runs yet, no pin → the stored session is implicitly Claude's.
-    expect(store.resumeTarget({ ...row, agentProvider: undefined })).toEqual({ provider: "claude", sessionId: "claude-session" });
+  test("Copy CLI / Promote follow the pin, and never resume an agent that hasn't run here", async () => {
+    // Pin matches the last run → resume its native session by id.
+    expect(store.resumeTarget(row)).toEqual({ provider: "claude", sessionId: "claude-session", fresh: false });
+    // Pin points at an agent that never ran here → a FRESH session, not a session id from another
+    // provider and not a `--continue` that errors with "no conversation to continue".
+    const switched = store.resumeTarget({ ...row, preferredProvider: "codex" });
+    expect(switched).toEqual({ provider: "codex", fresh: true });
+    expect(attachCommand({ worktreePath: "/wt/feat", ...switched })).toBe('cd "/wt/feat" && codex');
+    // The Claude counterpart of the reported bug: fresh Claude start, never `claude --continue`.
+    const toClaude = store.resumeTarget({ ...row, agentProvider: "codex", sessionId: "codex-1", transcript: [{ id: "t", provider: "codex", prompt: "x", response: "y", sessionId: "codex-1" }], preferredProvider: "claude" });
+    expect(attachCommand({ worktreePath: "/wt/feat", ...toClaude })).toBe('cd "/wt/feat" && claude --permission-mode auto');
+    // A stored session with no recorded provider is treated as Claude's, so it still resumes by id.
+    expect(store.resumeTarget({ ...row, agentProvider: undefined })).toEqual({ provider: "claude", sessionId: "claude-session", fresh: false });
   });
 
   test("a pin matching the provider that last ran still resumes its native session", async () => {
