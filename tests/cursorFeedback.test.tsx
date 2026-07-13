@@ -7,6 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ChatComposer } from "@/components/ChatComposer";
 import { Button } from "@/components/ui/button";
+import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -96,5 +97,40 @@ describe("controls read as clickable (cursor-pointer)", () => {
     for (const b of c.querySelectorAll("button")) {
       expect(b.className).toContain("cursor-pointer");
     }
+  });
+});
+
+describe("chatbox toolbar stays within its available width", () => {
+  test("the leading controls can shrink while the action group cannot", () => {
+    const c = mount(composer(<div>selectors</div>));
+    expect(c.querySelector<HTMLElement>('[data-slot="chat-composer-toolbar"]')!.className).toContain("min-w-0");
+
+    const leading = c.querySelector<HTMLElement>('[data-slot="chat-composer-leading"]')!;
+    expect(leading.className).toContain("min-w-0");
+    expect(leading.className).toContain("flex-1");
+    expect(leading.className).toContain("overflow-hidden");
+
+    const actions = c.querySelector<HTMLElement>('[data-slot="chat-composer-actions"]')!;
+    expect(actions.className).toContain("shrink-0");
+  });
+
+  test("attach remains immediately beside send, including when cancel is present", () => {
+    const c = mount(<ChatComposer onSubmit={async () => {}} onCancel={() => {}} />);
+    const attach = c.querySelector<HTMLButtonElement>('button[title="Attach images"]')!;
+    const send = c.querySelector<HTMLButtonElement>('button[title^="Send"]')!;
+    expect(attach.parentElement).toBe(send.parentElement);
+    expect(attach.nextElementSibling).toBe(send);
+  });
+
+  test("the small select variant truncates its value", () => {
+    const c = mount(
+      <Select defaultValue="a-long-repository-name">
+        <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
+      </Select>,
+    );
+    const trigger = c.querySelector<HTMLElement>('[data-slot="select-trigger"]')!;
+    expect(trigger.className).toContain("h-7");
+    expect(trigger.className).toContain("[&_[data-slot=select-value]]:truncate");
+    expect(trigger.className).toContain("overflow-hidden");
   });
 });

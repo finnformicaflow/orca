@@ -232,9 +232,9 @@ export function FollowUpComposer(
       history={row.followUps}
       placeholder="Continue this work…  (⌘+Enter)"
       leading={
-        <div className="flex items-center">
+        <div className="flex min-w-0 w-full items-center overflow-hidden">
           <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
-            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent h-8 w-28 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" aria-label="Agent provider" className="text-muted-foreground hover:bg-accent min-w-0 max-w-full border-0 shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>
