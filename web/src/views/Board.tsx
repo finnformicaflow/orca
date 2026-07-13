@@ -170,9 +170,8 @@ function elapsed(startedMs?: number): string {
 
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
-  const provider = row.agentProvider ? `${agentLabel(row.agentProvider)} ` : "";
   if (s === "running") return <Badge variant="secondary">Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
-  if (s === "done") return <Badge variant="success">{provider}Done <Check /></Badge>;
+  if (s === "done") return <Badge variant="success">Done <Check /></Badge>;
   if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
   return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;

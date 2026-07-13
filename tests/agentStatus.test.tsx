@@ -45,9 +45,13 @@ describe("standardized Claude status badge", () => {
   });
 
   test("done / error map to their own labels", () => {
-    expect(mount(<AgentBadge row={row({ agentStatus: "done" })} hasWork={false} />).textContent).toContain("Done");
+    const done = mount(<AgentBadge row={row({ agentStatus: "done", agentProvider: "claude" })} hasWork={false} />).textContent ?? "";
+    expect(done).toContain("Done");
+    expect(done).not.toContain("Claude");
     afterEachSync();
-    expect(mount(<AgentBadge row={row({ agentStatus: "error" })} hasWork={false} />).textContent).toContain("Error");
+    const error = mount(<AgentBadge row={row({ agentStatus: "error", agentProvider: "codex" })} hasWork={false} />).textContent ?? "";
+    expect(error).toContain("Error");
+    expect(error).not.toContain("Codex");
   });
 
   test("idle distinguishes committed work (Completed) from a stopped run (Stopped)", () => {
