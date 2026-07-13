@@ -48,13 +48,18 @@ export function Board() {
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
               {/* Pin the new-draft box to the top of the (scrolling) Local column so it stays reachable
-                  no matter how many sessions pile up below. The solid backdrop full-bleeds over the
-                  column's p-2 (negative margins on top+sides) and `-top-2` cancels the padding gap that
+                  no matter how many sessions pile up below. The backdrop full-bleeds over the column's
+                  p-2 (negative margins on top+sides) and `-top-2` cancels the padding gap that
                   otherwise lets a card peek above a `top-0` sticky — so cards scroll cleanly *under* the
-                  bar. `p-2` keeps equal padding around the composer on all four sides. */}
+                  bar. It must be OPAQUE to hide those cards, but the column itself is a translucent
+                  `bg-muted/30`; an opaque `bg-background` base with the same `bg-muted/30` tint layered
+                  on top composites to the exact column colour, so the bar is seamless instead of a
+                  lighter band. `p-2` keeps equal padding around the composer on all four sides. */}
               {lane === "LOCAL" && (
-                <div className="bg-background sticky -top-2 z-20 -mx-2 -mt-2 p-2">
-                  <NewDraft />
+                <div className="bg-background sticky -top-2 z-20 -mx-2 -mt-2">
+                  <div className="bg-muted/30 p-2">
+                    <NewDraft />
+                  </div>
                 </div>
               )}
               {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
