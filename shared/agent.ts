@@ -61,8 +61,8 @@ export function attachCommand(input: { worktreePath: string; provider?: AgentPro
   // Orca launches Codex through `codex exec`, so its threads are marked non-interactive. The TUI's
   // resume command excludes those by default; include them explicitly or it opens a blank session.
   if (input.provider === "codex") {
-    return `${cd}codex resume --include-non-interactive ${input.sessionId ?? "--last"}`;
+    return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId ?? "--last"}`;
   }
-  if (input.provider === "agy") return `${cd}agy${input.sessionId ? ` --conversation ${input.sessionId}` : " -c"}`;
-  return `${cd}claude${input.sessionId ? ` --resume ${input.sessionId}` : " --continue"}`;
+  if (input.provider === "agy") return `${cd}agy${input.sessionId ? ` --conversation ${input.sessionId}` : " -c"} --dangerously-skip-permissions`;
+  return `${cd}claude${input.sessionId ? ` --resume ${input.sessionId}` : " --continue"} --permission-mode auto`;
 }

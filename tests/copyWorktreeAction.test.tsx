@@ -69,6 +69,6 @@ describe("Copy worktree action", () => {
     const item = menuitem("Copy CLI")!;
     expect(item).not.toBeNull();
     await click(item);
-    expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive codex-123');
+    expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123');
   });
 });

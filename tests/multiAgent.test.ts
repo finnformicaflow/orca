@@ -72,11 +72,11 @@ describe("provider adapters", () => {
   });
 
   test("Copy CLI uses the active provider's native resume command", () => {
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", sessionId: "c-1" })).toBe('cd "/wt/x" && claude --resume c-1');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", sessionId: "x-1" })).toBe('cd "/wt/x" && codex resume --include-non-interactive x-1');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --last');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", sessionId: "a-1" })).toBe('cd "/wt/x" && agy --conversation a-1');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy" })).toBe('cd "/wt/x" && agy -c');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", sessionId: "c-1" })).toBe('cd "/wt/x" && claude --resume c-1 --permission-mode auto');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", sessionId: "x-1" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox x-1');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", sessionId: "a-1" })).toBe('cd "/wt/x" && agy --conversation a-1 --dangerously-skip-permissions');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy" })).toBe('cd "/wt/x" && agy -c --dangerously-skip-permissions');
   });
 });
 

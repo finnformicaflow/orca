@@ -51,8 +51,8 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");
   // attach command drops you into a session continuing the headless run: exact id → --resume it;
   // unknown id → --continue the most recent conversation in that dir (never a bare, fresh `claude`).
-  expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123`);
-  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue`);
+  expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123 --permission-mode auto`);
+  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue --permission-mode auto`);
 });
 
 test("titleFromModelJson: zod-validates the title field, tolerates fences/prose, rejects junk/sentences", () => {

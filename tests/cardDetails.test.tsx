@@ -108,7 +108,7 @@ describe("swimlane card details", () => {
     const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
     expect(item).not.toBeNull();
     await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --continue`);
+    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --continue --permission-mode auto`);
   });
 
   test("Copy CLI --resume's the persisted session id when there is one", async () => {
@@ -117,7 +117,7 @@ describe("swimlane card details", () => {
     await openCopyMenu();
     const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
     await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --resume abc-123`);
+    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --resume abc-123 --permission-mode auto`);
   });
 
   test("Copy CLI includes non-interactive Codex exec sessions when resuming", async () => {
@@ -126,7 +126,7 @@ describe("swimlane card details", () => {
     await openCopyMenu();
     const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
     await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && codex resume --include-non-interactive codex-123`);
+    expect(copied).toBe(`cd "/wt/enrich-cards-1" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123`);
   });
 
   test("a local card's copy menu has no Copy PR link option, only the worktree name", async () => {
