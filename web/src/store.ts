@@ -94,35 +94,43 @@ export type OptimisticDraft = {
 let optimistic: OptimisticDraft[] = [];
 let optSeq = 0;
 
-// ---- live state (all repos) ----
+// ---- live state (all repos), polled as three independent streams ----
+// Local-agent status, open PRs, and merged history change on very different cadences, so they poll
+// SEPARATELY: agents + PRs fast while work is active (keeps runs and Follow responsive), merged
+// history on a slow TTL (it barely changes). Each stream keeps its own {ok} so one stream's
+// transient failure never lets GC read another stream's branches as "gone". `live` is the merge of
+// the three streams' latest good values — so a fast agents-only poll doesn't drop retained PRs.
 type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
+type Slice<T> = { v: T; ok: boolean };
+const agentsByRepo = new Map<string, Slice<LiveAgent[]>>();
+const prsByRepo = new Map<string, Slice<PrSummary[]>>();
+const mergedByRepo = new Map<string, Slice<MergedPr[]>>();
 let live: RepoLive[] = [];
 
-let refreshInFlight: Promise<void> | null = null;
-export function refresh(): Promise<void> {
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = refreshOnce().finally(() => { refreshInFlight = null; });
-  return refreshInFlight;
+// Approximate client-side poll counters. (The server counts the GitHub calls themselves — see
+// server/metrics.ts / /api/diagnostics; these track how often each stream fires from the browser.)
+const pollCounts = { agents: 0, prs: 0, merged: 0 };
+export const clientPollCounts = () => ({ ...pollCounts });
+
+// Settle each fetch to {ok, v} instead of catch-to-empty, so GC can tell a genuinely-empty repo from
+// a transient fetch failure (which must NOT be read as "everything's gone" and wipe enrichment).
+const settle = <T>(p: Promise<T>, fallback: T): Promise<Slice<T>> =>
+  p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
+
+function rebuildLive() {
+  live = (cfg?.repos ?? []).map((r) => ({
+    repo: r.name, hasRemote: r.hasRemote,
+    agents: agentsByRepo.get(r.name)?.v ?? [],
+    prs: prsByRepo.get(r.name)?.v ?? [],
+    merged: mergedByRepo.get(r.name)?.v ?? [],
+  }));
 }
 
-async function refreshOnce() {
-  const repos = cfg?.repos ?? [];
-  // Settle each fetch to {ok, v} instead of catch-to-empty, so GC can tell a genuinely-empty repo
-  // from a transient fetch failure (which must NOT be read as "everything's gone" and wipe enrichment).
-  const settle = <T>(p: Promise<T>, fallback: T) => p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
-  const polled = await Promise.all(repos.map(async (r) => {
-    const [ag, pr, mg] = await Promise.all([
-      settle(api.agents(r.name), [] as LiveAgent[]),
-      settle(api.prs(r.name), [] as PrSummary[]),
-      r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }),
-    ]);
-    return { repo: r.name, hasRemote: r.hasRemote, agents: ag.v, prs: pr.v, merged: mg.v, ok: ag.ok && pr.ok && mg.ok };
-  }));
-  live = polled.map(({ ok: _ok, ...rl }) => rl);
-  // Persist provider-native session ids and completed portable turns. Native ids make same-provider
-  // resume lossless; the transcript is what lets a different provider take over the worktree.
-  // The title stays the selected-provider summary of the PROMPT set at creation — deriving it from the agent's
-  // final response text instead ("Done! I've added…") produced awkward, sentence-fragment titles.
+// Persist provider-native session ids and completed portable turns off the agents stream. Native ids
+// make same-provider resume lossless; the transcript is what lets a different provider take over the
+// worktree. The title stays the selected-provider summary of the PROMPT set at creation — deriving it
+// from the agent's final response ("Done! I've added…") produced awkward, sentence-fragment titles.
+function persistAgentEnrichment() {
   for (const rl of live) {
     for (const a of rl.agents) {
       const e = enrichOf(rl.repo, a.branch);
@@ -144,19 +152,85 @@ async function refreshOnce() {
       if (Object.keys(fields).length) patchEnrich(rl.repo, a.branch, fields);
     }
   }
-  gcEnrichment(polled);
+}
+
+// Leading + TRAILING coalescing: while a poll of a stream is in flight, a second request doesn't
+// stack a duplicate GitHub call — but it also can't be fobbed off with the in-flight poll's result,
+// which reflects state from BEFORE the caller asked (the caller may have just created/merged
+// something). So it gets exactly one fresh poll chained after the current one finishes. This is what
+// makes an imperative refresh() reliably reflect a just-applied mutation.
+function coalesced(run: () => Promise<void>): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  let trailing: Promise<void> | null = null;
+  const fn = (): Promise<void> => {
+    if (!inFlight) { inFlight = run().finally(() => { inFlight = null; }); return inFlight; }
+    if (!trailing) trailing = inFlight.then(() => { trailing = null; return fn(); });
+    return trailing;
+  };
+  return fn;
+}
+
+export const pollAgents = coalesced(async () => {
+  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
+    settle(api.agents(r.name), [] as LiveAgent[]).then((s) => [r.name, s] as const)));
+  pollCounts.agents++;
+  for (const [name, s] of polled) agentsByRepo.set(name, s);
+  rebuildLive();
+  persistAgentEnrichment();
+  notify();
+});
+
+export const pollPrs = coalesced(async () => {
+  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
+    settle(api.prs(r.name), [] as PrSummary[]).then((s) => [r.name, s] as const)));
+  pollCounts.prs++;
+  for (const [name, s] of polled) prsByRepo.set(name, s);
+  rebuildLive();
   runFollowers(); // auto-drive any followed PRs off the status we just polled
   notify();
+});
+
+export const pollMerged = coalesced(async () => {
+  const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
+    (r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }))
+      .then((s) => [r.name, s] as const)));
+  pollCounts.merged++;
+  for (const [name, s] of polled) mergedByRepo.set(name, s);
+  rebuildLive();
+  notify();
+});
+
+// GC runs only after a COORDINATED settle of the streams that can make a branch disappear (agents +
+// PRs) — never off a single stream mid-flight, where another stream's map could still hold a stale
+// value and make a live branch look gone. `known` is snapshotted first so a key written during the
+// polls (a new draft) is never judged by data gathered before it existed.
+async function refreshAndGc(streams: Promise<void>[]): Promise<void> {
+  const known = enrichKeysAtStart();
+  await Promise.all(streams);
+  gcEnrichment(known);
 }
+
+/** Imperative full refresh (after a mutation) — all three streams, then GC once on a consistent view. */
+export function refresh(): Promise<void> {
+  return refreshAndGc([pollAgents(), pollPrs(), pollMerged()]);
+}
+
 let pollTick = 0;
+let lastMergedAt = 0;
+const MERGED_TTL_MS = 90_000;
 setInterval(() => {
   pollTick++;
   const active = optimistic.length > 0 || live.some((repo) =>
     repo.agents.some((agent) => agent.agentStatus === "running")
     || repo.prs.some((pr) => enrichOf(repo.repo, pr.branch).following));
+  const hidden = document.visibilityState === "hidden";
   // Keep transitions responsive; idle boards poll every 32s, hidden idle tabs every 64s.
-  const every = active ? 1 : document.visibilityState === "hidden" ? 8 : 4;
-  if (pollTick % every === 0) void refresh();
+  const every = active ? 1 : hidden ? 8 : 4;
+  if (pollTick % every === 0) void refreshAndGc([pollAgents(), pollPrs()]); // agents + PRs together; GC on the settled pair
+  // Merged history changes slowly — poll on a TTL, and far slower when the tab is hidden. It only
+  // ever ADDS branches to the "alive" set, so it can't trigger a prune and needs no GC of its own.
+  const mergedTtl = hidden ? MERGED_TTL_MS * 8 : MERGED_TTL_MS;
+  if (Date.now() - lastMergedAt >= mergedTtl) { lastMergedAt = Date.now(); void pollMerged(); }
 }, 8_000);
 
 // Prune enrichment for branches that no longer exist — merged / closed / branch-deleted, whether via
@@ -165,15 +239,32 @@ setInterval(() => {
 // (a transient fetch failure would otherwise read as "no branches" and wipe live enrichment), and
 // keep very recent keys — a just-created draft's enrichment lands before its worktree shows in `live`.
 const GC_GRACE_MS = 2 * 60_000;
-function gcEnrichment(polled: { repo: string; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[]; ok: boolean }[]) {
+// The enrichment keys that existed when a poll STARTED. A poll's result reflects the world at that
+// moment, so it may only prune keys already present then — never one written mid-flight (e.g. a draft
+// created, or another action's enrichment landing, after the poll's GitHub calls went out).
+const enrichKeysAtStart = () => new Set(Object.keys(load()));
+function gcEnrichment(allowed: Set<string>) {
   const fresh = load();
   let changed = false;
-  for (const r of polled) {
-    if (!r.ok) continue; // partial/failed poll — don't judge this repo's branches as gone
-    const alive = new Set<string>([...r.agents.map((a) => a.branch), ...r.prs.map((p) => p.branch), ...r.merged.map((m) => m.branch)]);
+  for (const r of cfg?.repos ?? []) {
+    const agents = agentsByRepo.get(r.name);
+    const prs = prsByRepo.get(r.name);
+    const merged = mergedByRepo.get(r.name);
+    // Judge a branch "gone" only against a CLEAN sample of every stream. A stream not yet polled, or
+    // whose last poll failed, means we can't tell — skip the whole repo rather than prune blindly.
+    // Because the streams poll on different cadences, this reads each one's LAST GOOD value (not just
+    // what the poll that triggered GC fetched), so an agents-only poll can't drop a retained PR.
+    if (!agents?.ok || !prs?.ok) continue;
+    if (r.hasRemote && !merged?.ok) continue;
+    const alive = new Set<string>([
+      ...agents.v.map((a) => a.branch),
+      ...prs.v.map((p) => p.branch),
+      ...(merged?.v ?? []).map((m) => m.branch),
+    ]);
     for (const key of Object.keys(fresh)) {
+      if (!allowed.has(key)) continue; // written after this poll began — it can't have seen the branch
       const sep = key.indexOf("::");
-      if (sep < 0 || key.slice(0, sep) !== r.repo) continue; // key belongs to a different (or unconfigured) repo
+      if (sep < 0 || key.slice(0, sep) !== r.name) continue; // key belongs to a different (or unconfigured) repo
       const branch = key.slice(sep + 2);
       if (alive.has(branch)) continue;
       const created = fresh[key]!.createdAt;
