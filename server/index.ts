@@ -7,6 +7,8 @@ import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
+import { metrics, countAgentPoll } from "./metrics";
+import { renderText, summarize } from "./diagnostics";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
 import { AGENT_PROVIDERS, isAgentProvider, type AgentOutcome } from "../shared/agent";
 
@@ -81,6 +83,13 @@ async function api(req: Request, url: URL): Promise<Response> {
 
   if (req.method === "GET" && p === "/api/usage") {
     return json(await usage()); // Claude + Codex account usage; Antigravity has no bridge here
+  }
+  if (req.method === "GET" && p === "/api/diagnostics") {
+    // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
+    const report = summarize(ledger.all(), metrics());
+    return url.searchParams.get("format") === "text"
+      ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
+      : json(report);
   }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
@@ -220,6 +229,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/agents") {
     // source of truth for the Draft lane: live worktrees + run status + local mergeability
+    countAgentPoll();
     let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
     const merged = await gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()); // empty for local-only repos

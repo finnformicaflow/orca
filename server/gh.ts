@@ -1,4 +1,5 @@
 import { run } from "./run";
+import { countGhCall } from "./metrics";
 
 export type CiStatus = "none" | "pending" | "passing" | "failing";
 export type ReviewStatus = "none" | "review_required" | "changes_requested" | "approved";
@@ -29,7 +30,7 @@ export type PrStatus = {
   mergeable: Mergeable;
 };
 
-const gh = (cwd: string, ...args: string[]) => run(["gh", ...args], cwd);
+const gh = (cwd: string, ...args: string[]) => { countGhCall(); return run(["gh", ...args], cwd); };
 
 const REVIEW_BODY_LIMIT = 1_200;
 const REVIEW_TOTAL_LIMIT = 8_000;
