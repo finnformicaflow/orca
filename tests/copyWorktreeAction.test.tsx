@@ -71,4 +71,18 @@ describe("Copy worktree action", () => {
     await click(item);
     expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123');
   });
+
+  test("Slack copy is available only in Actions → Slack, not as a card button", async () => {
+    mount({ ...row, hasRemote: true, lane: "IN_REVIEW", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect([...container!.querySelectorAll("button")].some((button) => button.textContent?.includes("Copy Slack"))).toBe(false);
+
+    await pointerdown([...container!.querySelectorAll("button")].find((button) => button.textContent?.includes("Actions"))!);
+    const slackTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent?.trim() === "Slack")!;
+    await pointerdown(slackTrigger);
+    await click(slackTrigger);
+    const item = menuitem("Copy message")!;
+    expect(item).not.toBeNull();
+    await click(item);
+    expect(copied).toBe("[#7 Feat](https://github.com/acme/app/pull/7)");
+  });
 });

@@ -81,12 +81,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
         <Button size="sm" variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)}>
           {submitting && <Loader2 className="size-4 animate-spin" />}Follow up
         </Button>
-        {/* Second-class, lane-contextual action right after Follow up. */}
-        {row.lane === "IN_REVIEW" && (
-          <Button size="sm" variant={bumpDue ? "default" : "outline"} onClick={run(() => sendSlack(row, notified ? "bump" : "notify"))}>
-            {notified ? "Copy Slack bump" : "Copy Slack message"}
-          </Button>
-        )}
         {row.lane === "MERGEABLE" && (
           <Button size="sm" variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
             Merge{unreviewed ? " (unreviewed)" : ""}
