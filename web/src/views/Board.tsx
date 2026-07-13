@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, ensureWorktree, rerunAgent, summary as fetchSummary, undoDraft, useRepos, useWorkstreams,
+  baseBranch, createWorkstream, ensureWorktree, rerunAgent, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { attachCommand } from "../workstream";
@@ -16,6 +16,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
+import { agentLabel, type AgentProvider } from "../../../shared/agent";
 
 const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
@@ -107,7 +108,7 @@ function CopyMenu({ row }: { row: Row }) {
   // Copy CLI needs a worktree to cd into; adopt one if the branch doesn't have one yet (same as the
   // agent actions), then resume the persisted session id when we have it.
   const copyCli = async () => {
-    const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), sessionId: row.sessionId });
+    const cmd = attachCommand({ worktreePath: row.worktreePath ?? (await ensureWorktree(row)), provider: row.agentProvider, sessionId: row.sessionId });
     try { await navigator.clipboard.writeText(cmd); flash(); } catch { window.prompt("Copy the CLI command:", cmd); }
   };
   return (
@@ -166,8 +167,9 @@ function elapsed(startedMs?: number): string {
 
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
-  if (s === "running") return <Badge variant="secondary">Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
-  if (s === "done") return <Badge variant="success">Done <Check /></Badge>;
+  const provider = row.agentProvider ? `${agentLabel(row.agentProvider)} ` : "";
+  if (s === "running") return <Badge variant="secondary">{provider}Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
+  if (s === "done") return <Badge variant="success">{provider}Done <Check /></Badge>;
   if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
   return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;
@@ -189,7 +191,10 @@ function ConditionBadges({ row }: { row: Row }) {
 
 function NewDraft() {
   const repos = useRepos();
+  const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
+  const [provider, setProvider] = useState<AgentProvider>(() => providers[0] ?? "claude");
+  useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
   const active = repo || repos[0]?.name || "";
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
@@ -205,7 +210,7 @@ function NewDraft() {
     <ChatComposer
       persistKey="orca.newDraft"
       placeholder="Describe a feature…  (⌘+Enter)"
-      onSubmit={async (text, images) => setUndoable(createWorkstream(active, text, images))}
+      onSubmit={async (text, images) => setUndoable(createWorkstream(active, text, images, provider))}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
           Sent to <span className="text-foreground font-medium">{undoable.repo}</span>
@@ -219,12 +224,20 @@ function NewDraft() {
         </p>
       )}
       leading={
-        <Select value={active} onValueChange={setRepo}>
-          <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center">
+          <Select value={active} onValueChange={setRepo}>
+            <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
+            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 w-24 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
       }
     />
   );

@@ -5,21 +5,25 @@ Read this first. It's the context that isn't obvious from the code.
 ## The problem Orca exists to solve
 
 An engineer on a fast, high-PR-volume team drives features through a manual chain:
-prompt Claude → open PR → watch CI/comments → fix conflicts → Slack the reviewers →
+prompt a coding agent → open PR → watch CI/comments → fix conflicts → Slack the reviewers →
 bump if it's been a day → merge. Every transition is hand-driven. **Orca automates the
 connective tissue between "managing agents" and "managing PRs."**
 
-**Orca launches Claude headless.** On create, Orca runs `claude -p` (headless, using your
-existing Claude login — no API key) in the new worktree with the feature prompt, and shows a
+**Orca launches Claude or Codex headless.** On create, the user selects a provider and Orca runs
+`claude -p` or `codex exec` (using the CLI's existing login — no API key) in the new worktree, and shows a
 status badge (running/done/error). It does NOT stream output or host a chat — for that,
-"Copy CLI" gives you `cd <worktree> && claude --continue` to jump into an interactive
-session continuing that run. The git change-summary poll shows commits as they land. Orca
+"Copy CLI" gives you the provider-native resume command to jump into an interactive session.
+Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
+session seeded with Orca's bounded portable transcript (instructions + final outcomes); files/git in
+the shared worktree remain the source of truth. "New chat" keeps the worktree but omits that history.
+The git change-summary poll shows commits as they land. Orca
 then promotes the branch to a PR and drives it to merge with buttons.
 
 (History: earlier slices deliberately did NOT run Claude — the user reversed this. Slack
 was also cut from an API integration down to a copyable prompt, since Claude has Slack
 access. The principle that survives: Orca generates prompts / launches processes but hosts
-no chat UI and holds no long-lived state of its own beyond the in-memory run map.)
+no chat UI. Browser enrichment persists the small portable turn transcript and active provider/session
+pointer; live worktrees, git, provider-native sessions, and GitHub remain the authoritative state.)
 
 ## Architecture
 
@@ -32,7 +36,7 @@ no chat UI and holds no long-lived state of its own beyond the in-memory run map
 - **Source of truth is the LIVE system, not localStorage.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
   (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
-  git/gh can't recover — prompt, title, Slack timestamps — keyed by branch (`web/src/store.ts`).
+  git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
   PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
 - **GitHub = the `gh` CLI; Slack = a prompt Claude sends.** No OAuth app, no Slack token.
 
@@ -56,11 +60,12 @@ A workstream is a branch; its lane (`store.laneFor`):
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **Promote** (Local, remote repo) = a dropdown: Create PR ready / draft, ± add preview label.
   Local repo → plain Promote (sets `promoted`).
-- **Resolve conflicts / Fix CI / Follow up** = launch a headless `claude -p` in the branch's
+- **Resolve conflicts / Fix CI / Follow up** = launch the selected provider headlessly in the branch's
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
-  requires a manual "check out" step or a copied prompt. Follow up resumes the persisted sessionId
-  when there is one. `ensureWorktree` also copies `copyToWorktree` config into the fresh worktree.
+  requires a manual "check out" step or a copied prompt. Follow up resumes the provider-native
+  session when possible or uses the portable transcript for a cross-provider handoff.
+  `ensureWorktree` also copies `copyToWorktree` config into the fresh worktree.
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 

@@ -3,7 +3,7 @@
 // branch, the store fires the matching agent action itself (the same button you'd click). Driven
 // against the preloaded fake `api` (tests/apiFake.ts, no network): we seed a PR + its worktree,
 // toggle following, run a refresh (the poll), and assert the right agent action launched via
-// api.claude. See store.runFollowers / toggleFollow and workstream.followAction.
+// the provider-neutral agent API. See store.runFollowers / toggleFollow and workstream.followAction.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { apiFake } from "./apiFake";
@@ -28,7 +28,7 @@ test("following a failing-CI PR auto-launches the Fix-CI agent", async () => {
   seed("feat-ci", { ciStatus: "failing" });
   store.toggleFollow({ repo: "r", branch: "feat-ci" } as store.Row);
   await poll();
-  expect(apiFake.calls).toContain("claude:/wt/feat-ci");
+  expect(apiFake.calls).toContain("agent:/wt/feat-ci");
   expect(apiFake.claudePrompts.some((p) => p.includes("CI is failing"))).toBe(true);
 });
 
@@ -65,5 +65,5 @@ test("acts once per condition — a steady blocker doesn't relaunch on every pol
   await poll();
   await poll();
   await poll(); // same failing state throughout
-  expect(apiFake.calls.filter((c) => c === "claude:/wt/feat-once")).toHaveLength(1);
+  expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-once")).toHaveLength(1);
 });

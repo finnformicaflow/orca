@@ -36,7 +36,7 @@ afterEach(async () => {
 });
 
 test("TM3 header: the Test master button sits by the repo controls, after the usage meter", async () => {
-  apiFake.usageData = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 20, resetsAt: null } };
+  apiFake.usageData = { claude: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 20, resetsAt: null }, extra: null }, codex: null };
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });

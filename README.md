@@ -1,23 +1,25 @@
 # 🐳 Orca
 
-A local control plane for the seam between **managing Claude agents** and **managing PRs**.
+A local control plane for the seam between **managing coding agents** and **managing PRs**.
 One kanban board over one lifecycle:
 
-- **Local / Draft** — create a git worktree per feature; Orca launches a headless `claude -p`
-  in it with your prompt, shows what changed, then promotes to a PR.
+- **Local / Draft** — create a git worktree per feature; choose Claude or Codex, let Orca launch it
+  headlessly with your prompt, see what changed, then promote to a PR.
 - **PRs** — open PRs with CI/review status and one-click actions: Slack notify/bump, resolve
   conflicts, fix CI, follow up, and merge-when-green.
 
-Every agent action **runs Claude headless for you** (`claude -p`, using your existing Claude
-login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
+Every agent action **runs your selected coding agent headlessly** (`claude -p` or `codex exec`,
+using the CLI's existing login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
 run in the branch's worktree, **adopting one automatically if the PR doesn't have one locally**.
-"Copy CLI" is the escape hatch to continue a run interactively. See `CLAUDE.md` for the design
-and rationale.
+"Copy CLI" is the escape hatch to continue the active provider's run interactively. A follow-up can
+resume the same provider natively, hand the portable conversation history to another provider, or
+start a clean chat in the same worktree. See `CLAUDE.md` for the design and rationale.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) (this repo is Bun-native; Node is not required)
 - `git` and the [`gh` CLI](https://cli.github.com), already authenticated (`gh auth status`)
+- At least one authenticated agent CLI: `claude` or `codex`
 
 ## Setup
 

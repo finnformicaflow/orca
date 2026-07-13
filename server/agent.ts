@@ -1,8 +1,9 @@
-// Launches a headless `claude -p` (JSON output) and tracks its status + session id, so the
-// UI can show done/error and "Copy CLI" can resume the exact conversation (mid-run too, since
-// we choose the session id up front). Keyed by an arbitrary string: worktree path for
+// Launches Claude or Codex headlessly (JSON/JSONL output) and tracks status + provider-native
+// session id, so the UI can show done/error and "Copy CLI" can resume the exact conversation.
+// Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
+import { handoffPrompt, type AgentProvider, type AgentTurn } from "../shared/agent";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
 // cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
@@ -15,8 +16,26 @@ export type RunMeta = {
   numTurns?: number;
   durationMs?: number;
 };
-export type RunState = { status: "idle" | "running" | "done" | "error"; error?: string; sessionId?: string; result?: string; meta?: RunMeta; startedAt?: number; finishedAt?: number };
+export type RunState = {
+  status: "idle" | "running" | "done" | "error";
+  error?: string;
+  provider?: AgentProvider;
+  runId?: string;
+  prompt?: string;
+  sessionId?: string;
+  result?: string;
+  meta?: RunMeta;
+  startedAt?: number;
+  finishedAt?: number;
+};
 type Run = RunState & { proc?: Bun.Subprocess };
+
+export type LaunchOptions = {
+  provider?: AgentProvider;
+  resume?: string;
+  history?: AgentTurn[];
+  handoffFrom?: AgentProvider;
+};
 
 /** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
  *  trailing date, then prettify). */
@@ -56,36 +75,78 @@ export function parseRunMeta(j: any): RunMeta {
 
 const runs = new Map<string, Run>();
 
-export function launch(key: string, cwd: string, prompt: string, resume?: string): void {
-  // Resume an existing session (follow-up) so the agent keeps prior context, else start fresh.
-  const sessionId = resume ?? crypto.randomUUID();
-  const idArgs = resume ? ["--resume", resume] : ["--session-id", sessionId];
+/** Parse Codex's `exec --json` JSONL stream into the session id, final response, and card metadata. */
+export function parseCodexOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta: RunMeta } {
+  let sessionId: string | undefined;
+  let result: string | undefined;
+  let isError = false;
+  let turns = 0;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.type === "thread.started" && typeof event.thread_id === "string") sessionId = event.thread_id;
+      if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") result = event.item.text;
+      if (event.type === "turn.completed") turns++;
+      if (event.type === "turn.failed" || event.type === "error") isError = true;
+    } catch { /* tolerate non-JSON diagnostic lines */ }
+  }
+  return { sessionId, result, isError, meta: { model: "Codex", numTurns: turns || undefined } };
+}
+
+/** Provider-specific argv. Kept pure so tests pin the native resume contracts. */
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string): string[] {
+  if (provider === "codex") {
+    return resume
+      ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, prompt]
+      : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
+  }
+  return ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json"];
+}
+
+export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): void {
+  const provider = options.provider ?? "claude";
+  const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
+  const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
+    ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
+    : prompt;
+  const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const proc = Bun.spawn(
-    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...idArgs, "--output-format", "json"],
+    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId),
     { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
-  runs.set(key, { status: "running", sessionId, proc, startedAt });
+  runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
   void (async () => {
     const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     const code = await proc.exited;
     if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
-    let result: string | undefined, isError = false, meta: RunMeta | undefined;
-    try {
-      const j = JSON.parse(out.trim());
-      result = j.result;
-      isError = Boolean(j.is_error);
-      meta = parseRunMeta(j);
-    } catch { /* non-JSON output (e.g. crash) */ }
+    let result: string | undefined, isError = false, meta: RunMeta | undefined, resolvedSessionId = sessionId;
+    if (provider === "codex") {
+      const parsed = parseCodexOutput(out);
+      result = parsed.result;
+      isError = parsed.isError;
+      meta = parsed.meta;
+      resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
+    } else {
+      try {
+        const j = JSON.parse(out.trim());
+        result = j.result;
+        isError = Boolean(j.is_error);
+        meta = parseRunMeta(j);
+      } catch { /* non-JSON output (e.g. crash) */ }
+    }
     const finishedAt = Date.now();
+    if (meta) meta.durationMs ??= finishedAt - startedAt;
+    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, meta, startedAt, finishedAt };
     runs.set(key, code === 0 && !isError
-      ? { status: "done", sessionId, result, meta, startedAt, finishedAt }
-      : { status: "error", sessionId, error: (err.trim() || result || `exit ${code}`).slice(0, 300), meta, startedAt, finishedAt });
+      ? { status: "done", ...common }
+      : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
   })();
 }
 
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
-export const runAgent = (worktreePath: string, prompt: string) => launch(worktreePath, worktreePath, prompt);
+export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions) => launch(worktreePath, worktreePath, prompt, options);
 
 /** Quick Haiku summary of a prompt into a 2–5 word title. Asks for JSON, validates it (zod), and
  *  refetches once if the reply doesn't parse to a valid title; null after that (caller falls back
@@ -139,7 +200,7 @@ export async function killByBranch(branch: string): Promise<void> {
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     for (const line of out.split("\n")) {
-      if (line.includes("claude -p") && line.includes(branch)) {
+      if ((line.includes("claude -p") || line.includes("codex exec")) && line.includes(branch)) {
         const pid = Number(line.trim().split(/\s+/)[0]);
         if (pid) try { process.kill(pid); } catch { /* already gone */ }
       }
@@ -154,7 +215,7 @@ export async function detectRunning(branches: string[]): Promise<Set<string>> {
     const proc = Bun.spawn(["ps", "-Ao", "command"], { env: process.env, stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    const lines = out.split("\n").filter((l) => l.includes("claude -p"));
+    const lines = out.split("\n").filter((l) => l.includes("claude -p") || l.includes("codex exec"));
     for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
   } catch { /* ps unavailable */ }
   return found;
@@ -162,5 +223,8 @@ export async function detectRunning(branches: string[]): Promise<Set<string>> {
 
 export const status = (key: string): RunState => {
   const r = runs.get(key);
-  return r ? { status: r.status, error: r.error, sessionId: r.sessionId, result: r.result, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt } : { status: "idle" };
+  return r ? {
+    status: r.status, error: r.error, provider: r.provider, runId: r.runId, prompt: r.prompt,
+    sessionId: r.sessionId, result: r.result, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt,
+  } : { status: "idle" };
 };

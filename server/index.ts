@@ -7,6 +7,7 @@ import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { AGENT_PROVIDERS, isAgentProvider } from "../shared/agent";
 
 /** The body for a promoted PR. A caller-supplied body wins untouched; otherwise Claude writes a
  *  filled description from the branch's diff (following the repo's PR template + conventions), and
@@ -62,14 +63,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
   if (req.method === "GET" && p === "/api/usage") {
-    return json(await usage()); // Claude subscription limits (5h + weekly); not repo-scoped
+    return json(await usage()); // Claude + Codex account usage; not repo-scoped
   }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel,
       hasRemote: await git.hasRemote(r.repoPath),
     })));
-    return json({ repos, staleHours: cfg.staleHours });
+    const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(provider)));
+    return json({ repos, staleHours: cfg.staleHours, agentProviders });
   }
   if (req.method === "POST" && p === "/api/workstreams") {
     // Haiku summarises the prompt into a short title (falls back to the first line); jitter suffix
@@ -207,6 +209,10 @@ async function api(req: Request, url: URL): Promise<Response> {
         agentResult: run.result,
         agentMeta: run.meta,
         agentStartedAt: run.startedAt,
+        agentFinishedAt: run.finishedAt,
+        agentProvider: run.provider,
+        agentRunId: run.runId,
+        agentPrompt: run.prompt,
         sessionId: run.sessionId,
         mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
       };
@@ -234,15 +240,24 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/agents/run") {
-    agent.runAgent(body.worktreePath, body.prompt);
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    agent.runAgent(body.worktreePath, body.prompt, {
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+    });
     return json({ status: "running" });
   }
-  if (req.method === "POST" && p === "/api/claude") {
-    // generic action: run Claude with a prompt in a worktree (or the repo for repo-level actions)
-    agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, body.resume);
+  if (req.method === "POST" && (p === "/api/agent" || p === "/api/claude")) {
+    // Generic action in a worktree (or the repo for repo-level actions). Keep /api/claude as a
+    // compatibility alias for older clients; it always selects Claude unless provider is explicit.
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+    });
     return json({ status: "running" });
   }
-  if (req.method === "GET" && p === "/api/claude/status") {
+  if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");
     if (!key) return json({ error: "key required" }, 400);
     return json(agent.status(key));

@@ -38,6 +38,10 @@ describe("standardized Claude status badge", () => {
     expect(text.toLowerCase()).not.toContain("claude working");
   });
 
+  test("identifies the selected provider on live and completed runs", () => {
+    expect(mount(<AgentBadge row={row({ agentStatus: "running", agentProvider: "codex" })} hasWork={false} />).textContent).toContain("Codex Running");
+  });
+
   test("done / error map to their own labels", () => {
     expect(mount(<AgentBadge row={row({ agentStatus: "done" })} hasWork={false} />).textContent).toContain("Done");
     afterEachSync();

@@ -2,6 +2,7 @@ import type { RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { MergedPr, PrDetail, PrSummary } from "../../server/gh";
 import type { Usage } from "../../server/usage";
+import type { AgentProvider, AgentTurn } from "../../shared/agent";
 
 export type LiveAgent = {
   branch: string;
@@ -11,6 +12,10 @@ export type LiveAgent = {
   agentResult?: string;
   agentMeta?: RunMeta;
   agentStartedAt?: number;
+  agentFinishedAt?: number;
+  agentProvider?: AgentProvider;
+  agentRunId?: string;
+  agentPrompt?: string;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";
 };
@@ -30,7 +35,7 @@ export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number }> => fetch("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[] }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
   createWorktree: (repo: string, prompt: string): Promise<{ branch: string; worktreePath: string; title: string }> =>
     post("/api/workstreams", { repo, prompt }),
@@ -61,8 +66,11 @@ export const api = {
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
-  runAgent: (worktreePath: string, prompt: string): Promise<{ status: string }> =>
-    post("/api/agents/run", { worktreePath, prompt }),
+  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<{ status: string }> =>
+    post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
+  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<{ status: string }> =>
+    post("/api/agent", { repo, key, prompt, ...options }),
+  // Compatibility helper for existing callers/tests while agent actions migrate to `agent`.
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>
     post("/api/claude", { repo, key, prompt, worktree, resume }),
   uploadAttachments: async (files: File[]): Promise<string[]> => {

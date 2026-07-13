@@ -46,6 +46,15 @@ afterEach(async () => {
 });
 
 describe("optimistic follow-up submit", () => {
+  test("offers Continue/New chat and the available agent providers", async () => {
+    mount();
+    await click(btn("Follow up")!);
+    const mode = container!.querySelector('[role="combobox"][aria-label="Chat mode"]');
+    const provider = container!.querySelector('[role="combobox"][aria-label="Agent provider"]');
+    expect(mode?.textContent).toContain("Continue");
+    expect(provider?.textContent).toContain("Claude");
+  });
+
   test("closes the box immediately on send and clears the draft on success", async () => {
     mount();
     await click(btn("Follow up")!);

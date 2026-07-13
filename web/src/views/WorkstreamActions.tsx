@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, type Row,
+  merge, promote, resolveConflicts, sendSlack, staleHours, toggleFollow, useAgentProviders, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { agentLabel, type AgentMode, type AgentProvider } from "../../../shared/agent";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -16,7 +18,7 @@ import {
 // One organised action menu for every actionable workstream (open PR or local branch). Actions are
 // grouped: promote/merge at top, then a PR submenu (every PR-scoped action — draft toggle, resolve
 // conflicts, fix CI, add preview, copy link — see workstream.prMenuActions), an Agent submenu
-// (Claude-driven work + Copy worktree path; the Copy CLI command lives on the card's copy menu)
+// (provider-neutral agent work + Copy worktree path; Copy CLI lives on the card's copy menu)
 // and a Slack submenu. Keeps the card header uncluttered — the
 // contextual state lives in badges, so the menu doesn't need per-item spinners.
 // localStorage key for a row's in-progress follow-up draft; whether one exists also drives
@@ -71,7 +73,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="soft" disabled={submitting} onClick={() => setComposing((v) => !v)}>
+        <Button size="sm" variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)}>
           {submitting && <Loader2 className="size-4 animate-spin" />}Follow up
         </Button>
         {/* Second-class, lane-contextual action right after Follow up. */}
@@ -129,7 +131,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
 
             <DropdownMenuSeparator />
 
-            {/* Agent — Claude-driven work; resolve conflicts lives here only for a local branch (no PR) */}
+            {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
@@ -206,6 +208,10 @@ export function FollowUpComposer(
   { row, onClose, onFail, onSubmitting }: { row: Row; onClose: () => void; onFail: (msg: string) => void; onSubmitting: (busy: boolean) => void },
 ) {
   const key = followUpDraftKey(row);
+  const providers = useAgentProviders();
+  const [provider, setProvider] = useState<AgentProvider>(row.agentProvider ?? providers[0] ?? "claude");
+  const [mode, setMode] = useState<AgentMode>("continue");
+  useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
   return (
     <ChatComposer
       autoFocus
@@ -214,7 +220,24 @@ export function FollowUpComposer(
       // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
       // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
       history={row.followUps}
-      placeholder="Follow-up for the agent (resumes its session)…  (⌘+Enter)"
+      placeholder={mode === "continue" ? "Continue this work…  (⌘+Enter)" : "Start a new chat in this worktree…  (⌘+Enter)"}
+      leading={
+        <div className="flex items-center">
+          <Select value={mode} onValueChange={(v) => setMode(v as AgentMode)}>
+            <SelectTrigger aria-label="Chat mode" className="text-muted-foreground hover:bg-accent h-8 w-24 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="continue">Continue</SelectItem>
+              <SelectItem value="new">New chat</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
+            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent h-8 w-24 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      }
       // Optimistic submit: close the box the instant you send (launching the agent takes a few
       // seconds — ensureWorktree + upload). The draft stays persisted, so a failed launch reopens
       // it with the same prompt; a success drops it. `onSubmitting` drives the Follow up button's
@@ -224,7 +247,7 @@ export function FollowUpComposer(
         onSubmitting(true);
         // followUp records the sent prompt in enrichment before it can fail, so the local draft is
         // safe to drop as soon as the send is handed off (a failed launch reopens the box from it).
-        try { await followUp(row, instruction, images); clearDraft(key); }
+        try { await followUp(row, instruction, images, { provider, mode }); clearDraft(key); }
         catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
         finally { onSubmitting(false); }
       }}

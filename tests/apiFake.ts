@@ -30,23 +30,27 @@ export const apiFake = {
   // When set, api.previews rejects with it — the unreachable-endpoint path (e.g. a self-preview
   // whose bridge predates the /api/previews route and 404s).
   previewsError: null as null | string,
-  // Prompts passed to api.claude (active-following fires agent actions through it) — tests assert
+  // Prompts passed to the agent APIs (active-following fires agent actions through them) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
-  // When set, api.claude rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
+  agentLaunches: [] as { key: string; prompt: string; provider: "claude" | "codex"; resume?: string; history?: unknown[]; handoffFrom?: "claude" | "codex" }[],
+  // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
   // (e.g. the Follow up button's spinner) while the launch is still running.
   holdClaude: false,
   releaseClaude: null as null | (() => void),
-  // Claude usage served by api.usage (the header meter) — null hides the widget (default).
-  usageData: null as null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra?: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  // Provider usage served by api.usage (the header meter) — null hides the widget (default).
+  usageData: null as null | {
+    claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
+    codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
+  },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
   api: {
-    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24 }),
+    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex"] }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },
@@ -55,7 +59,9 @@ mock.module("@/api", () => ({
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
     createWorktree: () =>
       new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; }),
-    runAgent: async () => { apiFake.calls.push("runAgent"); return { status: "ok" }; },
+    runAgent: async (_worktree: string, prompt: string, provider: "claude" | "codex" = "claude") => {
+      apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider }); return { status: "ok" };
+    },
     uploadAttachments: async () => [],
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {
       apiFake.calls.push(`discard:${branch}`); if (branch) apiFake.worktrees.delete(branch); return { ok: true };
@@ -74,6 +80,13 @@ mock.module("@/api", () => ({
     },
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
+      if (apiFake.claudeError) throw new Error(apiFake.claudeError);
+      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
+      return { status: "ok" };
+    },
+    agent: async (_repo: string, key: string, prompt: string, options: { provider?: "claude" | "codex"; resume?: string; history?: unknown[]; handoffFrom?: "claude" | "codex" } = {}) => {
+      apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
+      apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom });
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
       if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
       return { status: "ok" };

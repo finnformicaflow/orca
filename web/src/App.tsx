@@ -5,7 +5,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
-import type { ExtraUsage, Usage } from "../../server/usage";
+import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
 import { Board } from "./views/Board";
 import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
@@ -85,9 +85,8 @@ function RepoFilter() {
   );
 }
 
-// Claude subscription limits (top-right): how much of the 5-hour rolling window and the weekly
-// allowance you've burned, à la the CLI statusline. Polls the bridge (`/api/usage`) each minute;
-// renders nothing when you're not on a Claude.ai plan / not logged in (the endpoint returns null).
+// Provider usage (top-right): two compact terminal-bar groups, side by side.
+// Polls the bridge every five minutes and keeps the last successful snapshot on transient failures.
 function UsageMeter() {
   const [usage, setUsage] = useState<Usage | null>(null);
   useEffect(() => {
@@ -101,15 +100,12 @@ function UsageMeter() {
     return () => clearInterval(t);
   }, []);
   if (!usage) return null;
-  // A statusline, à la the CLI: monospace, dim labels, coloured figures — no boxes/badges. A trailing
-  // divider (only rendered with the stats, so no lone line when usage is hidden) sets it apart from
-  // the controls to its right.
   return (
     <>
-      <div className="text-muted-foreground hidden items-center gap-3 font-mono text-xs sm:flex" aria-label="Claude usage limits">
-        <UsageStat label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
-        <UsageStat label="wk" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
-        {usage.extra && <SpendStat extra={usage.extra} />}
+      <div className="text-muted-foreground hidden items-center gap-3 font-mono text-[10px] leading-tight sm:flex" aria-label="Agent usage limits">
+        {usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
+        {usage.claude && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
+        {usage.codex && <CodexUsageGroup usage={usage.codex} />}
       </div>
       {/* Full button-height footprint (h-8) but the visible line is inset by py-1 — reads as the
           same height as the buttons, just a touch shorter. */}
@@ -117,6 +113,28 @@ function UsageMeter() {
         <div className="bg-border h-full w-px" />
       </div>
     </>
+  );
+}
+
+function ClaudeUsageGroup({ usage }: { usage: ClaudeUsage }) {
+  return (
+    <div className="flex items-center gap-2" aria-label="Claude usage limits">
+      <span className="opacity-70">claude</span>
+      <UsageStat provider="Claude" label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
+      <UsageStat provider="Claude" label="1w" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
+      {usage.extra && <SpendStat extra={usage.extra} />}
+    </div>
+  );
+}
+
+function CodexUsageGroup({ usage }: { usage: CodexUsage }) {
+  return (
+    <div className="flex items-center gap-2" aria-label="Codex usage limits">
+      <span className="opacity-70">codex</span>
+      {usage.windows.map((window, index) => (
+        <UsageStat key={`${window.label}-${index}`} provider="Codex" label={window.label === "wk" ? "1w" : window.label} pct={window.utilization} resetsAt={window.resetsAt} />
+      ))}
+    </div>
   );
 }
 
@@ -146,14 +164,16 @@ export function untilReset(resetsAt: string | null, now = Date.now()): string | 
   return hrs < 24 ? `${hrs}h` : `${Math.round(hrs / 24)}d`;
 }
 
-function UsageStat({ label, pct, resetsAt }: { label: string; pct: number; resetsAt: string | null }) {
+function UsageStat({ provider, label, pct, resetsAt }: { provider: string; label: string; pct: number; resetsAt: string | null }) {
   const left = untilReset(resetsAt);
   const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
+  const filled = Math.max(0, Math.min(5, Math.round(pct / 20)));
   return (
-    <span title={`Claude ${label} usage: ${pct}%${resets}`}>
+    <span className="whitespace-nowrap" title={`${provider} ${label} usage: ${pct}%${resets}`}>
       {label}{" "}
       <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>
-        {pct}%{left && <span className="ml-0.5 font-normal opacity-60">({left})</span>}
+        <span aria-hidden="true">{"█".repeat(filled)}{"░".repeat(5 - filled)}</span>{" "}{pct}%
+        {left && <span className="ml-0.5 font-normal opacity-60">({left})</span>}
       </span>
     </span>
   );
@@ -169,13 +189,13 @@ function formatMoney(minor: number, exponent: number, currency: string): string 
   }
 }
 
-// Pay-as-you-go spend this month as actual money (£/$/€…), coloured by how much of the cap is used.
+// Pay-as-you-go spend this month as actual money, coloured by how much of the cap is used.
 function SpendStat({ extra }: { extra: ExtraUsage }) {
   const used = formatMoney(extra.usedMinor, extra.exponent, extra.currency);
   const limit = formatMoney(extra.limitMinor, extra.exponent, extra.currency);
   return (
-    <span title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
-      extra <span className={`font-semibold ${ZONE_TEXT[usageZone(extra.utilization)]}`}>{used}</span>
+    <span className="whitespace-nowrap" title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
+      $ <span className={`font-semibold ${ZONE_TEXT[usageZone(extra.utilization)]}`}>{used}</span>
     </span>
   );
 }

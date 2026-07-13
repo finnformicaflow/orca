@@ -2,6 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiStatus, Mergeable, ReviewStatus } from "../../server/gh";
+export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
 // are conditions shown as badges on the card, never lanes — so an approval moves a PR
@@ -133,15 +134,6 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     "Then work autonomously. Commit your changes with clear messages as you go.",
     NO_PR,
   ].join("\n");
-}
-
-/** Terminal command to open Claude in the worktree, resuming the headless run's session. When we
- *  know the exact session id, `--resume` it; otherwise `--continue` picks up the most recent
- *  conversation in that directory (so history still opens after a bridge restart drops the id, and
- *  it just starts fresh when the worktree genuinely has no prior session). */
-export function attachCommand(ws: { worktreePath: string; sessionId?: string }): string {
-  const base = `cd "${ws.worktreePath}" && claude`;
-  return ws.sessionId ? `${base} --resume ${ws.sessionId}` : `${base} --continue`;
 }
 
 /** Instruction for Claude to send a Slack message about a PR (Claude has Slack access). */
