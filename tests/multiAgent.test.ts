@@ -143,7 +143,7 @@ describe("cross-provider continuation", () => {
     expect(saved.transcript).toEqual([{
       id: "run-1", provider: "claude", prompt: "build it", response: "built it",
       structured: { outcome: "Built it", verification: ["bun test passed"], decisions: [], remaining: [], commits: ["abc Built"] },
-      startedAt: 10, finishedAt: 20,
+      sessionId: "c-1", startedAt: 10, finishedAt: 20,
     }]);
   });
 
@@ -179,13 +179,15 @@ describe("cross-provider continuation", () => {
 
   test("Run again includes bounded prior failure and unfinished verification evidence", async () => {
     await store.rerunAgent({
-      ...row, agentError: "command exited 1", agentOutcome: {
+      ...row, prompt: "Implement the original cache behavior verbatim.", agentError: "command exited 1", agentOutcome: {
         outcome: "Implemented most of it", verification: ["bun test failed in cache.test.ts", "lint passed"],
         decisions: [], remaining: ["Repair cache eviction"], commits: [],
       },
     });
     const prompt = apiFake.agentLaunches.at(-1)!.prompt;
     expect(prompt).toContain("Previous error:\ncommand exited 1");
+    expect(prompt).toContain("Original instruction:\nImplement the original cache behavior verbatim.");
+    expect(prompt).toContain("Completed work:\nImplemented most of it");
     expect(prompt).toContain("Repair cache eviction");
     expect(prompt).toContain("bun test failed");
     expect(prompt.length).toBeLessThan(8_000);
@@ -225,5 +227,28 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
     expect(launch.handoffFrom).toBe("claude");
     expect(launch.key).toBe("/wt/feat");
+  });
+
+  test("Codex resets by observed native turn count without inventing context occupancy", async () => {
+    const transcript: AgentTurn[] = Array.from({ length: 12 }, (_, i) => ({
+      id: `c-${i}`, provider: "codex", prompt: `turn ${i}`, response: "done", sessionId: "codex-session",
+    }));
+    await store.followUp({ ...row, agentProvider: "codex", sessionId: "codex-session", transcript }, "continue", [], { provider: "codex" });
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.resume).toBeUndefined();
+    expect(launch.handoffFrom).toBe("codex");
+    expect(launch.history).toEqual(transcript);
+    expect(launch.prompt).not.toContain("% context");
+  });
+
+  test("Antigravity resets after repeated observed failures but otherwise resumes natively", async () => {
+    const failed: AgentTurn[] = Array.from({ length: 3 }, (_, i) => ({
+      id: `a-${i}`, provider: "agy", prompt: `turn ${i}`, response: "failed", sessionId: "agy-session", failed: true,
+    }));
+    await store.followUp({ ...row, agentProvider: "agy", sessionId: "agy-session", transcript: failed }, "repair", [], { provider: "agy" });
+    expect(apiFake.agentLaunches.at(-1)!.resume).toBeUndefined();
+
+    await store.followUp({ ...row, agentProvider: "agy", sessionId: "agy-session", transcript: failed.slice(0, 2) }, "continue", [], { provider: "agy" });
+    expect(apiFake.agentLaunches.at(-1)!.resume).toBe("agy-session");
   });
 });

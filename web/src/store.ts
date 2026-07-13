@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
-  resolveConflictsPrompt, slackMessage, titleFromPrompt, withAttachments,
+  rerunFailedPrompt, resolveConflictsPrompt, slackMessage, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 
@@ -136,6 +136,7 @@ async function refreshOnce() {
             id: a.agentRunId, provider: a.agentProvider, prompt: a.agentPrompt,
             response: a.agentResult ?? a.agentError ?? "The run ended without a final response.",
             structured: a.agentOutcome,
+            sessionId: a.sessionId, failed: a.agentStatus === "error" ? true : undefined,
             startedAt: a.agentStartedAt, finishedAt: a.agentFinishedAt,
           }].slice(-25);
         }
@@ -373,17 +374,7 @@ export async function undoDraft(draft: OptimisticDraft) {
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
-  const failedVerification = latest?.verification.filter((v) => /fail|error|non[- ]?zero|did not pass/i.test(v)).slice(0, 5) ?? [];
-  const evidence = [
-    row.agentError ? `Previous error:\n${row.agentError.slice(0, 1_000)}` : "",
-    latest?.remaining.length ? `Unfinished items:\n${latest.remaining.slice(0, 8).map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
-    failedVerification.length ? `Previous verification failures:\n${failedVerification.map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
-  ].filter(Boolean).join("\n\n");
-  const instruction = [
-    "Inspect the current worktree and continue or repair the unfinished task. Continue from current files and commits; do not restart. Do not repeat completed work.",
-    evidence,
-  ].filter(Boolean).join("\n\n");
-  return launchOnRow(row, row.worktreePath, followUpPrompt(instruction), row.agentProvider ?? "claude").then(refresh);
+  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), row.agentProvider ?? "claude").then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
@@ -511,12 +502,18 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
   const from = current.agentProvider ?? row.agentProvider;
   const sessionId = current.sessionId ?? row.sessionId;
   const contextTooFull = typeof row.agentMeta?.contextPct === "number" && row.agentMeta.contextPct >= CONTEXT_RESET_PCT;
-  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull;
+  const transcript = current.transcript ?? row.transcript ?? [];
+  const nativeTurns = sessionId ? transcript.filter((turn) => turn.provider === provider && turn.sessionId === sessionId) : [];
+  const repeatedFailures = nativeTurns.slice(-3).length === 3 && nativeTurns.slice(-3).every((turn) => turn.failed);
+  // Codex reports token usage but not its context-window occupancy; Antigravity exposes neither.
+  // Reset only on observable bounded history, never a fabricated percentage.
+  const portableReset = provider !== "claude" && (nativeTurns.length >= 12 || repeatedFailures);
+  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull && !portableReset;
   const receipt = await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,
     resume: sameNativeSession ? sessionId : undefined,
-    history: !sameNativeSession ? (current.transcript ?? row.transcript ?? []) : undefined,
+    history: !sameNativeSession ? transcript : undefined,
     handoffFrom: !sameNativeSession ? from : undefined,
   });
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.

@@ -11,7 +11,7 @@ import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, launchPrompt,
+  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
   outcomePrBody, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -45,6 +45,10 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   const launch = launchPrompt({ title: "T", branch, prompt: "do it" });
   expect(launch).toContain("Commit");
   expect(launch).toContain("Do NOT open a pull request");
+  expect(launch).toContain("Inspect the repository instructions first");
+  expect(launch).toContain("Treat any existing changes as user-owned");
+  expect(launch).toContain("## Outcome");
+  expect(launch.indexOf("do it")).toBeLessThan(launch.indexOf("Inspect the repository instructions"));
   expect(followUpPrompt("tweak the copy")).toContain("Do NOT open a pull request");
   // pasted-image paths are appended for the agent to Read; no images = prompt unchanged
   expect(withAttachments("go", [])).toBe("go");
@@ -53,6 +57,22 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   // unknown id → --continue the most recent conversation in that dir (never a bare, fresh `claude`).
   expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123 --permission-mode auto`);
   expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue --permission-mode auto`);
+});
+
+test("explicit prompt builders preserve action intent without natural-language inference", () => {
+  const follow = followUpPrompt("Only adjust the cache timeout.");
+  expect(follow.startsWith("Only adjust the cache timeout.")).toBe(true);
+  expect(follow).toContain("incremental follow-up");
+  expect(follow.match(/## Outcome/g)?.length).toBe(1);
+
+  const investigate = investigateReportPrompt("Find why cache misses spike.");
+  expect(investigate).toContain("Investigate and report only");
+  expect(investigate).toContain("Do not modify files");
+  expect(investigate).not.toContain("Commit and push");
+
+  expect(resolveCiPrompt({ prNumber: 1, branch: "x" })).toContain("explicit Fix CI action");
+  expect(addressReviewPrompt({ prNumber: 1, branch: "x" })).toContain("explicit Address review action");
+  expect(resolveConflictsPrompt({ branch: "x" }, "main")).toContain("explicit resolve-conflicts action");
 });
 
 test("titleFromModelJson: zod-validates the title field, tolerates fences/prose, rejects junk/sentences", () => {

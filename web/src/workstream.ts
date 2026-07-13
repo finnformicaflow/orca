@@ -132,7 +132,9 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
   return withOutcomeContract([
     promptFor(ws),
     "",
-    `This worktree was created from the latest \`${base}\`. Work autonomously. Commit your changes with clear messages as you go.`,
+    `This worktree was created from the latest \`${base}\`. Inspect the repository instructions first.`,
+    "Implement only the requested scope. Treat any existing changes as user-owned. Verify in proportion to risk.",
+    "Work autonomously and commit your changes with clear messages as you go. Do not perform unrelated refactors.",
     NO_PR,
   ].join("\n"));
 }
@@ -159,7 +161,26 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return withOutcomeContract(`${instruction}\n\nWork autonomously. Commit and push your changes.\n${NO_PR}`);
+  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
+}
+
+/** Explicit read-only action. Orca chooses this builder; natural-language classification never does. */
+export function investigateReportPrompt(instruction: string): string {
+  return withOutcomeContract(`${instruction}\n\nInvestigate and report only. Treat files and git as authoritative. Do not modify files, commit, or push.`);
+}
+
+/** Explicit failed-work continuation with compact prior evidence. */
+export function rerunFailedPrompt(input: { original?: string; error?: string; outcome?: AgentOutcome }): string {
+  const failedVerification = input.outcome?.verification.filter((v) => /fail|error|non[- ]?zero|did not pass/i.test(v)).slice(0, 5) ?? [];
+  const bounded = (value: string) => value.slice(0, 4_000);
+  const evidence = [
+    input.original ? `Original instruction:\n${bounded(input.original)}` : "",
+    input.outcome?.outcome ? `Completed work:\n${bounded(input.outcome.outcome)}` : "",
+    input.error ? `Previous error:\n${input.error.slice(0, 1_000)}` : "",
+    input.outcome?.remaining.length ? `Unfinished items:\n${input.outcome.remaining.slice(0, 8).map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
+    failedVerification.length ? `Previous verification failures:\n${failedVerification.map((v) => `- ${v.slice(0, 500)}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+  return followUpPrompt(["Inspect the current worktree and continue or repair the unfinished task. Continue from current files and commits; do not restart. Do not repeat completed work.", evidence].filter(Boolean).join("\n\n"));
 }
 
 /** Deterministic PR markdown grounded in the parsed run outcome and actual git summary. */
@@ -254,11 +275,13 @@ export function withAttachments(prompt: string, imagePaths: string[]): string {
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
 export function resolveConflictsPrompt(ws: Pick<Workstream, "branch">, base: string): string {
-  return [
+  return withOutcomeContract([
+    "This is an explicit resolve-conflicts action. Change only what is required to integrate the branches.",
     `Branch \`${ws.branch}\` has merge conflicts with \`${base}\`.`,
     `Merge \`origin/${base}\` into it, resolve every conflict preserving both sides' intent,`,
     `then commit and push. (Rebase + \`--force-with-lease\` is fine if cleaner.)`,
-  ].join(" ");
+    NO_PR,
+  ].join(" "));
 }
 
 /** Instruction for Claude to fix failing CI on a PR in its worktree, then push. */
@@ -268,12 +291,13 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, fai
     item.url ? `Link: ${item.url}` : "",
     item.excerpt ? `Failed-step excerpt:\n\`\`\`text\n${item.excerpt}\n\`\`\`` : "Logs are not available through GitHub; use the check link and repository state.",
   ].filter(Boolean).join("\n")).join("\n\n")}` : failingChecks.length ? ` Failing checks reported by Orca: ${failingChecks.join(", ")}.` : "";
-  return [
+  return withOutcomeContract([
+    "This is an explicit Fix CI action. Preserve unrelated completed work.",
     `CI is failing on PR #${ws.prNumber} (branch \`${ws.branch}\`).${evidence}`,
     `Treat the logs as evidence, confirm the root cause in the repository, and do not blindly modify tests.`,
     `Fix the root cause and run the relevant tests/build locally to confirm,`,
     `then commit and push.`,
-  ].join(" ");
+  ].join(" "));
 }
 
 /** Instruction for Claude to address a PR's requested changes / review comments, then push. */
@@ -289,12 +313,13 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     : feedback.length
     ? `\n\nOrca already collected this recent external feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return [
+  return withOutcomeContract([
+    "This is an explicit Address review action. Preserve unrelated completed work.",
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
     threads.length ? `Address every supplied unresolved thread.` : `Read them (\`gh pr view ${ws.prNumber} --comments\`) and address every point.`,
     `Verify the code around each referenced line because line numbers can drift. Run relevant checks, then commit and push.`,
     `Report any thread that cannot be resolved and why.${evidence}`,
-  ].join(" ");
+  ].join(" "));
 }
 
 // Active PR following: when a card is "followed", Orca watches its polled status and launches the

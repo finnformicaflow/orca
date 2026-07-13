@@ -15,6 +15,8 @@ export type AgentTurn = {
   prompt: string;
   response: string;
   structured?: AgentOutcome;
+  sessionId?: string;
+  failed?: boolean;
   startedAt?: number;
   finishedAt?: number;
 };
