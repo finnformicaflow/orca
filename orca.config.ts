@@ -1,6 +1,8 @@
 import type { OrcaConfig } from "./server/config";
 
-const DEV = "/Users/finnformica/Documents/dev";
+// Base directory holding the managed repos. Override per-machine with ORCA_DEV_ROOT so this
+// file doesn't need editing on a new laptop; defaults to ~/Documents.
+const DEV = process.env.ORCA_DEV_ROOT ?? `${process.env.HOME}/Documents`;
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {
