@@ -226,15 +226,15 @@ function NewDraft() {
         </p>
       )}
       leading={
-        <div className="flex items-center">
+        <div className="flex min-w-0 w-full items-center overflow-hidden">
           <Select value={active} onValueChange={setRepo}>
-            <SelectTrigger className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 flex-1 border-0 shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
-            <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground h-8 w-28 border-0 text-xs shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 max-w-24 flex-1 border-0 shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>

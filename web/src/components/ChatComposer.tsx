@@ -137,14 +137,14 @@ export function ChatComposer({
           onKeyDown={onKey}
           onPaste={onPaste}
         />
-        <div className="flex items-center gap-1 p-2 pt-0">
-          {leading}
+        <div data-slot="chat-composer-toolbar" className="flex min-w-0 items-center gap-1 p-2 pt-0">
+          {leading && <div data-slot="chat-composer-leading" className="min-w-0 flex-1 overflow-hidden">{leading}</div>}
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { addImages(e.target.files ?? []); e.target.value = ""; }} />
-          <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach images" onClick={() => fileRef.current?.click()}>
-            <Paperclip className="size-4" />
-          </Button>
-          <div className="ml-auto flex items-center gap-1">
+          <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
+            <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach images" onClick={() => fileRef.current?.click()}>
+              <Paperclip className="size-4" />
+            </Button>
             <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (⌘+Enter)" onClick={() => void submit()}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
             </Button>

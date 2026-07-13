@@ -4,14 +4,18 @@ import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const Select = SelectPrimitive.Root;
-const SelectValue = SelectPrimitive.Value;
 
-function SelectTrigger({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Trigger>) {
+function SelectValue({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Value>) {
+  return <SelectPrimitive.Value data-slot="select-value" className={className} {...props} />;
+}
+
+function SelectTrigger({ className, children, size = "default", ...props }: React.ComponentProps<typeof SelectPrimitive.Trigger> & { size?: "default" | "sm" }) {
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "border-input focus-visible:ring-ring/50 flex h-8 w-fit cursor-pointer items-center justify-between gap-2 rounded-md border bg-transparent px-2 text-sm whitespace-nowrap outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
+        "border-input focus-visible:ring-ring/50 flex min-w-0 w-fit cursor-pointer items-center justify-between overflow-hidden rounded-md border bg-transparent whitespace-nowrap outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&_svg]:shrink-0",
+        size === "sm" ? "h-7 gap-1 px-1.5 text-xs [&_svg]:size-3.5" : "h-8 gap-2 px-2 text-sm [&_svg]:size-4",
         className,
       )}
       {...props}
