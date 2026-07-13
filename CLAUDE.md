@@ -34,6 +34,15 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   start a dev server. The bridge does *only* what the browser
   physically can't, plus proxies GitHub so tokens never touch the browser. It is not a
   "backend" in the app sense — no DB, no business state.
+- **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) is the one on-disk exception —
+  and it is NOT app state.** It holds run **leases** (`server/lease.ts`: pid/runId/provider/
+  branch/expiry, so a restarted bridge rejects overlapping agent runs and reclaims dead/expired
+  ones) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
+  `/api/diagnostics` — never prompts, responses, logs, or secrets). Both are **advisory**: if a
+  file is missing or unreadable, degrade (reclaim the lease, drop the record) — never refuse a
+  legitimate run. Kept OUT of every worktree so they can't leak into a diff or PR body. Leases
+  persist across shutdown by design (the bridge leaves agents running; the lease is how the
+  restart sees them). Live system + git + gh + localStorage remain the only sources of truth.
 - **Source of truth is the LIVE system, not localStorage.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
   (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
