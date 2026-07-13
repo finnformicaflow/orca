@@ -1,6 +1,6 @@
-// E2E for the "Copy worktree" item added to the Actions → Agent submenu: it copies the branch's
-// worktree path to the clipboard (adopting a worktree first if there isn't one). Copy CLI moved off
-// to the card's copy menu (see cardDetails.test.tsx). Driven against the preloaded fake api
+// E2E for the copy shortcuts in Actions → Agent: Copy worktree copies the branch path, while Copy
+// CLI copies the active provider's resumable command. Copy CLI also remains in the card's top-right
+// copy menu (see cardDetails.test.tsx). Driven against the preloaded fake api
 // (tests/apiFake.ts) and rendered into a real DOM. See WorkstreamActions.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
@@ -29,10 +29,10 @@ const row: store.Row = { repo: "r", hasRemote: false, branch: "feat", title: "Fe
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-function mount() {
+function mount(workstream: store.Row = row) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  act(() => { root = createRoot(container!); root.render(<WorkstreamActions row={row} />); });
+  act(() => { root = createRoot(container!); root.render(<WorkstreamActions row={workstream} />); });
 }
 
 afterEach(async () => {
@@ -58,5 +58,17 @@ describe("Copy worktree action", () => {
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe("/wt/feat");
+  });
+
+  test("Actions → Agent → Copy CLI copies the exact Codex resume command", async () => {
+    mount({ ...row, agentProvider: "codex", sessionId: "codex-123" });
+    await pointerdown([...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Actions"))!);
+    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Agent")!;
+    await pointerdown(agentTrigger);
+    await click(agentTrigger);
+    const item = menuitem("Copy CLI")!;
+    expect(item).not.toBeNull();
+    await click(item);
+    expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive codex-123');
   });
 });
