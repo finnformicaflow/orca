@@ -139,7 +139,7 @@ describe("provider adapters", () => {
     // No id but the provider has run here → continue its latest; `fresh` → start a new session.
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude" })).toBe('cd "/wt/x" && claude --continue --permission-mode auto');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", fresh: true })).toBe('cd "/wt/x" && claude --permission-mode auto');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true })).toBe('cd "/wt/x" && codex');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true })).toBe('cd "/wt/x" && codex --dangerously-bypass-approvals-and-sandbox');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", fresh: true })).toBe('cd "/wt/x" && agy --dangerously-skip-permissions');
   });
 });
@@ -255,7 +255,7 @@ describe("cross-provider continuation", () => {
     // provider and not a `--continue` that errors with "no conversation to continue".
     const switched = store.resumeTarget({ ...row, preferredProvider: "codex" });
     expect(switched).toEqual({ provider: "codex", fresh: true });
-    expect(attachCommand({ worktreePath: "/wt/feat", ...switched })).toBe('cd "/wt/feat" && codex');
+    expect(attachCommand({ worktreePath: "/wt/feat", ...switched })).toBe('cd "/wt/feat" && codex --dangerously-bypass-approvals-and-sandbox');
     // The Claude counterpart of the reported bug: fresh Claude start, never `claude --continue`.
     const toClaude = store.resumeTarget({ ...row, agentProvider: "codex", sessionId: "codex-1", transcript: [{ id: "t", provider: "codex", prompt: "x", response: "y", sessionId: "codex-1" }], preferredProvider: "claude" });
     expect(attachCommand({ worktreePath: "/wt/feat", ...toClaude })).toBe('cd "/wt/feat" && claude --permission-mode auto');

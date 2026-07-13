@@ -138,7 +138,7 @@ export function attachCommand(input: { worktreePath: string; provider?: AgentPro
   // resume command excludes those by default; include them explicitly or it opens a blank session.
   if (input.provider === "codex") {
     if (input.sessionId) return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId}`;
-    return input.fresh ? `${cd}codex` : `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last`;
+    return input.fresh ? `${cd}codex --dangerously-bypass-approvals-and-sandbox` : `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last`;
   }
   if (input.provider === "agy") {
     if (input.sessionId) return `${cd}agy --conversation ${input.sessionId} --dangerously-skip-permissions`;
