@@ -83,6 +83,8 @@ describe("Copy worktree action", () => {
     const item = menuitem("Copy message")!;
     expect(item).not.toBeNull();
     await click(item);
-    expect(copied).toBe("[#7 Feat](https://github.com/acme/app/pull/7)");
+    // No ClipboardItem in the test DOM → the plain-text fallback: title + URL, NOT the Markdown link
+    // that pasted literally into Slack. (The rich text/html flavour is unit-tested via slackClipboard.)
+    expect(copied).toBe("#7 Feat\nhttps://github.com/acme/app/pull/7");
   });
 });

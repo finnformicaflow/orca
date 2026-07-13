@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
-  rerunFailedPrompt, resolveConflictsPrompt, slackMessage, titleFromPrompt, withAttachments,
+  rerunFailedPrompt, resolveConflictsPrompt, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 
@@ -695,9 +695,22 @@ export async function closePr(row: Row) {
 }
 
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
-  const message = slackMessage({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind);
-  try { await navigator.clipboard.writeText(message); }
-  catch { window.prompt(`Copy the Slack ${kind === "bump" ? "bump" : "message"}:`, message); }
+  const { text, html } = slackClipboard({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind);
+  // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text, then a
+  // prompt, on browsers without ClipboardItem or when the write is blocked.
+  try {
+    if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([text], { type: "text/plain" }),
+      })]);
+    } else {
+      await navigator.clipboard.writeText(text);
+    }
+  } catch {
+    try { await navigator.clipboard.writeText(text); }
+    catch { window.prompt(`Copy the Slack ${kind === "bump" ? "bump" : "message"}:`, text); }
+  }
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
 }
 

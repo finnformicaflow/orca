@@ -148,6 +148,27 @@ export function slackMessage(
   return kind === "bump" ? `Bump:\n${link}` : link;
 }
 
+const escapeHtml = (s: string): string =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Clipboard content for the Slack copy, in two flavours. Slack's composer doesn't parse Markdown on
+ *  paste — `[#7 Foo](url)` shows up literally — but it DOES honour a rich `text/html` clipboard
+ *  flavour, so an `<a>` pastes as a proper hyperlink with the title as the link text (paste and done,
+ *  no Cmd+Shift+F). The `text/plain` fallback is for targets that ignore HTML: the title on one line,
+ *  the raw URL on the next (which Slack autolinks anyway). */
+export function slackClipboard(
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  kind: "notify" | "bump",
+): { text: string; html: string } {
+  const label = `#${ws.prNumber} ${ws.title}`;
+  const url = ws.prUrl ?? "";
+  const anchor = url ? `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>` : escapeHtml(label);
+  const plain = url ? `${label}\n${url}` : label;
+  return kind === "bump"
+    ? { text: `Bump:\n${plain}`, html: `Bump:<br>${anchor}` }
+    : { text: plain, html: anchor };
+}
+
 /** Legacy instruction form retained for consumers that explicitly want an agent to post it. */
 export function slackPrompt(
   ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,

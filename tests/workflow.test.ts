@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
-  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, validPrDescription, withAttachments, type WorkstreamState,
+  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackClipboard, slackMessage, slackPrompt, slugifyBranch, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -340,6 +340,17 @@ test("W6 slack-notify-and-bump: bump only fires past the stale window", () => {
   expect(bump).toContain("Bump:\n[#7 Add X](u)");
   expect(slackMessage({ title: "Add X", prNumber: 7, prUrl: "u" }, "notify")).toBe("[#7 Add X](u)");
   expect(slackMessage({ title: "Add X", prNumber: 7, prUrl: "u" }, "bump")).toBe("Bump:\n[#7 Add X](u)");
+
+  // Clipboard flavours for the Copy Slack action: an <a> so Slack pastes a real hyperlink (title as
+  // link text), plus a plain fallback that is NOT Markdown (which pastes literally and "looks strange").
+  const clip = slackClipboard({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "notify");
+  expect(clip.html).toBe('<a href="https://gh/pr/7">#7 Add X</a>');
+  expect(clip.text).toBe("#7 Add X\nhttps://gh/pr/7");
+  const bumpClip = slackClipboard({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "bump");
+  expect(bumpClip.html).toBe('Bump:<br><a href="https://gh/pr/7">#7 Add X</a>');
+  expect(bumpClip.text).toBe("Bump:\n#7 Add X\nhttps://gh/pr/7");
+  // A title with HTML-special characters can't break the anchor markup.
+  expect(slackClipboard({ title: "A & B <ok>", prNumber: 1, prUrl: "u" }, "notify").html).toBe('<a href="u">#1 A &amp; B &lt;ok&gt;</a>');
 });
 
 test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears once mergeable", async () => {
