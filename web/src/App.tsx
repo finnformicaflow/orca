@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
@@ -85,19 +85,43 @@ function RepoFilter() {
   );
 }
 
+/** Merge a fresh usage poll over the last-known one, PER PROVIDER: a provider that came back null
+ *  this poll (a transient failure, or not fetched yet) keeps its previous value instead of blanking
+ *  the bar. Pure, so the belt is testable without a timer. */
+export function mergeUsage(prev: Usage | null, next: Usage): Usage {
+  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null };
+}
+
 // Provider usage (top-right): two compact terminal-bar groups, side by side.
-// Polls the bridge every five minutes and keeps the last successful snapshot on transient failures.
+// Poll cadence self-adjusts: fast until both bars are filled, then every five minutes.
 function UsageMeter() {
   const [usage, setUsage] = useState<Usage | null>(null);
+  // Mirror the state for synchronous merge/completeness checks inside the poll loop (setState's
+  // updater can't reliably report back). Not for rendering — that reads `usage`.
+  const latest = useRef<Usage | null>(null);
   useEffect(() => {
-    // Keep the last value on a transient null/failure (the endpoint rate-limits) so the widget
-    // doesn't flicker out; the server also serves last-good, this is the client-side belt.
-    const load = () => void api.usage().then((u) => { if (u) setUsage(u); }).catch(() => {});
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let fastTries = 0;
+    const SLOW = 5 * 60_000, FAST = 15_000, MAX_FAST = 4;
+    const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(load, ms); };
+    // Merge PER PROVIDER: a single provider's transient null — Claude's endpoint rate-limiting, the
+    // Codex app-server handshake timing out, or a just-restarted bridge with a cold cache — must not
+    // drop the OTHER provider that's already showing. Until both are present, retry soon (bounded) so
+    // a cold start fills the bar in seconds; once complete, settle into the slow cadence.
+    const load = () => void api.usage().then((u) => {
+      if (cancelled) return;
+      let complete = false;
+      if (u) {
+        const next = mergeUsage(latest.current, u);
+        latest.current = next;
+        setUsage(next);
+        complete = Boolean(next.claude && next.codex);
+      }
+      schedule(complete || ++fastTries > MAX_FAST ? SLOW : FAST);
+    }).catch(() => schedule(FAST));
     load();
-    // Every 5 min — the 5h/weekly windows move slowly, so this is plenty fresh and stays well clear
-    // of the endpoint's rate limit (which used to null the widget out).
-    const t = setInterval(load, 5 * 60_000);
-    return () => clearInterval(t);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, []);
   if (!usage) return null;
   return (

@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { App, untilReset } from "@/App";
+import { App, mergeUsage, untilReset } from "@/App";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -109,6 +109,17 @@ test("shows Claude and Codex terminal bars side by side without lifetime tokens"
   expect(codex?.textContent ?? "").toContain("█░░░░");
   expect(all.textContent).not.toContain("total");
   expect(claude.compareDocumentPosition(codex!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("mergeUsage keeps a provider's last-good value when a poll returns it null", () => {
+  const claude = { fiveHour: { utilization: 40, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null }, extra: null };
+  const codex = { windows: [{ label: "wk", durationMinutes: 10_080, utilization: 20, resetsAt: null }] };
+  // Both present, then a poll where Codex transiently failed → Codex is retained, not dropped.
+  expect(mergeUsage({ claude, codex }, { claude, codex: null })).toEqual({ claude, codex });
+  // Cold start filling in over two polls: Claude first, then Codex, each preserved.
+  expect(mergeUsage({ claude, codex: null }, { claude: null, codex })).toEqual({ claude, codex });
+  // Nothing seen yet → just the new snapshot.
+  expect(mergeUsage(null, { claude, codex: null })).toEqual({ claude, codex: null });
 });
 
 test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => {
