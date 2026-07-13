@@ -49,7 +49,7 @@ test("shows the time left till each window resets", async () => {
   const in90m = new Date(Date.now() + 90 * 60_000).toISOString();
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: in90m }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
   await mount();
-  expect(meter()?.textContent ?? "").toContain("1.5h"); // 90m shows as 1.5h (half-hour granularity)
+  expect(meter()?.textContent ?? "").toContain("1h 30m");
 });
 
 test("untilReset formats the countdown compactly, null when unknown/past", () => {
@@ -57,10 +57,11 @@ test("untilReset formats the countdown compactly, null when unknown/past", () =>
   expect(untilReset(null, now)).toBeNull();
   expect(untilReset("2026-07-08T11:00:00Z", now)).toBeNull(); // already past
   expect(untilReset("2026-07-08T12:45:00Z", now)).toBe("45m");
-  expect(untilReset("2026-07-08T13:30:00Z", now)).toBe("1.5h"); // half-hour granularity
-  expect(untilReset("2026-07-08T13:20:00Z", now)).toBe("1.5h"); // 1h20m rounds to nearest half-hour
+  expect(untilReset("2026-07-08T13:30:00Z", now)).toBe("1h 30m");
+  expect(untilReset("2026-07-08T13:15:00Z", now)).toBe("1h 15m");
   expect(untilReset("2026-07-08T14:00:00Z", now)).toBe("2h");
   expect(untilReset("2026-07-10T12:00:00Z", now)).toBe("2d");
+  expect(untilReset("2026-07-15T14:00:00Z", now)).toBe("7d 2h");
 });
 
 test("renders nothing when no provider usage is available", async () => {
