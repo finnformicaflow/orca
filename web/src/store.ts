@@ -381,7 +381,11 @@ export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabe
   if (!row.worktreePath) return;
   if (row.hasRemote) {
     const outcome = row.agentOutcome ?? row.transcript?.slice().reverse().find((turn) => turn.structured)?.structured;
-    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, provider: row.agentProvider ?? "claude", outcome, draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
+    await api.promote(row.repo, {
+      worktreePath: row.worktreePath, branch: row.branch, title: row.title,
+      provider: row.agentProvider ?? "claude", task: row.prompt, sessionId: row.sessionId, outcome,
+      draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel,
+    });
   } else {
     patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready
   }

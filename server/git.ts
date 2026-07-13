@@ -250,10 +250,9 @@ export async function readPrTemplate(worktreePath: string): Promise<string | nul
   return null;
 }
 
-/** The description Orca gives a new PR when the caller didn't supply one: the repo's PR template if
- *  it has one (its own guidelines), else a "what changed" overview from the branch's commits — so a
- *  promoted PR never opens with a blank body. A caller-provided body wins untouched. Used as the
- *  deterministic fallback when the AI writer (see agent.describePr) is unavailable. */
+/** Legacy deterministic body helper: the repo's template when present, otherwise commit subjects.
+ *  Promote now requires the implementation agent to fill the template; this remains useful to
+ *  callers that explicitly need a non-AI summary. */
 export async function resolvePrBody(worktreePath: string, base: string, provided?: string): Promise<string> {
   if (provided?.trim()) return provided;
   const template = await readPrTemplate(worktreePath);

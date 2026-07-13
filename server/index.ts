@@ -6,32 +6,37 @@ import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
-import { mergeSafe, outcomePrBody, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
 import { AGENT_PROVIDERS, isAgentProvider, type AgentOutcome } from "../shared/agent";
 
-/** The body for a promoted PR. A caller-supplied body wins untouched; otherwise the selected provider writes a
- *  filled description from the branch's diff (following the repo's PR template + conventions), and
- *  we fall back to the deterministic body (`resolvePrBody`) if the AI is unavailable or the branch
- *  has nothing to describe. */
-async function resolvePrDescription(provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string, provided?: string, outcome?: AgentOutcome): Promise<string> {
-  if (provided !== undefined) return provided;
+/** Resume the implementation agent to write a template-exact PR body from its full context and the
+ *  final git state. A self-contained fresh call is the fallback when the native session is missing
+ *  or stale; invalid/empty output blocks creation instead of silently opening a title-only PR. */
+async function resolvePrDescription(
+  provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string,
+  input: { provided?: string; outcome?: AgentOutcome; sessionId?: string; task?: string },
+): Promise<string> {
+  if (input.provided?.trim()) return input.provided.trim();
+  if (input.provided !== undefined) throw new Error("PR description cannot be empty");
   const [template, summary, diff] = await Promise.all([
     git.readPrTemplate(worktreePath),
     git.changeSummary(worktreePath, base),
     git.worktreeDiff(worktreePath, base),
   ]);
   const { commits } = summary;
-  if (outcome && diff.trim()) {
-    const deterministic = outcomePrBody({ outcome, template, summary });
-    if (deterministic) return deterministic;
+  if (!diff.trim()) throw new Error("Can't create a PR description because the branch has no changes from its base");
+  const prompt = prDescriptionPrompt({
+    template, diff, task: input.task, outcome: input.outcome,
+    commits: commits.map((c) => c.subject).reverse(), // oldest-first
+  });
+  let description = await agent.describePr(provider, prompt, { cwd: worktreePath, resume: input.sessionId });
+  if (!validPrDescription(description ?? "", template) && input.sessionId) {
+    description = await agent.describePr(provider, prompt); // stale native session → self-contained same-provider retry
   }
-  if (diff.trim()) {
-    const ai = await agent.describePr(
-      provider, prDescriptionPrompt({ template, diff, commits: commits.map((c) => c.subject).reverse() }), // oldest-first
-    );
-    if (ai?.trim()) return ai.trim();
+  if (!validPrDescription(description ?? "", template)) {
+    throw new Error(`The ${provider} agent did not return a complete PR description. No PR was created; retry Promote.`);
   }
-  return git.resolvePrBody(worktreePath, base, ""); // no diff / AI failed → never blank
+  return description!.trim();
 }
 
 const cfg = await loadConfig();
@@ -103,12 +108,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/promote") {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    // No body from the UI → the selected provider writes a filled description from the diff (its PR template +
-    // conventions), falling back to a template/commit summary, so the PR never opens blank.
+    // No body from the UI → resume the implementation agent to fill the repo template (or Orca's
+    // default) from its full task context and the final diff. Invalid output blocks PR creation.
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
     const [, prBody] = await Promise.all([
       git.pushBranch(body.worktreePath, body.branch), // the branch must exist on origin for `gh pr create`
-      resolvePrDescription(provider, body.worktreePath, base, body.body, body.outcome),
+      resolvePrDescription(provider, body.worktreePath, base, {
+        provided: body.body, outcome: body.outcome, sessionId: body.sessionId, task: body.task,
+      }),
     ]);
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,

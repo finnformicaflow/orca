@@ -42,7 +42,7 @@ export const api = {
     post("/api/workstreams", { repo, prompt, provider }),
   summary: (repo: string, worktree: string): Promise<ChangeSummary> =>
     fetch(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
-  promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; outcome?: AgentOutcome; body?: string; draft?: boolean; addPreviewLabel?: boolean }): Promise<{ number: number; url: string }> =>
+  promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string; draft?: boolean; addPreviewLabel?: boolean }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
   autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),

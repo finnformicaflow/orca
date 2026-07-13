@@ -37,7 +37,7 @@ export const apiFake = {
   claudePrompts: [] as string[],
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
   titleProviders: [] as AgentProvider[],
-  promotions: [] as { provider: AgentProvider; outcome?: AgentOutcome; body?: string }[],
+  promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
   reviewEvidenceError: null as string | null,
   ciEvidenceData: [] as CiFailureEvidence[],
@@ -67,7 +67,7 @@ mock.module("@/api", () => ({
     ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); return { ok: true }; },
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
-    promote: async (_repo: string, input: { provider: AgentProvider; outcome?: AgentOutcome; body?: string }) => {
+    promote: async (_repo: string, input: { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }) => {
       apiFake.promotions.push(input); return { number: 42, url: "https://example.test/42" };
     },
     createWorktree: (_repo: string, _prompt: string, provider: AgentProvider = "claude") => {

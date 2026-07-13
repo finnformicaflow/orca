@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
-  outcomePrBody, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -209,50 +209,50 @@ test("W3c AI PR description: prompt is built from the diff, template + conventio
   const commits = ["add a", "add b"];
 
   // No template → the AI is told the section set to fill, plus the diff + commits (oldest-first).
-  const noTemplate = prDescriptionPrompt({ template: null, diff, commits });
+  const noTemplate = prDescriptionPrompt({
+    template: null, diff, commits, task: "Stop duplicate charges for retried requests.",
+    outcome: { outcome: "Added idempotent charging.", verification: ["bun test — passed"], decisions: ["Reused request IDs"], remaining: [], commits: [] },
+  });
   expect(noTemplate).toContain("What & Why");
+  expect(noTemplate).toContain("Key Decisions & Trade-offs");
   expect(noTemplate).toContain("What Changed");
+  expect(noTemplate).toContain("Stop duplicate charges");
+  expect(noTemplate).toContain("Reused request IDs");
+  expect(noTemplate).toContain("bun test — passed");
   expect(noTemplate).toContain(diff);
   expect(noTemplate.indexOf("- add a")).toBeLessThan(noTemplate.indexOf("- add b")); // oldest-first
   // Safety conventions are always in the prompt.
   expect(noTemplate).toContain("breaking change");
-  expect(noTemplate).toContain("TOP");
+  expect(noTemplate).toContain("top of What & Why");
   expect(noTemplate).toContain("Never include secrets");
   expect(noTemplate).toContain("ONLY the description"); // no preamble → body is drop-in for gh
 
   // A template is embedded verbatim so the AI fills the repo's own sections.
   const withTemplate = prDescriptionPrompt({ template: "## Risks\n\n## Rollout", diff, commits });
   expect(withTemplate).toContain("## Risks\n\n## Rollout");
-  expect(withTemplate).toContain("Fill in EVERY section");
+  expect(withTemplate).toContain("fill every");
 
   // A huge diff is truncated so it can't blow the context window (commits still included).
-  const huge = prDescriptionPrompt({ template: null, diff: "x".repeat(20_000), commits });
+  const huge = prDescriptionPrompt({ template: null, diff: "x".repeat(40_000), commits });
   expect(huge).toContain("(diff truncated)");
-  expect(huge.length).toBeLessThan(20_000);
+  expect(huge.length).toBeLessThan(40_000);
 });
 
-test("W3d structured outcome produces a deterministic, git-grounded PR body", () => {
-  const body = outcomePrBody({
-    outcome: {
-      outcome: "Added bounded cache eviction.", verification: ["bun test — passed"],
-      decisions: ["Kept the public API stable"], remaining: ["Monitor hit rate"], commits: ["untrusted outcome commit"],
-    },
-    template: "## Repository checklist\n\n- [x] Tested",
-    summary: {
-      commits: [{ hash: "abcdef123456", subject: "Add cache eviction" }],
-      files: [{ path: "src/cache.ts" }],
-    },
-  })!;
-  expect(body).toContain("Added bounded cache eviction.");
-  expect(body).toContain("bun test — passed");
-  expect(body).toContain("abcdef12 Add cache eviction");
-  expect(body).toContain("`src/cache.ts`");
-  expect(body).toContain("Repository checklist");
-  expect(body).not.toContain("untrusted outcome commit");
-  expect(outcomePrBody({
-    outcome: { outcome: "", verification: [], decisions: [], remaining: [], commits: ["only prose"] },
-    summary: { commits: [], files: [] },
-  })).toBeUndefined();
+test("W3d generated PR descriptions must fill the exact six-section template", () => {
+  const body = [
+    "## What & Why", "Fix duplicate charges on retries.",
+    "## Key Decisions & Trade-offs", "Reuse the request ID rather than add a new table.",
+    "## How It Works", "The charge path now forwards an idempotency key.",
+    "## What Changed", "- Backend: pass the request ID to the provider.",
+    "## Testing & Verification", "- `bun test` — passed.",
+    "## Risks & Follow-ups", "None.",
+  ].join("\n\n");
+  expect(validPrDescription(body, null)).toBe(true);
+  expect(validPrDescription("Fix duplicate charges", null)).toBe(false); // title-only
+  expect(validPrDescription(DEFAULT_PR_TEMPLATE, null)).toBe(false); // empty guidance template
+  expect(validPrDescription(body.replace("None.", "<!-- None. -->"), null)).toBe(false);
+  expect(validPrDescription(body.replace("## How It Works", "## Implementation"), null)).toBe(false);
+  expect(validPrDescription("## Risks\n\nLow.\n\n## Rollout\n\nNo special steps.", "## Risks\n\n## Rollout")).toBe(true);
 });
 
 test("W3e review evidence returns bounded unresolved human inline threads", async () => {

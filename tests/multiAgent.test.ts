@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, oneShotCommand, parseAgyOutput, parseCodexOutput } from "../server/agent";
+import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, oneShotCommand, parseAgyOutput, parseCodexOutput, prDescriptionCommand } from "../server/agent";
 import { attachCommand, handoffPrompt, parseAgentOutcome, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -57,6 +57,18 @@ describe("provider adapters", () => {
     expect(oneShotCommand("agy", "/wt/x", "body", "description")[0]).toBe("agy");
     expect(oneShotCommand("codex", "/wt/x", "body", "description")).not.toContain("claude");
     expect(oneShotCommand("agy", "/wt/x", "body", "description")).not.toContain("claude");
+  });
+
+  test("PR descriptions resume each provider's native session in read-only mode", () => {
+    expect(prDescriptionCommand("claude", "/wt/x", "body", "c-1")).toEqual([
+      "claude", "-p", "body", "--resume", "c-1", "--tools", "", "--disable-slash-commands", "--output-format", "json",
+    ]);
+    expect(prDescriptionCommand("codex", "/wt/x", "body", "x-1")).toEqual([
+      "codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', "x-1", "body",
+    ]);
+    expect(prDescriptionCommand("agy", "/wt/x", "body", "a-1")).toEqual([
+      "agy", "--conversation", "a-1", "-p", "body", "--mode", "plan", "--dangerously-skip-permissions",
+    ]);
   });
 
   test("parses the Codex JSONL session id and final agent message", () => {
@@ -155,10 +167,10 @@ describe("cross-provider continuation", () => {
     expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"].transcript).toEqual(prior);
   });
 
-  test("promotion passes the latest useful structured outcome for deterministic reuse", async () => {
+  test("promotion passes the active native session, task, and latest outcome to the PR writer", async () => {
     const outcome = { outcome: "Built it", verification: ["bun test passed"], decisions: [], remaining: [], commits: [] };
-    await store.promote({ ...row, hasRemote: true, agentOutcome: outcome });
-    expect(apiFake.promotions.at(-1)).toMatchObject({ provider: "claude", outcome });
+    await store.promote({ ...row, prompt: "Build the cache", hasRemote: true, agentOutcome: outcome });
+    expect(apiFake.promotions.at(-1)).toMatchObject({ provider: "claude", sessionId: "claude-session", task: "Build the cache", outcome });
   });
 
   test("same-provider Continue uses the native session id", async () => {

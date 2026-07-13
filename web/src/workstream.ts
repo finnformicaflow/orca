@@ -183,28 +183,6 @@ export function rerunFailedPrompt(input: { original?: string; error?: string; ou
   return followUpPrompt(["Inspect the current worktree and continue or repair the unfinished task. Continue from current files and commits; do not restart. Do not repeat completed work.", evidence].filter(Boolean).join("\n\n"));
 }
 
-/** Deterministic PR markdown grounded in the parsed run outcome and actual git summary. */
-export function outcomePrBody(input: {
-  outcome: AgentOutcome;
-  template?: string | null;
-  summary: { commits: { hash: string; subject: string }[]; files: { path: string }[] };
-}): string | undefined {
-  const o = input.outcome;
-  if (!o.outcome && !o.verification.length && !o.decisions.length && !o.remaining.length) return undefined;
-  const sections: string[] = [];
-  if (input.template?.trim()) sections.push(input.template.trim(), "---");
-  if (o.outcome) sections.push("## Summary", "", o.outcome);
-  if (input.summary.commits.length || input.summary.files.length) {
-    sections.push("## Changes", "");
-    if (input.summary.commits.length) sections.push(...input.summary.commits.slice().reverse().map((c) => `- ${c.hash.slice(0, 8)} ${c.subject}`));
-    if (input.summary.files.length) sections.push("", `Files changed: ${input.summary.files.slice(0, 20).map((f) => `\`${f.path}\``).join(", ")}${input.summary.files.length > 20 ? ", …" : ""}`);
-  }
-  if (o.verification.length) sections.push("## Testing", "", ...o.verification.map((v) => `- ${v}`));
-  if (o.decisions.length) sections.push("## Implementation notes", "", ...o.decisions.map((v) => `- ${v}`));
-  if (o.remaining.length) sections.push("## Known issues / follow-ups", "", ...o.remaining.map((v) => `- ${v}`));
-  return sections.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
 /** A sensible default PR description when the repo has no PR template: a "what changed" overview
  *  built from the branch's commit subjects (pass them oldest-first). No commits yet → a minimal
  *  placeholder, so a promoted PR is never blank. */
@@ -217,46 +195,92 @@ export function defaultPrBody(commitSubjects: string[]): string {
 
 // Cap the diff we paste into the description prompt so a big branch can't blow the context window;
 // the AI still sees the commit subjects + the leading (usually most telling) hunks.
-const PR_DIFF_LIMIT = 12_000;
+const PR_DIFF_LIMIT = 30_000;
 
-/** Build the instruction handed to a headless Claude to WRITE a PR description from the branch's
+/** Orca's reviewer-oriented fallback when a managed repo has no checked-in PR template. */
+export const DEFAULT_PR_TEMPLATE = [
+  "## What & Why",
+  "",
+  "<!-- Explain the user-facing problem, motivation, and who benefits. -->",
+  "",
+  "## Key Decisions & Trade-offs",
+  "",
+  "<!-- Explain non-obvious choices, alternatives considered, constraints, and accepted trade-offs. -->",
+  "",
+  "## How It Works",
+  "",
+  "<!-- Summarize the technical approach and any API, data-model, or migration changes. -->",
+  "",
+  "## What Changed",
+  "",
+  "<!-- Give a file-level summary grouped by area and distinguish core changes from mechanical ones. -->",
+  "",
+  "## Testing & Verification",
+  "",
+  "<!-- List commands and manual checks actually run, their results, and relevant untested edges. -->",
+  "",
+  "## Risks & Follow-ups",
+  "",
+  "<!-- State risks, migration or rollback concerns, limitations, deferred work, and review hotspots. -->",
+].join("\n");
+
+const prHeadings = (template: string): string[] =>
+  [...template.matchAll(/^##\s+(.+?)\s*$/gm)].map((match) => match[1]!.trim());
+
+/** A generated body must fill the template exactly, rather than paste empty guidance or a title. */
+export function validPrDescription(body: string, template?: string | null): boolean {
+  const expected = prHeadings(template?.trim() || DEFAULT_PR_TEMPLATE);
+  const actual = prHeadings(body);
+  if (!body.trim() || body.includes("<!--") || actual.join("\n") !== expected.join("\n")) return false;
+  if (expected.length === 0) return body.trim().length >= 80;
+  const matches = [...body.matchAll(/^##\s+(.+?)\s*$/gm)];
+  return matches.every((match, index) => {
+    const start = match.index! + match[0].length;
+    const end = matches[index + 1]?.index ?? body.length;
+    return body.slice(start, end).replace(/<!--[^]*?-->/g, "").trim().length > 0;
+  });
+}
+
+/** Build the instruction handed to the selected implementation agent to write a PR description from the branch's
  *  actual diff — this is what turns a promoted PR from "raw template / commit list" into a filled,
  *  reviewer-ready description. When the repo ships a PR template, every section is filled from the
  *  diff (HTML comments are guidance, not text to keep); otherwise a sensible section set is used.
  *  Breaking changes go at the TOP; secrets are never emitted. The reply is the finished markdown. */
-export function prDescriptionPrompt(input: { template?: string | null; diff: string; commits: string[] }): string {
+export function prDescriptionPrompt(input: { template?: string | null; diff: string; commits: string[]; task?: string; outcome?: AgentOutcome }): string {
   const commits = input.commits.map((s) => s.trim()).filter(Boolean);
   const diff = input.diff.length > PR_DIFF_LIMIT
     ? `${input.diff.slice(0, PR_DIFF_LIMIT)}\n…(diff truncated)…`
     : input.diff;
-  const template = input.template?.trim();
-  const structure = template
-    ? [
-        "Write the body using this repo's PR template. Fill in EVERY section from the actual diff",
-        "(treat the HTML comments as guidance, not literal text to keep):",
-        "",
-        template,
-      ].join("\n")
-    : [
-        "Structure the body with these sections, each filled from the actual diff:",
-        "- **What & Why** — the user-facing problem and the motivation behind the change.",
-        "- **How It Works** — the approach; call out any API / data-model / migration changes.",
-        "- **What Changed** — file-level, grouped by area (backend / frontend / shared / migrations).",
-        "- **Testing & Verification** — the suites run and any manual steps.",
-        "- **Risks & Follow-ups**.",
-      ].join("\n");
+  const template = input.template?.trim() || DEFAULT_PR_TEMPLATE;
+  const outcome = input.outcome;
+  const evidence = outcome ? [
+    outcome.outcome ? `Completed work:\n${outcome.outcome}` : "",
+    outcome.decisions.length ? `Recorded decisions:\n${outcome.decisions.map((v) => `- ${v}`).join("\n")}` : "",
+    outcome.verification.length ? `Verification reported by the implementation agent:\n${outcome.verification.map((v) => `- ${v}`).join("\n")}` : "",
+    outcome.remaining.length ? `Known remaining work:\n${outcome.remaining.map((v) => `- ${v}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n") : "";
   return [
-    "Write a pull-request description for the change below. Output ONLY the description as",
+    "Write the final pull-request description for the completed branch. You are the implementation",
+    "agent for this work, so use the task and decisions already in this conversation as context.",
+    "Output ONLY the description as",
     "GitHub-flavored markdown — no preamble, no sign-off, no code fence wrapping the whole thing.",
     "",
-    structure,
+    "Use the following template exactly. Keep every level-two heading in the same order, fill every",
+    "section, remove all HTML guidance comments, and do not add or rename level-two headings:",
+    "",
+    template,
     "",
     "Rules:",
-    "- Put any breaking change, removed feature, or disabled workflow at the TOP, with the affected",
-    "  users and the migration/rollback path. Never bury it.",
+    "- Put any breaking change, removed feature, or disabled workflow at the top of What & Why,",
+    "  including affected users and the migration or rollback path.",
     "- Describe only code changes. Never include secrets — no credentials, tokens, env vars, or",
     "  internal hostnames.",
-    "- Be concise and specific; base every claim on the diff, not guesses.",
+    "- Be specific and give a reviewer with no prior context enough information to understand intent.",
+    "- Base implementation claims on the final diff. Use only checks actually reported as run.",
+    "- Never invent an issue, Slack thread, PRD, user request, test result, or link. If context was not",
+    "  supplied, omit the claim or say that no link/context was supplied where the section requires it.",
+    input.task?.trim() ? `\nOriginal task:\n${input.task.trim()}` : "",
+    evidence ? `\nImplementation outcome:\n${evidence}` : "",
     commits.length ? `\nCommits (oldest first):\n${commits.map((c) => `- ${c}`).join("\n")}` : "",
     "",
     "Diff:",

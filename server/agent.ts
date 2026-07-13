@@ -259,20 +259,39 @@ export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: str
   return ["agy", "-p", prompt, "--mode", "plan", "--dangerously-skip-permissions"];
 }
 
+/** Read-only argv for asking the implementation agent's native session to author its PR body. */
+export function prDescriptionCommand(provider: AgentProvider, cwd: string, prompt: string, resume: string): string[] {
+  if (provider === "claude") {
+    return ["claude", "-p", prompt, "--resume", resume, "--tools", "", "--disable-slash-commands", "--output-format", "json"];
+  }
+  if (provider === "codex") {
+    return ["codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', resume, prompt];
+  }
+  return ["agy", "--conversation", resume, "-p", prompt, "--mode", "plan", "--dangerously-skip-permissions"];
+}
+
+async function commandOutput(provider: AgentProvider, args: string[], cwd: string, purpose: "title" | "description"): Promise<string> {
+  const proc = Bun.spawn(args, { cwd, env: process.env, stdout: "pipe", stderr: "pipe" });
+  const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  const code = await proc.exited;
+  clearTimeout(timeout);
+  if (code !== 0) throw new Error(err.trim() || `${provider} ${purpose} failed`);
+  if (provider === "claude") return String(JSON.parse(out.trim()).result ?? "");
+  if (provider === "codex") {
+    const parsed = parseCodexOutput(out);
+    if (parsed.isError) throw new Error(`${provider} ${purpose} failed`);
+    return parsed.result ?? "";
+  }
+  return out.trim();
+}
+
 async function oneShot(provider: AgentProvider, prompt: string, purpose: "title" | "description"): Promise<string> {
   // The prompt is self-contained. Running outside the repo avoids loading project instructions and
   // prevents Antigravity's helper conversation from replacing the worktree's resumable session.
   const cwd = tmpdir();
   const args = oneShotCommand(provider, cwd, prompt, purpose);
-  const proc = Bun.spawn(args, { cwd, env: process.env, stdout: "pipe", stderr: "ignore" });
-  const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
-  const out = await new Response(proc.stdout).text();
-  const code = await proc.exited;
-  clearTimeout(timeout);
-  if (code !== 0) throw new Error(`${provider} ${purpose} failed`);
-  if (provider === "claude") return String(JSON.parse(out.trim()).result ?? "");
-  if (provider === "codex") return parseCodexOutput(out).result ?? "";
-  return out.trim();
+  return commandOutput(provider, args, cwd, purpose);
 }
 
 /** Quick selected-provider summary of a prompt into a 2–5 word title. Asks for JSON, validates it, and
@@ -283,15 +302,16 @@ export function summarize(provider: AgentProvider, prompt: string): Promise<stri
   return retryTitle(ask, 2); // validate + refetch once on a bad reply
 }
 
-/** Write a PR description from a prepared prompt via an isolated selected-provider one-shot.
- *  Returns the generated markdown, or null on any error / empty reply so the
- *  caller can fall back to the deterministic `resolvePrBody`. */
-export async function describePr(provider: AgentProvider, prompt: string): Promise<string | null> {
+/** Ask the implementation agent's native session for the PR body. Without a resumable session,
+ *  use an isolated same-provider call with the self-contained prompt. */
+export async function describePr(provider: AgentProvider, prompt: string, options?: { cwd?: string; resume?: string }): Promise<string | null> {
   try {
-    const body = (await oneShot(provider, prompt, "description")).trim();
+    const body = (options?.resume
+      ? await commandOutput(provider, prDescriptionCommand(provider, options.cwd ?? tmpdir(), prompt, options.resume), options.cwd ?? tmpdir(), "description")
+      : await oneShot(provider, prompt, "description")).trim();
     return body || null;
   } catch {
-    return null; // selected provider missing / bad output — caller falls back locally
+    return null;
   }
 }
 
