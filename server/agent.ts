@@ -5,6 +5,7 @@
 import { retryTitle } from "./title";
 import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
 import * as lease from "./lease";
+import * as ledger from "./ledger";
 import { homedir, tmpdir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
@@ -45,7 +46,18 @@ export type LaunchOptions = {
   handoffFrom?: AgentProvider;
   timeoutMs?: number;
   branch?: string; // recorded on the lease so restart recovery can match by branch
+  action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
+  evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
 };
+
+/** How this run reuses prior context — derived from what the launch options carry, so the ledger's
+ *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
+export function runMode(options: LaunchOptions): ledger.RunMode {
+  if (options.resume) return "resume";
+  if (options.handoffFrom) return options.handoffFrom === (options.provider ?? "claude") ? "reset" : "handoff";
+  if (options.history?.length) return "handoff";
+  return "fresh";
+}
 
 /** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
  *  trailing date, then prettify). */
@@ -244,7 +256,16 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
-    runs.set(key, code === 0 && !isError
+    const ok = code === 0 && !isError;
+    ledger.record({
+      kind: "run", provider, action: options.action, mode: runMode(options),
+      status: ok ? "done" : "error", durationMs: meta?.durationMs ?? finishedAt - startedAt,
+      inputTokens: meta?.inputTokens, outputTokens: meta?.outputTokens,
+      cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
+      evidenceChars: options.evidenceChars,
+      errorKind: ok ? undefined : code !== 0 ? "nonzero-exit" : "agent-error",
+    });
+    runs.set(key, ok
       ? { status: "done", ...common }
       : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
   })();

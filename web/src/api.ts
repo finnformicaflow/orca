@@ -69,9 +69,9 @@ export const api = {
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
-  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string } = {}): Promise<LaunchReceipt> =>
+  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>
     post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
-  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string } = {}): Promise<LaunchReceipt> =>
+  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>
     post("/api/agent", { repo, key, prompt, ...options }),
   // Compatibility helper for existing callers/tests while agent actions migrate to `agent`.
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>

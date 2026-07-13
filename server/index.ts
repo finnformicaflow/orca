@@ -6,6 +6,7 @@ import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
+import * as ledger from "./ledger";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
 import { AGENT_PROVIDERS, isAgentProvider, type AgentOutcome } from "../shared/agent";
 
@@ -16,7 +17,8 @@ async function resolvePrDescription(
   provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string,
   input: { provided?: string; outcome?: AgentOutcome; sessionId?: string; task?: string },
 ): Promise<string> {
-  if (input.provided?.trim()) return input.provided.trim();
+  // A user-supplied body avoids a model call entirely.
+  if (input.provided?.trim()) { ledger.record({ kind: "pr-description", provider, status: "done", prDescriptionAvoided: true }); return input.provided.trim(); }
   if (input.provided !== undefined) throw new Error("PR description cannot be empty");
   const [template, summary, diff] = await Promise.all([
     git.readPrTemplate(worktreePath),
@@ -29,13 +31,18 @@ async function resolvePrDescription(
     template, diff, task: input.task, outcome: input.outcome,
     commits: commits.map((c) => c.subject).reverse(), // oldest-first
   });
+  const startedAt = Date.now();
+  let usedResume = Boolean(input.sessionId); // resuming the native session avoids a fresh full-context call
   let description = await agent.describePr(provider, prompt, { cwd: worktreePath, resume: input.sessionId });
   if (!validPrDescription(description ?? "", template) && input.sessionId) {
+    usedResume = false;
     description = await agent.describePr(provider, prompt); // stale native session → self-contained same-provider retry
   }
   if (!validPrDescription(description ?? "", template)) {
+    ledger.record({ kind: "pr-description", provider, status: "error", durationMs: Date.now() - startedAt, prDescriptionAvoided: false, errorKind: "invalid-description" });
     throw new Error(`The ${provider} agent did not return a complete PR description. No PR was created; retry Promote.`);
   }
+  ledger.record({ kind: "pr-description", provider, status: "done", durationMs: Date.now() - startedAt, prDescriptionAvoided: usedResume });
   return description!.trim();
 }
 
@@ -273,6 +280,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
+      action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
@@ -285,6 +293,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
+      action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);

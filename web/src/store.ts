@@ -349,7 +349,7 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch })
+        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch, action: "launch" })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -374,7 +374,7 @@ export async function undoDraft(draft: OptimisticDraft) {
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
-  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), row.agentProvider ?? "claude").then(refresh);
+  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), row.agentProvider ?? "claude", { action: "rerun" }).then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
@@ -495,13 +495,13 @@ export async function followUp(
   patchEnrich(row.repo, row.branch, { followUps });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
-  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? row.agentProvider ?? "claude");
+  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? row.agentProvider ?? "claude", { action: "followup" });
   await refresh();
 }
 
 /** Continue natively when possible; otherwise create a target-provider session with portable history. */
 const CONTEXT_RESET_PCT = 80;
-async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider) {
+async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, ledger: { action?: string; evidenceChars?: number } = {}) {
   const current = enrichOf(row.repo, row.branch);
   const from = current.agentProvider ?? row.agentProvider;
   const sessionId = current.sessionId ?? row.sessionId;
@@ -517,6 +517,8 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     worktree,
     provider,
     branch: row.branch,
+    action: ledger.action,
+    evidenceChars: ledger.evidenceChars,
     resume: sameNativeSession ? sessionId : undefined,
     history: !sameNativeSession ? transcript : undefined,
     handoffFrom: !sameNativeSession ? from : undefined,
@@ -571,7 +573,7 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
 
 export async function resolveConflicts(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), row.agentProvider ?? "claude");
+  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), row.agentProvider ?? "claude", { action: "conflict" });
   await refresh();
 }
 
@@ -583,7 +585,7 @@ export function addPreviewLabel(row: Row) {
 export async function fixCi(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
   const details = row.prNumber ? await api.ciEvidence(row.repo, row.prNumber).catch(() => []) : [];
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), row.agentProvider ?? "claude");
+  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), row.agentProvider ?? "claude", { action: "ci", evidenceChars: JSON.stringify(details).length });
   await refresh();
 }
 
@@ -601,6 +603,7 @@ export async function addressReview(row: Row, manual = true) {
     row, wt,
     addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked),
     row.agentProvider ?? "claude",
+    { action: "review", evidenceChars: JSON.stringify(marked).length },
   );
   if (threads?.length) {
     patchEnrich(row.repo, row.branch, { handedReviewThreadIds: [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100) });
