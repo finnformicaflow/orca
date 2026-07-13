@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, agySessionIdFromCache, parseAgyOutput, parseCodexOutput } from "../server/agent";
+import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, parseAgyOutput, parseCodexOutput } from "../server/agent";
 import { attachCommand, handoffPrompt, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -42,6 +42,12 @@ describe("provider adapters", () => {
     expect(agentCommand("agy", "/wt/x", "go", "a-1")).toEqual([
       "agy", "--conversation", "a-1", "-p", "go", "--dangerously-skip-permissions",
     ]);
+  });
+
+  test("recognizes new and resumed Antigravity runs for recovered status and stopping", () => {
+    expect(isHeadlessAgentProcess("123 /usr/local/bin/agy -p implement feat-1 --dangerously-skip-permissions")).toBe(true);
+    expect(isHeadlessAgentProcess("123 agy --conversation a-1 -p continue feat-1 --dangerously-skip-permissions")).toBe(true);
+    expect(isHeadlessAgentProcess("123 agy --conversation a-1")).toBe(false);
   });
 
   test("parses the Codex JSONL session id and final agent message", () => {

@@ -265,6 +265,13 @@ export function stop(key: string): void {
   runs.delete(key);
 }
 
+/** Recognize the headless CLI forms Orca launches, including resumed Antigravity conversations. */
+export function isHeadlessAgentProcess(line: string): boolean {
+  return line.includes("claude -p")
+    || line.includes("codex exec")
+    || (/(?:^|\s)(?:\S*\/)?agy(?:\s|$)/.test(line) && /(?:^|\s)(?:-p|--print)(?:\s|$)/.test(line));
+}
+
 /** Kill a running agent by branch (via ps) — works even after a restart lost the handle. */
 export async function killByBranch(branch: string): Promise<void> {
   try {
@@ -272,7 +279,7 @@ export async function killByBranch(branch: string): Promise<void> {
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     for (const line of out.split("\n")) {
-      if ((line.includes("claude -p") || line.includes("codex exec")) && line.includes(branch)) {
+      if (isHeadlessAgentProcess(line) && line.includes(branch)) {
         const pid = Number(line.trim().split(/\s+/)[0]);
         if (pid) try { process.kill(pid); } catch { /* already gone */ }
       }
@@ -280,14 +287,14 @@ export async function killByBranch(branch: string): Promise<void> {
   } catch { /* ps unavailable */ }
 }
 
-/** Branches that currently have a live `claude -p` process (recovers status lost on restart). */
+/** Branches that currently have a live headless agent process (recovers status lost on restart). */
 export async function detectRunning(branches: string[]): Promise<Set<string>> {
   const found = new Set<string>();
   try {
     const proc = Bun.spawn(["ps", "-Ao", "command"], { env: process.env, stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    const lines = out.split("\n").filter((l) => l.includes("claude -p") || l.includes("codex exec") || l.includes("agy -p"));
+    const lines = out.split("\n").filter(isHeadlessAgentProcess);
     for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
   } catch { /* ps unavailable */ }
   return found;

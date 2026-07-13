@@ -42,6 +42,10 @@ describe("standardized Claude status badge", () => {
     const text = mount(<AgentBadge row={row({ agentStatus: "running", agentProvider: "codex" })} hasWork={false} />).textContent ?? "";
     expect(text).toContain("Running");
     expect(text).not.toContain("Codex");
+    afterEachSync();
+    const antigravity = mount(<AgentBadge row={row({ agentStatus: "running", agentProvider: "agy" })} hasWork={false} />).textContent ?? "";
+    expect(antigravity).toContain("Running");
+    expect(antigravity).not.toContain("Antigravity");
   });
 
   test("done / error map to their own labels", () => {
