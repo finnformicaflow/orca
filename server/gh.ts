@@ -28,7 +28,10 @@ export async function createPr(
   return { number, url };
 }
 
-export type PrSummary = PrStatus & { number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean; previewUrl?: string; externalFeedback: number };
+export type PrSummary = PrStatus & {
+  number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
+  previewUrl?: string; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
+};
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
 function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefined {
@@ -60,25 +63,38 @@ type RawPr = {
   number: number; title: string; headRefName: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
   autoMergeRequest?: { enabledAt?: string } | null;
-  statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
+  statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
   author?: { login?: string };
   comments?: Array<{ author?: { login?: string }; body?: string }>;
-  reviews?: Array<{ author?: { login?: string }; state?: string }>;
+  reviews?: Array<{ author?: { login?: string }; state?: string; body?: string }>;
 };
-const mapSummary = (j: RawPr): PrSummary => ({
-  number: j.number,
-  title: j.title,
-  branch: j.headRefName,
-  url: j.url,
-  state: j.state,
-  isDraft: Boolean(j.isDraft),
-  autoMergeEnabled: Boolean(j.autoMergeRequest),
-  ciStatus: rollupCi(j.statusCheckRollup ?? []),
-  reviewStatus: mapReview(j.reviewDecision ?? ""),
-  mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
-  previewUrl: j.comments ? extractPreviewUrl(j.comments) : undefined,
-  externalFeedback: countExternalFeedback(j.author?.login ?? "", j.comments, j.reviews),
-});
+const mapSummary = (j: RawPr): PrSummary => {
+  const author = j.author?.login ?? "";
+  const isOther = (login?: string) => Boolean(login) && login !== author && !login!.endsWith("[bot]");
+  const feedback = [
+    ...(j.comments ?? []).filter((x) => isOther(x.author?.login)).map((x) => x.body?.trim() ?? ""),
+    ...(j.reviews ?? []).filter((x) => isOther(x.author?.login) && (x.state === "COMMENTED" || x.state === "CHANGES_REQUESTED")).map((x) => x.body?.trim() ?? ""),
+  ].filter(Boolean).slice(-10);
+  const failingChecks = (j.statusCheckRollup ?? [])
+    .filter((check) => checkOutcome(check) === "failing")
+    .map((check) => check.name ?? check.context ?? "unnamed check");
+  return {
+    number: j.number,
+    title: j.title,
+    branch: j.headRefName,
+    url: j.url,
+    state: j.state,
+    isDraft: Boolean(j.isDraft),
+    autoMergeEnabled: Boolean(j.autoMergeRequest),
+    ciStatus: rollupCi(j.statusCheckRollup ?? []),
+    reviewStatus: mapReview(j.reviewDecision ?? ""),
+    mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
+    previewUrl: j.comments ? extractPreviewUrl(j.comments) : undefined,
+    externalFeedback: countExternalFeedback(j.author?.login ?? "", j.comments, j.reviews),
+    failingChecks: failingChecks.length ? failingChecks : undefined,
+    feedback: feedback.length ? feedback : undefined,
+  };
+};
 
 /** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI,
  *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
@@ -191,11 +207,30 @@ export const prDiff = (cwd: string, pr: number) => gh(cwd, "pr", "diff", String(
 
 export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string };
 
+type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string };
+const MERGED_TTL_MS = 15_000;
+const mergedCache = new Map<string, { at: number; rows: RawMergedPr[]; inflight?: Promise<RawMergedPr[]> }>();
+
+/** One shared merged-PR query powers both cleanup and the Done lane. */
+async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
+  const hit = mergedCache.get(cwd);
+  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
+  if (hit?.inflight) return hit.inflight;
+  const inflight = gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50",
+    "--json", "number,title,headRefName,url,mergedAt")
+    .then((raw) => {
+      const rows = JSON.parse(raw) as RawMergedPr[];
+      mergedCache.set(cwd, { at: Date.now(), rows });
+      return rows;
+    })
+    .catch((error) => { mergedCache.delete(cwd); throw error; });
+  mergedCache.set(cwd, { at: hit?.at ?? 0, rows: hit?.rows ?? [], inflight });
+  return inflight;
+}
+
 /** The current user's PRs merged today (server-local calendar day) — the Done lane. */
 export async function listMerged(cwd: string): Promise<MergedPr[]> {
-  const raw = await gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50",
-    "--json", "number,title,headRefName,url,mergedAt");
-  const arr = JSON.parse(raw) as Array<{ number: number; title: string; headRefName: string; url: string; mergedAt: string }>;
+  const arr = await mergedRows(cwd);
   const startOfToday = new Date(); // server runs on the user's machine → their locale/timezone
   startOfToday.setHours(0, 0, 0, 0);
   return arr
@@ -205,8 +240,7 @@ export async function listMerged(cwd: string): Promise<MergedPr[]> {
 
 /** Branch names of the user's merged PRs (not date-filtered) — used to reap their leftover worktrees. */
 export async function mergedBranches(cwd: string): Promise<Set<string>> {
-  const raw = await gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50", "--json", "headRefName");
-  return new Set((JSON.parse(raw) as Array<{ headRefName: string }>).map((j) => j.headRefName));
+  return new Set((await mergedRows(cwd)).map((j) => j.headRefName));
 }
 
 /** Close a PR without merging (best-effort). */

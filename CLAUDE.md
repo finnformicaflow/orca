@@ -20,9 +20,9 @@ native resume versus cross-provider handoff from the selected provider instead o
 The git change-summary poll shows commits as they land. Orca
 then promotes the branch to a PR and drives it to merge with buttons.
 
-(History: earlier slices deliberately did NOT run Claude — the user reversed this. Slack
-was also cut from an API integration down to a copyable prompt, since Claude has Slack
-access. The principle that survives: Orca generates prompts / launches processes but hosts
+(History: earlier slices deliberately did NOT run agents — the user reversed this. Slack
+is an exact copyable message rather than a hidden Claude invocation, preserving provider isolation.
+The principle that survives: Orca generates prompts / launches processes but hosts
 no chat UI. Browser enrichment persists the small portable turn transcript and active provider/session
 pointer; live worktrees, git, provider-native sessions, and GitHub remain the authoritative state.)
 
@@ -31,15 +31,15 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
   a plain-JSON API. `Vite` is dev-only (HMR + proxy). No streaming.
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
-  start a dev server, and Slack blocks browser CORS. The bridge does *only* what the browser
-  physically can't, plus proxies GitHub/Slack so tokens never touch the browser. It is not a
+  start a dev server. The bridge does *only* what the browser
+  physically can't, plus proxies GitHub so tokens never touch the browser. It is not a
   "backend" in the app sense — no DB, no business state.
 - **Source of truth is the LIVE system, not localStorage.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
   (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
   git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
   PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
-- **GitHub = the `gh` CLI; Slack = a prompt Claude sends.** No OAuth app, no Slack token.
+- **GitHub = the `gh` CLI; Slack = an exact message copied by the user.** No OAuth app or Slack token.
 
 ## Multi-repo (aggregated)
 
@@ -65,7 +65,9 @@ Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
   requires a manual "check out" step or a copied prompt. Follow up resumes the provider-native
-  session when possible or uses the portable transcript for a cross-provider handoff.
+session when possible or uses the portable transcript for a cross-provider handoff.
+Claude sessions at 80% context or higher also reset through that compact handoff rather than
+dragging an almost-full native context into another turn.
   `ensureWorktree` also copies `copyToWorktree` config into the fresh worktree.
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
@@ -81,9 +83,9 @@ DRAFTING → READY → (promote) → IN_REVIEW → (approved) → MERGEABLE → 
 ```
 
 Lanes are review-driven only (`deriveKanbanState`): approved→MERGEABLE, else IN_REVIEW.
-Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Every PR action
-(Slack notify/bump, resolve conflicts, fix CI) launches a headless `claude -p` via
-`POST /api/claude`; previews start N services (frontend+backend) on assigned ports via
+Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Agent actions use
+the workstream's selected provider; Slack copy actions launch no model. Previews start N services
+(frontend+backend) on assigned ports via
 `server/preview.ts`.
 
 ## Conventions (follow these)

@@ -4,7 +4,7 @@
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
 import { handoffPrompt, type AgentProvider, type AgentTurn } from "../shared/agent";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
 // cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
@@ -16,6 +16,10 @@ export type RunMeta = {
   costUsd?: number;
   numTurns?: number;
   durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 };
 export type RunState = {
   status: "idle" | "running" | "done" | "error";
@@ -30,12 +34,14 @@ export type RunState = {
   finishedAt?: number;
 };
 type Run = RunState & { proc?: Bun.Subprocess };
+export type LaunchReceipt = { status: "running"; provider: AgentProvider; runId: string; sessionId?: string };
 
 export type LaunchOptions = {
   provider?: AgentProvider;
   resume?: string;
   history?: AgentTurn[];
   handoffFrom?: AgentProvider;
+  timeoutMs?: number;
 };
 
 /** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
@@ -71,6 +77,10 @@ export function parseRunMeta(j: any): RunMeta {
     costUsd: num(j?.total_cost_usd),
     numTurns: num(j?.num_turns),
     durationMs: num(j?.duration_ms),
+    inputTokens: num(j?.usage?.input_tokens),
+    outputTokens: num(j?.usage?.output_tokens),
+    cacheReadTokens: num(j?.usage?.cache_read_input_tokens),
+    cacheCreationTokens: num(j?.usage?.cache_creation_input_tokens),
   };
 }
 
@@ -116,17 +126,29 @@ export function parseCodexOutput(raw: string): { sessionId?: string; result?: st
   let result: string | undefined;
   let isError = false;
   let turns = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
       const event = JSON.parse(line);
       sessionId = codexSessionId(line) ?? sessionId;
       if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") result = event.item.text;
-      if (event.type === "turn.completed") turns++;
+      if (event.type === "turn.completed") {
+        turns++;
+        inputTokens += Number(event.usage?.input_tokens) || 0;
+        outputTokens += Number(event.usage?.output_tokens) || 0;
+        cachedInputTokens += Number(event.usage?.cached_input_tokens) || 0;
+      }
       if (event.type === "turn.failed" || event.type === "error") isError = true;
     } catch { /* tolerate non-JSON diagnostic lines */ }
   }
-  return { sessionId, result, isError, meta: { model: "Codex", numTurns: turns || undefined } };
+  return { sessionId, result, isError, meta: {
+    model: "Codex", numTurns: turns || undefined,
+    inputTokens: inputTokens || undefined, outputTokens: outputTokens || undefined,
+    cacheReadTokens: cachedInputTokens || undefined,
+  } };
 }
 
 /** Antigravity print mode emits plain response text. Its workspace-scoped conversation UUID is
@@ -168,7 +190,8 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   return ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json"];
 }
 
-export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): void {
+export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
+  if (runs.get(key)?.status === "running") throw new Error("an agent is already running for this worktree");
   const provider = options.provider ?? "claude";
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
   const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
@@ -180,6 +203,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId),
     { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
+  const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
   void (async () => {
     const [out, err] = await Promise.all([
@@ -187,6 +211,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       new Response(proc.stderr).text(),
     ]);
     const code = await proc.exited;
+    if (timeout) clearTimeout(timeout);
     if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
     let result: string | undefined, isError = false, meta: RunMeta | undefined, resolvedSessionId = sessionId;
     if (provider === "codex") {
@@ -215,46 +240,56 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       ? { status: "done", ...common }
       : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
   })();
+  return { status: "running", provider, runId, sessionId };
 }
 
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
 export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions) => launch(worktreePath, worktreePath, prompt, options);
 
-/** Quick Haiku summary of a prompt into a 2–5 word title. Asks for JSON, validates it (zod), and
+export const isRunning = (key: string): boolean => runs.get(key)?.status === "running";
+
+/** A provider-isolated one-shot: never falls through to a different provider. */
+export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: string, purpose: "title" | "description"): string[] {
+  if (provider === "claude") {
+    return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
+  }
+  if (provider === "codex") return ["codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--sandbox", "read-only", "-C", cwd, prompt];
+  return ["agy", "-p", prompt, "--mode", "plan", "--dangerously-skip-permissions"];
+}
+
+async function oneShot(provider: AgentProvider, prompt: string, purpose: "title" | "description"): Promise<string> {
+  // The prompt is self-contained. Running outside the repo avoids loading project instructions and
+  // prevents Antigravity's helper conversation from replacing the worktree's resumable session.
+  const cwd = tmpdir();
+  const args = oneShotCommand(provider, cwd, prompt, purpose);
+  const proc = Bun.spawn(args, { cwd, env: process.env, stdout: "pipe", stderr: "ignore" });
+  const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
+  const out = await new Response(proc.stdout).text();
+  const code = await proc.exited;
+  clearTimeout(timeout);
+  if (code !== 0) throw new Error(`${provider} ${purpose} failed`);
+  if (provider === "claude") return String(JSON.parse(out.trim()).result ?? "");
+  if (provider === "codex") return parseCodexOutput(out).result ?? "";
+  return out.trim();
+}
+
+/** Quick selected-provider summary of a prompt into a 2–5 word title. Asks for JSON, validates it, and
  *  refetches once if the reply doesn't parse to a valid title; null after that (caller falls back
  *  to titleFromPrompt). */
-export function summarize(prompt: string): Promise<string | null> {
-  const ask = async (): Promise<string> => {
-    const proc = Bun.spawn(
-      ["claude", "-p", `Respond with ONLY minified JSON: {"title":"<a 2-5 word Title Case name for this task>"}. No other text.\n\n${prompt}`, "--model", "haiku", "--output-format", "json"],
-      { env: process.env, stdout: "pipe", stderr: "ignore" },
-    );
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    return String(JSON.parse(out.trim()).result ?? "");
-  };
+export function summarize(provider: AgentProvider, prompt: string): Promise<string | null> {
+  const ask = () => oneShot(provider, `Respond with ONLY minified JSON: {"title":"<a 2-5 word Title Case name for this task>"}. No other text.\n\n${prompt}`, "title");
   return retryTitle(ask, 2); // validate + refetch once on a bad reply
 }
 
-/** Write a PR description from a prepared prompt (see `prDescriptionPrompt`) via a one-shot headless
- *  `claude -p` on Sonnet — capable enough to read a diff and follow the template, without the cost
- *  of a full agent loop. Returns the generated markdown, or null on any error / empty reply so the
+/** Write a PR description from a prepared prompt via an isolated selected-provider one-shot.
+ *  Returns the generated markdown, or null on any error / empty reply so the
  *  caller can fall back to the deterministic `resolvePrBody`. */
-export async function describePr(prompt: string): Promise<string | null> {
+export async function describePr(provider: AgentProvider, prompt: string): Promise<string | null> {
   try {
-    const proc = Bun.spawn(
-      ["claude", "-p", prompt, "--model", "sonnet", "--output-format", "json"],
-      { env: process.env, stdout: "pipe", stderr: "ignore" },
-    );
-    const out = await new Response(proc.stdout).text();
-    const code = await proc.exited;
-    if (code !== 0) return null;
-    const j = JSON.parse(out.trim());
-    if (j.is_error) return null;
-    const body = String(j.result ?? "").trim();
+    const body = (await oneShot(provider, prompt, "description")).trim();
     return body || null;
   } catch {
-    return null; // claude missing / bad JSON — caller falls back
+    return null; // selected provider missing / bad output — caller falls back locally
   }
 }
 

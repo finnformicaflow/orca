@@ -23,9 +23,10 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
     if (!wt) { setSummary(null); return; }
     const reload = () => void fetchSummary(repo, wt).then(setSummary).catch(() => {});
     reload();
-    const t = setInterval(reload, 5000); // keep commits/size fresh while the agent works
+    if (row?.agentStatus !== "running") return;
+    const t = setInterval(reload, 8000); // keep commits/size fresh only while the agent works
     return () => clearInterval(t);
-  }, [repo, wt]);
+  }, [repo, wt, row?.agentStatus]);
 
   useEffect(() => {
     if (sub === "files" && wt && diff === null) api.localDiff(repo, wt).then((d) => setDiff(d.diff)).catch(() => setDiff(""));

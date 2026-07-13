@@ -66,6 +66,14 @@ describe("swimlane card details", () => {
     expect(container!.textContent).not.toContain("ctx");
   });
 
+  test("agent metadata exposes measured token usage in its detail tooltip", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, agentProvider: "codex", agentMeta: { model: "Codex", inputTokens: 1234, outputTokens: 56, cacheReadTokens: 900 } });
+    const meta = [...container!.querySelectorAll("div")].find((node) => node.textContent === "Codex" && node.title);
+    expect(meta?.title).toContain("1,234 in / 56 out");
+    expect(meta?.title).toContain("900 cached");
+  });
+
   test("a non-local (In Review) card shows a coloured diffstat, but not the (redundant) branch name", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);

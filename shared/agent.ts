@@ -18,7 +18,9 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
 
 // A handoff is intentionally portable prose, not a provider's private session format. The worktree
 // remains the source of truth; the bounded transcript supplies decisions and conversational intent.
-const HANDOFF_LIMIT = 24_000;
+// About 3k tokens in typical code/task prose: enough for recent decisions without making a new
+// provider pay to ingest an ever-growing raw transcript. The worktree remains authoritative.
+const HANDOFF_LIMIT = 12_000;
 export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentProvider | undefined, to: AgentProvider): string {
   const header = [
     from === to

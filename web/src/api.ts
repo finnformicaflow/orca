@@ -1,4 +1,4 @@
-import type { RunMeta } from "../../server/agent";
+import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { MergedPr, PrDetail, PrSummary } from "../../server/gh";
 import type { Usage } from "../../server/usage";
@@ -37,11 +37,11 @@ const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extr
 export const api = {
   config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[] }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
-  createWorktree: (repo: string, prompt: string): Promise<{ branch: string; worktreePath: string; title: string }> =>
-    post("/api/workstreams", { repo, prompt }),
+  createWorktree: (repo: string, prompt: string, provider: AgentProvider): Promise<{ branch: string; worktreePath: string; title: string }> =>
+    post("/api/workstreams", { repo, prompt, provider }),
   summary: (repo: string, worktree: string): Promise<ChangeSummary> =>
     fetch(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
-  promote: (repo: string, b: { worktreePath: string; branch: string; title: string; draft?: boolean; addPreviewLabel?: boolean }): Promise<{ number: number; url: string }> =>
+  promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; draft?: boolean; addPreviewLabel?: boolean }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
   autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),
@@ -66,9 +66,9 @@ export const api = {
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
-  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<{ status: string }> =>
+  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<LaunchReceipt> =>
     post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
-  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<{ status: string }> =>
+  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } = {}): Promise<LaunchReceipt> =>
     post("/api/agent", { repo, key, prompt, ...options }),
   // Compatibility helper for existing callers/tests while agent actions migrate to `agent`.
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>

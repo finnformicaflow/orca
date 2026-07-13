@@ -71,6 +71,7 @@ describe("optimistic draft creation", () => {
     mount();
     act(() => { store.createWorkstream("r", "Add a fancy widget", [], "codex"); });
     await act(async () => { apiFake.pending!({ branch: "codex-widget", worktreePath: "/wt/codex-widget", title: "Add widget" }); await flush(); await flush(); });
+    expect(apiFake.titleProviders.at(-1)).toBe("codex");
     expect(apiFake.agentLaunches.at(-1)?.provider).toBe("codex");
   });
 

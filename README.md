@@ -5,7 +5,7 @@ One kanban board over one lifecycle:
 
 - **Local / Draft** — create a git worktree per feature; choose Claude, Codex, or Antigravity, let Orca launch it
   headlessly with your prompt, see what changed, then promote to a PR.
-- **PRs** — open PRs with CI/review status and one-click actions: Slack notify/bump, resolve
+- **PRs** — open PRs with CI/review status and one-click actions: copy Slack notify/bump messages, resolve
   conflicts, fix CI, follow up, and merge-when-green.
 
 Every agent action **runs your selected coding agent headlessly** (`claude -p`, `codex exec`, or `agy -p`,
@@ -34,11 +34,6 @@ export ORCA_REPO_PATH=/absolute/path/to/your/repo
 export ORCA_WORKTREE_ROOT=/absolute/path/to/orca-worktrees
 export ORCA_BASE_BRANCH=main
 export ORCA_DEV_COMMAND="bun run dev --port {port}"   # how to start a preview; {port} is filled in
-# optional Slack:
-export SLACK_BOT_TOKEN=xoxb-…        # enables threaded bumps
-export SLACK_CHANNEL=#eng
-# or, instead of a bot token:
-export SLACK_WEBHOOK_URL=https://hooks.slack.com/…
 ```
 
 ## Run
@@ -54,11 +49,11 @@ bun run check    # typecheck + tests — run this before every commit
 
 | You used to… | Now |
 | --- | --- |
-| spin up a worktree by hand | **New** → worktree created + `claude -p` launched with your prompt |
+| spin up a worktree by hand | **New** → worktree created + your selected provider launched with your prompt |
 | eyeball `git diff` | change summary on the card; full diff on the detail page |
 | `gh pr create` | **Promote to PR** |
 | watch CI/comments | kanban card auto-polls status |
-| ask Claude to rebase | **Resolve conflicts** — runs Claude in the worktree (adopts one if needed) |
-| ask Claude to fix a red build | **Fix CI** — same, headless |
-| Slack the team, then bump | **Slack notify** → **Bump** (highlighted when stale) |
+| ask an agent to rebase | **Resolve conflicts** — runs the selected provider in the worktree (adopts one if needed) |
+| ask an agent to fix a red build | **Fix CI** — same, headless |
+| Slack the team, then bump | **Copy Slack message** → **Copy bump** (highlighted when stale) |
 | merge when green | **Merge** (enabled only when mergeable + green) |

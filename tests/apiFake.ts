@@ -35,6 +35,7 @@ export const apiFake = {
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
+  titleProviders: [] as AgentProvider[],
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
@@ -46,7 +47,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.titleProviders = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -58,8 +59,10 @@ mock.module("@/api", () => ({
     mergedPrs: async () => [],
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); return { ok: true }; },
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
-    createWorktree: () =>
-      new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; }),
+    createWorktree: (_repo: string, _prompt: string, provider: AgentProvider = "claude") => {
+      apiFake.titleProviders.push(provider);
+      return new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; });
+    },
     runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude") => {
       apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider }); return { status: "ok" };
     },

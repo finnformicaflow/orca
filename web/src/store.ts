@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
-  resolveConflictsPrompt, slackPrompt, titleFromPrompt, withAttachments,
+  resolveConflictsPrompt, slackMessage, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentProvider, AgentTurn } from "../../shared/agent";
 
@@ -83,7 +83,7 @@ async function withHidden(repo: string, branch: string, op: () => Promise<void>)
 
 // ---- optimistic drafts ----
 // Shown as a Local card the instant you submit — before the server has derived a title, cut a
-// branch, and made the worktree (a couple of seconds of Haiku + git). Once the real worktree lands
+// branch, and made the worktree (a short selected-provider summary + git). Once the real worktree lands
 // in `live`, the optimistic card is dropped and the real one takes over. Undo tears it down whether
 // the worktree exists yet or not.
 export type OptimisticDraft = {
@@ -97,7 +97,14 @@ let optSeq = 0;
 type RepoLive = { repo: string; hasRemote: boolean; agents: LiveAgent[]; prs: PrSummary[]; merged: MergedPr[] };
 let live: RepoLive[] = [];
 
-export async function refresh() {
+let refreshInFlight: Promise<void> | null = null;
+export function refresh(): Promise<void> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshOnce().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+async function refreshOnce() {
   const repos = cfg?.repos ?? [];
   // Settle each fetch to {ok, v} instead of catch-to-empty, so GC can tell a genuinely-empty repo
   // from a transient fetch failure (which must NOT be read as "everything's gone" and wipe enrichment).
@@ -113,7 +120,7 @@ export async function refresh() {
   live = polled.map(({ ok: _ok, ...rl }) => rl);
   // Persist provider-native session ids and completed portable turns. Native ids make same-provider
   // resume lossless; the transcript is what lets a different provider take over the worktree.
-  // The title stays the Haiku summary of the PROMPT set at creation — deriving it from the agent's
+  // The title stays the selected-provider summary of the PROMPT set at creation — deriving it from the agent's
   // final response text instead ("Done! I've added…") produced awkward, sentence-fragment titles.
   for (const rl of live) {
     for (const a of rl.agents) {
@@ -138,7 +145,16 @@ export async function refresh() {
   runFollowers(); // auto-drive any followed PRs off the status we just polled
   notify();
 }
-setInterval(() => void refresh(), 8_000);
+let pollTick = 0;
+setInterval(() => {
+  pollTick++;
+  const active = optimistic.length > 0 || live.some((repo) =>
+    repo.agents.some((agent) => agent.agentStatus === "running")
+    || repo.prs.some((pr) => enrichOf(repo.repo, pr.branch).following));
+  // Keep transitions responsive; idle boards poll every 32s, hidden idle tabs every 64s.
+  const every = active ? 1 : document.visibilityState === "hidden" ? 8 : 4;
+  if (pollTick % every === 0) void refresh();
+}, 8_000);
 
 // Prune enrichment for branches that no longer exist — merged / closed / branch-deleted, whether via
 // Orca or (the leaky case) directly on GitHub. Without this, every finished branch's prompt/title/
@@ -197,10 +213,11 @@ function runFollowers() {
         lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
         agentProvider: e.agentProvider ?? wt?.agentProvider, transcript: e.transcript,
         prNumber: pr.number, prUrl: pr.url, following: true,
+        failingChecks: pr.failingChecks, feedback: pr.feedback,
       };
       const fire = action === "resolveConflicts" ? resolveConflicts(row)
         : action === "fixCi" ? fixCi(row)
-        : followUp(row, addressReviewPrompt({ prNumber: pr.number, branch: pr.branch }));
+        : followUp(row, addressReviewPrompt({ prNumber: pr.number, branch: pr.branch }, pr.feedback));
       void fire.catch(() => {});
     }
   }
@@ -236,6 +253,8 @@ export type Row = {
   autoMergeEnabled?: boolean;
   following?: boolean;
   followUps?: string[];
+  failingChecks?: string[];
+  feedback?: string[];
   mergedAt?: string;
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
@@ -288,6 +307,7 @@ export function useWorkstreams(): Row[] {
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps,
+        failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };
@@ -314,15 +334,20 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
   notify();
   void (async () => {
     try {
-      const paths = images.length ? await api.uploadAttachments(images) : [];
-      const { branch, worktreePath, title } = await api.createWorktree(repo, prompt); // server derives the title (Haiku)
+      const [paths, created] = await Promise.all([
+        images.length ? api.uploadAttachments(images) : Promise.resolve([]),
+        api.createWorktree(repo, prompt, provider),
+      ]);
+      const { branch, worktreePath, title } = created; // selected provider derives the title
       draft.created = { branch, worktreePath };
       patchEnrich(repo, branch, { prompt, title, agentProvider: provider, createdAt: now() });
       if (draft.cancelled) { // Undo pressed while creating — discard the worktree we just made.
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider).catch(() => {});
+        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider)
+          .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
+          .catch(() => {});
       }
     } finally {
       await refresh();                                       // pull the real worktree into `live`…
@@ -344,13 +369,13 @@ export async function undoDraft(draft: OptimisticDraft) {
 
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
-  return api.runAgent(row.worktreePath, launchPrompt({ title: row.title, branch: row.branch, prompt: row.prompt }, baseBranch(row.repo)), row.agentProvider ?? "claude").then(refresh);
+  return launchOnRow(row, row.worktreePath, followUpPrompt("Inspect the current worktree and continue or repair the unfinished task. Do not repeat completed work."), row.agentProvider ?? "claude").then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
   if (!row.worktreePath) return;
   if (row.hasRemote) {
-    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
+    await api.promote(row.repo, { worktreePath: row.worktreePath, branch: row.branch, title: row.title, provider: row.agentProvider ?? "claude", draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel });
   } else {
     patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready
   }
@@ -362,7 +387,6 @@ export async function ensureWorktree(row: Row): Promise<string> {
   if (row.worktreePath) return row.worktreePath;
   const { worktreePath } = await api.adopt(row.repo, row.branch);
   patchEnrich(row.repo, row.branch, { title: row.title });
-  await refresh();
   return worktreePath;
 }
 
@@ -466,12 +490,14 @@ export async function followUp(
 }
 
 /** Continue natively when possible; otherwise create a target-provider session with portable history. */
+const CONTEXT_RESET_PCT = 80;
 async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider) {
   const current = enrichOf(row.repo, row.branch);
   const from = current.agentProvider ?? row.agentProvider;
   const sessionId = current.sessionId ?? row.sessionId;
-  const sameNativeSession = from === provider && Boolean(sessionId);
-  await api.agent(row.repo, worktree, prompt, {
+  const contextTooFull = typeof row.agentMeta?.contextPct === "number" && row.agentMeta.contextPct >= CONTEXT_RESET_PCT;
+  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull;
+  const receipt = await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,
     resume: sameNativeSession ? sessionId : undefined,
@@ -479,7 +505,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     handoffFrom: !sameNativeSession ? from : undefined,
   });
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.
-  if (!sameNativeSession) patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: undefined });
+  patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: receipt.sessionId });
 }
 
 export async function markReady(row: Row) {
@@ -518,11 +544,11 @@ export async function closePr(row: Row) {
   });
 }
 
-export function sendSlack(row: Row, kind: "notify" | "bump") {
-  const prompt = slackPrompt({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind, slackChannel(row.repo));
-  const p = api.claude(row.repo, `slack:${row.repo}:${row.branch}`, prompt);
+export async function sendSlack(row: Row, kind: "notify" | "bump") {
+  const message = slackMessage({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind);
+  try { await navigator.clipboard.writeText(message); }
+  catch { window.prompt(`Copy the Slack ${kind === "bump" ? "bump" : "message"}:`, message); }
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
-  return p;
 }
 
 export async function resolveConflicts(row: Row) {
@@ -538,7 +564,7 @@ export function addPreviewLabel(row: Row) {
 
 export async function fixCi(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }), row.agentProvider ?? "claude");
+  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks), row.agentProvider ?? "claude");
   await refresh();
 }
 

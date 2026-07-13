@@ -73,7 +73,10 @@ export async function createWorktree(
 ): Promise<{ branch: string; worktreePath: string }> {
   branch = await uniqueBranch(repoPath, branch);
   const worktreePath = join(worktreeRoot, branch);
-  await git(repoPath, "worktree", "add", "-b", branch, worktreePath, base);
+  // Do deterministic synchronization here instead of spending agent turns on fetch/merge setup.
+  await git(repoPath, "fetch", "origin", base).catch(() => {}); // local-only repos have no origin
+  const start = await resolveBase(repoPath, base);
+  await git(repoPath, "worktree", "add", "-b", branch, worktreePath, start);
   return { branch, worktreePath };
 }
 

@@ -39,6 +39,8 @@ export type OrcaConfig = {
   portRange: [number, number];
   /** Hours a PR's Slack message may sit before a bump is allowed. */
   staleHours: number;
+  /** Hard ceiling for one headless agent run, preventing abandoned sessions consuming quota. */
+  agentTimeoutMinutes?: number;
 };
 
 /** Look up a repo by name, defaulting to the first configured repo. */

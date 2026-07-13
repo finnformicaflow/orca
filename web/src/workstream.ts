@@ -125,25 +125,32 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
 // Review — so every launch/follow-up prompt explicitly forbids it.
 const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
 
-/** Prompt used to launch the headless agent — sync-with-base + autonomous-commit instructions. */
+/** Prompt used to launch the headless agent — Orca already created it from the latest base. */
 export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">, base = "main"): string {
   return [
     promptFor(ws),
     "",
-    `First, sync with the latest \`${base}\` so you're not working behind it: run \`git fetch origin ${base} && git merge origin/${base}\` and resolve any conflicts before you start.`,
-    "Then work autonomously. Commit your changes with clear messages as you go.",
+    `This worktree was created from the latest \`${base}\`. Work autonomously. Commit your changes with clear messages as you go.`,
     NO_PR,
   ].join("\n");
 }
 
-/** Instruction for Claude to send a Slack message about a PR (Claude has Slack access). */
+/** Exact provider-neutral Slack message. Copying it never spends another provider's quota. */
+export function slackMessage(
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  kind: "notify" | "bump",
+): string {
+  const link = `[#${ws.prNumber} ${ws.title}](${ws.prUrl ?? ""})`;
+  return kind === "bump" ? `Bump:\n${link}` : link;
+}
+
+/** Legacy instruction form retained for consumers that explicitly want an agent to post it. */
 export function slackPrompt(
   ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
   kind: "notify" | "bump",
   channel?: string,
 ): string {
-  const link = `[#${ws.prNumber} ${ws.title}](${ws.prUrl ?? ""})`;
-  const content = kind === "bump" ? `Bump:\n${link}` : link;
+  const content = slackMessage(ws, kind);
   const where = channel ? ` to the ${channel} channel` : "";
   return `Post a new Slack message${where} with exactly this content and nothing else — no emojis, no extra text, and do not reply in a thread:\n\n${content}`;
 }
@@ -231,20 +238,24 @@ export function resolveConflictsPrompt(ws: Pick<Workstream, "branch">, base: str
 }
 
 /** Instruction for Claude to fix failing CI on a PR in its worktree, then push. */
-export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">): string {
+export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = []): string {
+  const evidence = failingChecks.length ? ` Failing checks reported by Orca: ${failingChecks.join(", ")}.` : "";
   return [
-    `CI is failing on PR #${ws.prNumber} (branch \`${ws.branch}\`).`,
+    `CI is failing on PR #${ws.prNumber} (branch \`${ws.branch}\`).${evidence}`,
     `Investigate the failing checks, fix the root cause, run the relevant tests/build locally to confirm,`,
     `then commit and push.`,
   ].join(" ");
 }
 
 /** Instruction for Claude to address a PR's requested changes / review comments, then push. */
-export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">): string {
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = []): string {
+  const evidence = feedback.length
+    ? `\n\nOrca already collected this recent external feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`
+    : "";
   return [
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
     `Read them (\`gh pr view ${ws.prNumber} --comments\`), address every point,`,
-    `then commit and push.`,
+    `then commit and push.${evidence}`,
   ].join(" ");
 }
 
@@ -302,7 +313,7 @@ export function titleFromText(text: string): string {
   return truncated.charAt(0).toUpperCase() + truncated.slice(1);
 }
 
-/** Session title, summarised from the feature prompt (server prefers a Haiku summary, falls back to
+/** Session title, summarised from the feature prompt (server prefers the selected provider, falls back to
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
 

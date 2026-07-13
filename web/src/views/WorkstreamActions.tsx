@@ -84,7 +84,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
         {/* Second-class, lane-contextual action right after Follow up. */}
         {row.lane === "IN_REVIEW" && (
           <Button size="sm" variant={bumpDue ? "default" : "outline"} onClick={run(() => sendSlack(row, notified ? "bump" : "notify"))}>
-            {notified ? "Bump Slack" : "Notify Slack"}
+            {notified ? "Copy Slack bump" : "Copy Slack message"}
           </Button>
         )}
         {row.lane === "MERGEABLE" && (
@@ -151,8 +151,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Notify{notified ? " again" : ""}</DropdownMenuItem>
-                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Copy message{notified ? " again" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Copy bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             )}

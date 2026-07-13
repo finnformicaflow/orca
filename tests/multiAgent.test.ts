@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, parseAgyOutput, parseCodexOutput } from "../server/agent";
+import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, oneShotCommand, parseAgyOutput, parseCodexOutput } from "../server/agent";
 import { attachCommand, handoffPrompt, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -50,6 +50,15 @@ describe("provider adapters", () => {
     expect(isHeadlessAgentProcess("123 agy --conversation a-1")).toBe(false);
   });
 
+  test("uses the selected provider for isolated title and PR-description one-shots", () => {
+    expect(oneShotCommand("claude", "/wt/x", "title", "title")).toContain("haiku");
+    expect(oneShotCommand("codex", "/wt/x", "title", "title")[0]).toBe("codex");
+    expect(oneShotCommand("codex", "/wt/x", "body", "description")).toContain("--ephemeral");
+    expect(oneShotCommand("agy", "/wt/x", "body", "description")[0]).toBe("agy");
+    expect(oneShotCommand("codex", "/wt/x", "body", "description")).not.toContain("claude");
+    expect(oneShotCommand("agy", "/wt/x", "body", "description")).not.toContain("claude");
+  });
+
   test("parses the Codex JSONL session id and final agent message", () => {
     const parsed = parseCodexOutput([
       JSON.stringify({ type: "thread.started", thread_id: "codex-123" }),
@@ -57,7 +66,10 @@ describe("provider adapters", () => {
       JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Finished the work" } }),
       JSON.stringify({ type: "turn.completed", usage: { input_tokens: 12, output_tokens: 3 } }),
     ].join("\n"));
-    expect(parsed).toEqual({ sessionId: "codex-123", result: "Finished the work", isError: false, meta: { model: "Codex", numTurns: 1 } });
+    expect(parsed).toEqual({
+      sessionId: "codex-123", result: "Finished the work", isError: false,
+      meta: { model: "Codex", numTurns: 1, inputTokens: 12, outputTokens: 3, cacheReadTokens: undefined },
+    });
   });
 
   test("parses Antigravity print-mode output", () => {
@@ -109,6 +121,22 @@ describe("cross-provider continuation", () => {
     expect(launch.provider).toBe("claude");
     expect(launch.resume).toBe("claude-session");
     expect(launch.history).toBeUndefined();
+  });
+
+  test("Run again resumes the current native session instead of replaying a fresh task", async () => {
+    await store.rerunAgent(row);
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.provider).toBe("claude");
+    expect(launch.resume).toBe("claude-session");
+    expect(launch.prompt).toContain("Do not repeat completed work");
+  });
+
+  test("a high-context Claude session resets through the compact portable handoff", async () => {
+    await store.followUp({ ...row, agentMeta: { contextPct: 85 } }, "finish it", [], { provider: "claude" });
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.resume).toBeUndefined();
+    expect(launch.handoffFrom).toBe("claude");
+    expect(launch.history).toEqual(prior);
   });
 
   test("switching provider hands the portable transcript to a fresh session", async () => {

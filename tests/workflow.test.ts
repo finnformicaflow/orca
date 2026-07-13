@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, launchPrompt,
-  prDescriptionPrompt, prMenuActions, promptFor, resolveConflictsPrompt, shouldBump, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
+  prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackMessage, slackPrompt, slugifyBranch, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -97,14 +97,20 @@ test("run metadata: prettyModel + parseRunMeta surface model/context/cost from t
     },
     total_cost_usd: 0.0148681, num_turns: 3, duration_ms: 12340,
   });
-  expect(meta).toEqual({ model: "Opus 4.8", contextPct: 2, costUsd: 0.0148681, numTurns: 3, durationMs: 12340 });
+  expect(meta).toEqual({
+    model: "Opus 4.8", contextPct: 2, costUsd: 0.0148681, numTurns: 3, durationMs: 12340,
+    inputTokens: 9999, outputTokens: undefined, cacheReadTokens: 9999, cacheCreationTokens: 9999,
+  });
   // single-turn runs have no `iterations` → fall back to top-level usage (4064+15667+5052 = 24783 → 2%)
   expect(parseRunMeta({
     modelUsage: { "claude-opus-4-8[1m]": { contextWindow: 1000000 } },
     usage: { input_tokens: 4064, cache_read_input_tokens: 15667, cache_creation_input_tokens: 5052 },
   }).contextPct).toBe(2);
   // missing/garbage input → all-undefined, never throws (line just doesn't render)
-  expect(parseRunMeta({})).toEqual({ model: undefined, contextPct: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined });
+  expect(parseRunMeta({})).toEqual({
+    model: undefined, contextPct: undefined, costUsd: undefined, numTurns: undefined, durationMs: undefined,
+    inputTokens: undefined, outputTokens: undefined, cacheReadTokens: undefined, cacheCreationTokens: undefined,
+  });
 
   // Multi-model run: Claude Code fires an auxiliary Haiku alongside the Opus work and lists it
   // FIRST in modelUsage. The primary model = the one with the most output tokens (Opus), NOT the
@@ -260,6 +266,8 @@ test("W6 slack-notify-and-bump: bump only fires past the stale window", () => {
   expect(notify).toContain("do not reply in a thread");
   const bump = slackPrompt({ title: "Add X", prNumber: 7, prUrl: "u" }, "bump");
   expect(bump).toContain("Bump:\n[#7 Add X](u)");
+  expect(slackMessage({ title: "Add X", prNumber: 7, prUrl: "u" }, "notify")).toBe("[#7 Add X](u)");
+  expect(slackMessage({ title: "Add X", prNumber: 7, prUrl: "u" }, "bump")).toBe("Bump:\n[#7 Add X](u)");
 });
 
 test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears once mergeable", async () => {
@@ -286,6 +294,7 @@ describe("W10 active-following (followAction)", () => {
   });
   test("failing CI (no conflict) → fixCi", () => {
     expect(followAction({ mergeable: "MERGEABLE", ciStatus: "failing", reviewStatus: "review_required" })).toBe("fixCi");
+    expect(resolveCiPrompt({ prNumber: 7, branch: "feat" }, ["unit", "lint"])).toContain("unit, lint");
   });
   test("requested changes (clean + green) → addressReview", () => {
     expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "changes_requested" })).toBe("addressReview");
@@ -297,10 +306,11 @@ describe("W10 active-following (followAction)", () => {
     expect(followAction({ isDraft: true, mergeable: "CONFLICTING", ciStatus: "failing" })).toBeNull();
   });
   test("the review follow-up prompt points the agent at the PR's comments", () => {
-    const p = addressReviewPrompt({ prNumber: 7, branch: "feat-x" });
+    const p = addressReviewPrompt({ prNumber: 7, branch: "feat-x" }, ["Please add a regression test"]);
     expect(p).toContain("#7");
     expect(p).toContain("feat-x");
     expect(p).toContain("gh pr view 7 --comments");
+    expect(p).toContain("Please add a regression test");
   });
 });
 
@@ -385,13 +395,15 @@ test("M1 test-master: baseWorktree makes a detached checkout of the latest base,
 
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   await setPrListFixture([
-    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
+    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, comments: [{ author: { login: "alex" }, body: "Please add a regression test" }], statusCheckRollup: [{ name: "unit", conclusion: "FAILURE" }] },
     { number: 11, title: "Add B", headRefName: "feat-b", url: "u11", state: "OPEN", isDraft: true, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] },
   ]);
   const prs = await listPrs(repo);
   expect(prs.map((p) => p.branch)).toEqual(["feat-a", "feat-b"]);
   expect(deriveKanbanState(prs[0]!)).toBe("MERGEABLE"); // approved
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
+  expect(prs[0]!.failingChecks).toEqual(["unit"]);
+  expect(prs[0]!.feedback).toEqual(["Please add a regression test"]);
 });
 
 test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boolean flag", async () => {

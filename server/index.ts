@@ -9,11 +9,11 @@ import { usage } from "./usage";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 import { AGENT_PROVIDERS, isAgentProvider } from "../shared/agent";
 
-/** The body for a promoted PR. A caller-supplied body wins untouched; otherwise Claude writes a
+/** The body for a promoted PR. A caller-supplied body wins untouched; otherwise the selected provider writes a
  *  filled description from the branch's diff (following the repo's PR template + conventions), and
  *  we fall back to the deterministic body (`resolvePrBody`) if the AI is unavailable or the branch
  *  has nothing to describe. */
-async function resolvePrDescription(worktreePath: string, base: string, provided?: string): Promise<string> {
+async function resolvePrDescription(provider: typeof AGENT_PROVIDERS[number], worktreePath: string, base: string, provided?: string): Promise<string> {
   if (provided?.trim()) return provided;
   const [template, { commits }, diff] = await Promise.all([
     git.readPrTemplate(worktreePath),
@@ -22,7 +22,7 @@ async function resolvePrDescription(worktreePath: string, base: string, provided
   ]);
   if (diff.trim()) {
     const ai = await agent.describePr(
-      prDescriptionPrompt({ template, diff, commits: commits.map((c) => c.subject).reverse() }), // oldest-first
+      provider, prDescriptionPrompt({ template, diff, commits: commits.map((c) => c.subject).reverse() }), // oldest-first
     );
     if (ai?.trim()) return ai.trim();
   }
@@ -74,9 +74,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ repos, staleHours: cfg.staleHours, agentProviders });
   }
   if (req.method === "POST" && p === "/api/workstreams") {
-    // Haiku summarises the prompt into a short title (falls back to the first line); jitter suffix
+    // The selected provider summarises the prompt into a short title (falls back locally); jitter suffix
     // (à la Claude Code branch names) keeps names collision-resistant.
-    const title = (await agent.summarize(body.prompt)) ?? titleFromPrompt(body.prompt);
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    const title = (await agent.summarize(provider, body.prompt)) ?? titleFromPrompt(body.prompt);
     const branch = `${slugifyBranch(title)}-${crypto.randomUUID().slice(0, 6)}`;
     const wt = await git.createWorktree(repo.repoPath, repo.worktreeRoot, branch, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
@@ -94,10 +96,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ diff: await git.worktreeDiff(wt, await git.resolveBase(repo.repoPath, repo.baseBranch)) });
   }
   if (req.method === "POST" && p === "/api/promote") {
-    await git.pushBranch(body.worktreePath, body.branch); // the branch must exist on origin for `gh pr create`
-    // No body from the UI → Claude writes a filled description from the diff (its PR template +
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    // No body from the UI → the selected provider writes a filled description from the diff (its PR template +
     // conventions), falling back to a template/commit summary, so the PR never opens blank.
-    const prBody = await resolvePrDescription(body.worktreePath, await git.resolveBase(repo.repoPath, repo.baseBranch), body.body);
+    const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
+    const [, prBody] = await Promise.all([
+      git.pushBranch(body.worktreePath, body.branch), // the branch must exist on origin for `gh pr create`
+      resolvePrDescription(provider, body.worktreePath, base, body.body),
+    ]);
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
@@ -242,20 +249,24 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/agents/run") {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    agent.runAgent(body.worktreePath, body.prompt, {
+    if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
+    const receipt = agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
-    return json({ status: "running" });
+    return json(receipt);
   }
   if (req.method === "POST" && (p === "/api/agent" || p === "/api/claude")) {
     // Generic action in a worktree (or the repo for repo-level actions). Keep /api/claude as a
     // compatibility alias for older clients; it always selects Claude unless provider is explicit.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
+    if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
+    const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom,
+      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
-    return json({ status: "running" });
+    return json(receipt);
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");

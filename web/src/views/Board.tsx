@@ -150,7 +150,11 @@ function AgentMeta({ meta, provider }: { meta?: Row["agentMeta"]; provider?: Age
   if (typeof meta?.contextPct === "number") parts.push(`${meta.contextPct}% ctx`);
   if (!parts.length) return null;
   const cost = typeof meta?.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
-  const tip = [cost, meta?.numTurns != null ? `${meta.numTurns} turns` : "", meta?.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
+  const tokens = meta?.inputTokens != null || meta?.outputTokens != null
+    ? `${(meta.inputTokens ?? 0).toLocaleString()} in / ${(meta.outputTokens ?? 0).toLocaleString()} out`
+    : "";
+  const cached = meta?.cacheReadTokens != null ? `${meta.cacheReadTokens.toLocaleString()} cached` : "";
+  const tip = [cost, tokens, cached, meta?.numTurns != null ? `${meta.numTurns} turns` : "", meta?.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
   return <div className="truncate" title={tip || undefined}>{parts.join(" · ")}</div>;
 }
 
@@ -259,9 +263,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
     if (isDone || !row.worktreePath) return;
     const reload = () => void fetchSummary(row.repo, row.worktreePath!).then(setSummary).catch(() => {});
     reload();
-    const t = setInterval(reload, 5000);
+    if (row.agentStatus !== "running") return;
+    const t = setInterval(reload, 8000);
     return () => clearInterval(t);
-  }, [isDone, row.repo, row.worktreePath]);
+  }, [isDone, row.repo, row.worktreePath, row.agentStatus]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
