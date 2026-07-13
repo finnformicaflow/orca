@@ -9,7 +9,7 @@ import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
   resolveConflictsPrompt, slackPrompt, titleFromPrompt, withAttachments,
 } from "./workstream";
-import type { AgentMode, AgentProvider, AgentTurn } from "../../shared/agent";
+import type { AgentProvider, AgentTurn } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -450,7 +450,7 @@ export async function followUp(
   row: Row,
   instruction: string,
   images: File[] = [],
-  options: { provider?: AgentProvider; mode?: AgentMode } = {},
+  options: { provider?: AgentProvider } = {},
 ) {
   // Record the SENT prompt in enrichment first thing — before the upload/adopt/launch, any of which
   // can throw (a failed worktree adopt, a claude launch error) or "succeed" only to have the headless
@@ -461,22 +461,22 @@ export async function followUp(
   patchEnrich(row.repo, row.branch, { followUps });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
-  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? row.agentProvider ?? "claude", options.mode ?? "continue");
+  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? row.agentProvider ?? "claude");
   await refresh();
 }
 
 /** Continue natively when possible; otherwise create a target-provider session with portable history. */
-async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, mode: AgentMode = "continue") {
+async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider) {
   const current = enrichOf(row.repo, row.branch);
   const from = current.agentProvider ?? row.agentProvider;
   const sessionId = current.sessionId ?? row.sessionId;
-  const sameNativeSession = mode === "continue" && from === provider && Boolean(sessionId);
+  const sameNativeSession = from === provider && Boolean(sessionId);
   await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,
     resume: sameNativeSession ? sessionId : undefined,
-    history: mode === "continue" && !sameNativeSession ? (current.transcript ?? row.transcript ?? []) : undefined,
-    handoffFrom: mode === "continue" && !sameNativeSession ? from : undefined,
+    history: !sameNativeSession ? (current.transcript ?? row.transcript ?? []) : undefined,
+    handoffFrom: !sameNativeSession ? from : undefined,
   });
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.
   if (!sameNativeSession) patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: undefined });

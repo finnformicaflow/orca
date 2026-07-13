@@ -1,6 +1,5 @@
 export const AGENT_PROVIDERS = ["claude", "codex"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
-export type AgentMode = "continue" | "new";
 
 export type AgentTurn = {
   id: string;
@@ -22,7 +21,9 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
 const HANDOFF_LIMIT = 24_000;
 export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentProvider | undefined, to: AgentProvider): string {
   const header = [
-    `You are ${agentLabel(to)}, taking over this worktree from ${from ? agentLabel(from) : "another agent"}.`,
+    from === to
+      ? `You are ${agentLabel(to)}, continuing this worktree from its portable conversation transcript.`
+      : `You are ${agentLabel(to)}, taking over this worktree from ${from ? agentLabel(from) : "another agent"}.`,
     "Continue the work using the portable conversation transcript below.",
     "Treat the files, git status, commits, and test results in the worktree as the source of truth;",
     "verify the transcript against them before changing anything. Do not repeat already-completed work.",

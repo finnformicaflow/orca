@@ -15,7 +15,8 @@ status badge (running/done/error). It does NOT stream output or host a chat — 
 "Copy CLI" gives you the provider-native resume command to jump into an interactive session.
 Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
 session seeded with Orca's bounded portable transcript (instructions + final outcomes); files/git in
-the shared worktree remain the source of truth. "New chat" keeps the worktree but omits that history.
+the shared worktree remain the source of truth. Each worktree is one feature/session, so Orca infers
+native resume versus cross-provider handoff from the selected provider instead of exposing a chat-mode toggle.
 The git change-summary poll shows commits as they land. Orca
 then promotes the branch to a PR and drives it to merge with buttons.
 

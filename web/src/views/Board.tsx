@@ -139,15 +139,18 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
   );
 }
 
-// The model + context fill of a session's last agent run (from the `claude -p` result), with cost,
-// turns and duration in the tooltip. e.g. `Opus 4.8 · 12% ctx`.
-function AgentMeta({ meta }: { meta: NonNullable<Row["agentMeta"]> }) {
+// Provider-aware model + context for the last run. Claude exposes its actual model and context fill;
+// Codex currently exposes the provider but no trustworthy context-window percentage in exec JSONL.
+// Keep those states honest rather than leaving a stale Claude model on a Codex-run card.
+function AgentMeta({ meta, provider }: { meta?: Row["agentMeta"]; provider?: AgentProvider }) {
   const parts: string[] = [];
-  if (meta.model) parts.push(meta.model);
-  if (typeof meta.contextPct === "number") parts.push(`${meta.contextPct}% ctx`);
+  const providerName = provider ? agentLabel(provider) : undefined;
+  if (providerName) parts.push(providerName);
+  if (meta?.model && meta.model.toLowerCase() !== providerName?.toLowerCase()) parts.push(meta.model);
+  if (typeof meta?.contextPct === "number") parts.push(`${meta.contextPct}% ctx`);
   if (!parts.length) return null;
-  const cost = typeof meta.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
-  const tip = [cost, meta.numTurns != null ? `${meta.numTurns} turns` : "", meta.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
+  const cost = typeof meta?.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
+  const tip = [cost, meta?.numTurns != null ? `${meta.numTurns} turns` : "", meta?.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
   return <div className="truncate" title={tip || undefined}>{parts.join(" · ")}</div>;
 }
 
@@ -168,7 +171,7 @@ function elapsed(startedMs?: number): string {
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
   const provider = row.agentProvider ? `${agentLabel(row.agentProvider)} ` : "";
-  if (s === "running") return <Badge variant="secondary">{provider}Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
+  if (s === "running") return <Badge variant="secondary">Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
   if (s === "done") return <Badge variant="success">{provider}Done <Check /></Badge>;
   if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
@@ -330,7 +333,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : isLocal ? (
             <div>no changes yet</div>
           ) : <div />}
-          {row.agentMeta && <AgentMeta meta={row.agentMeta} />}
+          {(row.agentMeta || row.agentProvider) && <AgentMeta meta={row.agentMeta} provider={row.agentProvider} />}
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}

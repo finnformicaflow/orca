@@ -80,7 +80,7 @@ describe("cross-provider continuation", () => {
   });
 
   test("same-provider Continue uses the native session id", async () => {
-    await store.followUp(row, "one more change", [], { provider: "claude", mode: "continue" });
+    await store.followUp(row, "one more change", [], { provider: "claude" });
     const launch = apiFake.agentLaunches.at(-1)!;
     expect(launch.provider).toBe("claude");
     expect(launch.resume).toBe("claude-session");
@@ -88,7 +88,7 @@ describe("cross-provider continuation", () => {
   });
 
   test("switching provider hands the portable transcript to a fresh session", async () => {
-    await store.followUp(row, "take over", [], { provider: "codex", mode: "continue" });
+    await store.followUp(row, "take over", [], { provider: "codex" });
     const launch = apiFake.agentLaunches.at(-1)!;
     expect(launch.provider).toBe("codex");
     expect(launch.resume).toBeUndefined();
@@ -96,12 +96,13 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
-  test("New chat keeps the worktree but deliberately sends no old transcript", async () => {
-    await store.followUp(row, "independent second opinion", [], { provider: "codex", mode: "new" });
+  test("missing native session starts a fresh chat with portable context automatically", async () => {
+    await store.followUp({ ...row, sessionId: undefined }, "keep going", [], { provider: "claude" });
     const launch = apiFake.agentLaunches.at(-1)!;
-    expect(launch.provider).toBe("codex");
+    expect(launch.provider).toBe("claude");
     expect(launch.resume).toBeUndefined();
-    expect(launch.history).toBeUndefined();
+    expect(launch.history).toEqual(prior);
+    expect(launch.handoffFrom).toBe("claude");
     expect(launch.key).toBe("/wt/feat");
   });
 });

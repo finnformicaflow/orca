@@ -52,6 +52,20 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
+  test("card metadata identifies the provider before model and context", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, agentProvider: "claude", agentMeta: { model: "Opus 4.8", contextPct: 12 } });
+    expect(container!.textContent).toContain("Claude · Opus 4.8 · 12% ctx");
+  });
+
+  test("Codex metadata does not duplicate the provider as a model or show stale context", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, agentProvider: "codex", agentMeta: { model: "Codex", numTurns: 1 } });
+    expect(container!.textContent).toContain("Codex");
+    expect(container!.textContent).not.toContain("Codex · Codex");
+    expect(container!.textContent).not.toContain("ctx");
+  });
+
   test("a non-local (In Review) card shows a coloured diffstat, but not the (redundant) branch name", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);

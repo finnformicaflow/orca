@@ -38,8 +38,10 @@ describe("standardized Claude status badge", () => {
     expect(text.toLowerCase()).not.toContain("claude working");
   });
 
-  test("identifies the selected provider on live and completed runs", () => {
-    expect(mount(<AgentBadge row={row({ agentStatus: "running", agentProvider: "codex" })} hasWork={false} />).textContent).toContain("Codex Running");
+  test("keeps the running chip provider-neutral", () => {
+    const text = mount(<AgentBadge row={row({ agentStatus: "running", agentProvider: "codex" })} hasWork={false} />).textContent ?? "";
+    expect(text).toContain("Running");
+    expect(text).not.toContain("Codex");
   });
 
   test("done / error map to their own labels", () => {

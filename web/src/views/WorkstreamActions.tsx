@@ -9,7 +9,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { agentLabel, type AgentMode, type AgentProvider } from "../../../shared/agent";
+import { agentLabel, type AgentProvider } from "../../../shared/agent";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -210,8 +210,12 @@ export function FollowUpComposer(
   const key = followUpDraftKey(row);
   const providers = useAgentProviders();
   const [provider, setProvider] = useState<AgentProvider>(row.agentProvider ?? providers[0] ?? "claude");
-  const [mode, setMode] = useState<AgentMode>("continue");
   useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
+  // A card can receive a newer provider while it is mounted (poll completes, or another run starts).
+  // Follow-ups inherit that active provider; a manual choice after opening remains untouched.
+  useEffect(() => {
+    if (row.agentProvider && providers.includes(row.agentProvider)) setProvider(row.agentProvider);
+  }, [row.agentProvider, providers]);
   return (
     <ChatComposer
       autoFocus
@@ -220,16 +224,9 @@ export function FollowUpComposer(
       // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
       // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
       history={row.followUps}
-      placeholder={mode === "continue" ? "Continue this work…  (⌘+Enter)" : "Start a new chat in this worktree…  (⌘+Enter)"}
+      placeholder="Continue this work…  (⌘+Enter)"
       leading={
         <div className="flex items-center">
-          <Select value={mode} onValueChange={(v) => setMode(v as AgentMode)}>
-            <SelectTrigger aria-label="Chat mode" className="text-muted-foreground hover:bg-accent h-8 w-24 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="continue">Continue</SelectItem>
-              <SelectItem value="new">New chat</SelectItem>
-            </SelectContent>
-          </Select>
           <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
             <SelectTrigger aria-label="Agent provider" className="text-muted-foreground hover:bg-accent h-8 w-24 border-0 text-xs shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -247,7 +244,7 @@ export function FollowUpComposer(
         onSubmitting(true);
         // followUp records the sent prompt in enrichment before it can fail, so the local draft is
         // safe to drop as soon as the send is handed off (a failed launch reopens the box from it).
-        try { await followUp(row, instruction, images, { provider, mode }); clearDraft(key); }
+        try { await followUp(row, instruction, images, { provider }); clearDraft(key); }
         catch (e) { onFail(e instanceof Error ? e.message : String(e)); }
         finally { onSubmitting(false); }
       }}

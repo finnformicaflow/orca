@@ -46,13 +46,26 @@ afterEach(async () => {
 });
 
 describe("optimistic follow-up submit", () => {
-  test("offers Continue/New chat and the available agent providers", async () => {
+  test("offers the available agent providers without a redundant chat-mode selector", async () => {
     mount();
     await click(btn("Follow up")!);
     const mode = container!.querySelector('[role="combobox"][aria-label="Chat mode"]');
     const provider = container!.querySelector('[role="combobox"][aria-label="Agent provider"]');
-    expect(mode?.textContent).toContain("Continue");
+    expect(mode).toBeNull();
     expect(provider?.textContent).toContain("Claude");
+  });
+
+  test("defaults to and tracks the card's current provider", async () => {
+    mount();
+    await click(btn("Follow up")!);
+    const selected = () => container!.querySelector('[role="combobox"][aria-label="Agent provider"]')?.textContent ?? "";
+    expect(selected()).toContain("Claude");
+
+    await act(async () => {
+      root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex" }} />);
+      await flush();
+    });
+    expect(selected()).toContain("Codex");
   });
 
   test("closes the box immediately on send and clears the draft on success", async () => {

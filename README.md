@@ -12,8 +12,8 @@ Every agent action **runs your selected coding agent headlessly** (`claude -p` o
 using the CLI's existing login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
 run in the branch's worktree, **adopting one automatically if the PR doesn't have one locally**.
 "Copy CLI" is the escape hatch to continue the active provider's run interactively. A follow-up can
-resume the same provider natively, hand the portable conversation history to another provider, or
-start a clean chat in the same worktree. See `CLAUDE.md` for the design and rationale.
+resume the same provider natively or hand the portable conversation history to another provider;
+Orca infers which behavior is needed from the selected provider. See `CLAUDE.md` for the rationale.
 
 ## Prerequisites
 
