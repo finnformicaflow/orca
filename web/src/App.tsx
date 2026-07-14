@@ -39,8 +39,8 @@ export function App() {
                 <PreviewManagerMenu />
               </div>
             )}
-            {topLevel && <DensityToggle />}
             {topLevel && <RepoFilter />}
+            {topLevel && <DensityToggle />}
             <ProfileMenu />
           </div>
         </div>

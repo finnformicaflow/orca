@@ -266,8 +266,8 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const isOpenPr = Boolean(row.prNumber) && !isDone;
   const isLocal = !row.prNumber && !isDone; // draft or local (no-remote) branch
   // Dense view strips the card to its at-a-glance status (kept: repo, title, status/condition
-  // badges); the prompt, diffstat, and preview+actions footer are dropped. Done cards are already
-  // compact, so they never densify.
+  // badges) plus the actions footer (Follow up + Actions menu, so it stays driveable); the prompt,
+  // diffstat, and preview control are dropped. Done cards are already compact, so they never densify.
   const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
   // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
@@ -357,11 +357,11 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
       {/* Preview + actions, below a divider — separated from the session info above. The preview
-          (Test locally) leads, then the PR/agent verbs. Dropped in dense view — flip back to
-          comfortable to act; the title still links to the detail view. */}
-      {!isDone && !dense && (
-        <div className="space-y-2 border-t pt-2.5">
-          <PreviewControl row={row} />
+          (Test locally) leads, then the PR/agent verbs. Dense keeps the actions (Follow up + the
+          Actions menu) so a card stays driveable, but drops the taller preview control. */}
+      {!isDone && (
+        <div className={`space-y-2 border-t ${dense ? "pt-1.5" : "pt-2.5"}`}>
+          {!dense && <PreviewControl row={row} />}
           <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
         </div>
       )}

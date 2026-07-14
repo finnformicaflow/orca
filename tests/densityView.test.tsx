@@ -51,7 +51,7 @@ describe("dense view", () => {
     expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(true); // actions
   });
 
-  test("dense drops the prompt, diffstat and actions footer but keeps title + status badges", async () => {
+  test("dense drops the prompt, diffstat and preview but keeps title, status badges AND actions", async () => {
     getDefaultStore().set(densityAtom, "dense");
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
     await mount(base);
@@ -59,10 +59,13 @@ describe("dense view", () => {
     expect(container!.textContent).toContain("Add dense view"); // title
     expect(container!.textContent).toContain("CI"); // condition badge
     expect(container!.querySelector('[href="https://x/7"]')).not.toBeNull(); // PR destination link
-    // Detail + footer are gone.
+    // Actions stay so the card is still driveable.
+    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(true);
+    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim().startsWith("Actions"))).toBe(true);
+    // Detail + preview are gone.
     expect(container!.textContent).not.toContain("Make the board denser"); // prompt
     expect(container!.textContent).not.toContain("2 files"); // diffstat
-    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(false); // actions
+    expect(container!.textContent).not.toContain("Test locally"); // preview control
   });
 
   test("a Done card ignores dense (stays as-is)", async () => {
