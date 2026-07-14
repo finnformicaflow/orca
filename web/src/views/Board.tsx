@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, startInteractive, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
@@ -284,6 +284,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const isDone = row.lane === "DONE";
   const isOpenPr = Boolean(row.prNumber) && !isDone;
   const isLocal = !row.prNumber && !isDone; // draft or local (no-remote) branch
+  // Dense view strips the card to its at-a-glance status (kept: repo, title, smaller status/condition
+  // badges) plus a single toolbar row of icon buttons (Test locally, Follow up, Merge, Actions) so it
+  // stays driveable; the prompt and diffstat are dropped. Done cards stay compact — they never densify.
+  const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
   // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
   // gain one on first action).
@@ -309,7 +313,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className={`bg-card relative flex flex-col gap-2 rounded-md border p-3 shadow-sm ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
+    <div className={`bg-card relative flex flex-col rounded-md border shadow-sm ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
       {busy && (
         <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-md">
           <Loader2 className="text-muted-foreground size-5 animate-spin" />
@@ -334,13 +338,13 @@ export function WorkstreamCard({ row }: { row: Row }) {
         ) : (
           <div className="truncate text-sm font-medium">{row.title}</div>
         )}
-        {row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
+        {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
       </div>
 
       {/* State: agent status leads (standardised across lanes), then Run, then condition badges.
           Local cards always show it (each is an agent session); PR cards only when a run is live/recent. */}
       {!isDone && (
-        <div className="flex flex-wrap items-center gap-1">
+        <div className={`flex flex-wrap items-center gap-1 ${dense ? "[&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5" : ""}`}>
           {isOpenPr && row.following && (
             <Badge variant="outline" className="border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
               Following <Eye />
@@ -368,7 +372,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
       {/* Detail: file changes + the card's agent picker, justified to opposite ends. All lanes but
           Done. (The worktree/branch name is dropped as visual noise — copy it from the top-right menu.) */}
-      {!isDone && (
+      {!isDone && !dense && (
         <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
           {summary ? (
             <Diffstat summary={summary} />
@@ -380,12 +384,19 @@ export function WorkstreamCard({ row }: { row: Row }) {
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
-      {/* Preview + actions, below a divider — separated from the session info above. The preview
-          (Test locally) leads, then the PR/agent verbs. */}
+      {/* Preview + actions, below a divider — separated from the session info above. Comfortable
+          stacks the full-width Test-locally control over the labelled verbs; dense folds every verb
+          (Test locally, Follow up, Merge, Actions) into one row of icon buttons. */}
       {!isDone && (
-        <div className="space-y-2 border-t pt-2.5">
-          <PreviewControl row={row} />
-          <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
+        <div className={`space-y-2 border-t ${dense ? "pt-1.5" : "pt-2.5"}`}>
+          {dense ? (
+            <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} compact leading={<PreviewControl row={row} compact />} />
+          ) : (
+            <>
+              <PreviewControl row={row} />
+              <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
+            </>
+          )}
         </div>
       )}
     </div>
