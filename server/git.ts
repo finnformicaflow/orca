@@ -3,7 +3,7 @@ import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { dlopen, FFIType, suffix } from "bun:ffi";
 import { run } from "./run";
-import { defaultPrBody } from "../web/src/workstream";
+import { defaultPrBody, type SyncOutcome, type SyncResult } from "../web/src/workstream";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
@@ -116,6 +116,42 @@ export async function listWorktrees(
     if (worktreePath && branch && real(worktreePath).startsWith(root)) result.push({ branch, worktreePath });
   }
   return result;
+}
+
+/**
+ * Fast-forward ONE worktree's branch to its upstream. Safety is the point — never forces, never
+ * discards local work: a dirty tree, a diverged branch (no fast-forward possible), or a branch with
+ * no upstream is left untouched and reported. Assumes the repo's remote was already fetched.
+ */
+async function syncWorktree(worktreePath: string): Promise<SyncOutcome> {
+  if ((await git(worktreePath, "status", "--porcelain")).trim()) return "dirty";
+  try {
+    await git(worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); // errors with no upstream
+  } catch {
+    return "no upstream";
+  }
+  const [local, remote] = await Promise.all([
+    git(worktreePath, "rev-parse", "HEAD").then((s) => s.trim()),
+    git(worktreePath, "rev-parse", "@{u}").then((s) => s.trim()),
+  ]);
+  if (local === remote) return "up to date";
+  try {
+    await git(worktreePath, "merge", "--ff-only", "@{u}"); // refuses (exits non-zero) if not a fast-forward
+    return "synced";
+  } catch {
+    return "diverged";
+  }
+}
+
+/**
+ * Pull remote work down into local worktrees: fetch the repo's remote ONCE, then fast-forward every
+ * worktree's branch to its upstream. Returns a per-branch outcome. Never forces or discards local
+ * work (see syncWorktree) — dirty/diverged/no-upstream worktrees are skipped and reported.
+ */
+export async function syncWorktrees(repoPath: string, worktreeRoot: string): Promise<SyncResult[]> {
+  await git(repoPath, "fetch").catch(() => {}); // best-effort; local-only repos have no remote
+  const worktrees = await listWorktrees(repoPath, worktreeRoot);
+  return Promise.all(worktrees.map(async ({ branch, worktreePath }) => ({ branch, outcome: await syncWorktree(worktreePath) })));
 }
 
 /** Add a worktree for an EXISTING branch (adopt a PR). Fetches the remote branch first. */

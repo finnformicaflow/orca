@@ -5,14 +5,14 @@ import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody } from "../server/git";
+import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
 import { ciEvidence, convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
-  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackClipboard, slackMessage, slackPrompt, slugifyBranch, validPrDescription, withAttachments, type WorkstreamState,
+  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -678,5 +678,83 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
 
   test("no prUrl → no Copy link (nothing to copy)", () => {
     expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge", "addressReview"]);
+  });
+});
+
+// W8 sync worktrees: pull remote work down by fast-forwarding each worktree to its upstream.
+// Safety is the point — dirty trees and diverged branches are reported and left untouched.
+describe("W8 sync-worktrees", () => {
+  const gitc = (dir: string, ...args: string[]) => run(["git", "-C", dir, ...args]);
+  const commit = async (dir: string, file: string, body: string, msg: string) => {
+    await writeFile(join(dir, file), body);
+    await gitc(dir, "add", ".");
+    await gitc(dir, "commit", "-m", msg);
+  };
+
+  test("fast-forwards behind, skips dirty + diverged (never clobbers), reports per-branch", async () => {
+    // origin (bare) ← local (working clone with worktrees) ; driver advances origin behind local's back.
+    const seed = await makeScratchRepo();
+    const origin = await mkdtemp(join(tmpdir(), "orca-origin-"));
+    await run(["git", "clone", "--bare", seed, origin]);
+    const local = await mkdtemp(join(tmpdir(), "orca-local-"));
+    await run(["git", "clone", origin, local]);
+    await gitc(local, "config", "user.email", "test@orca.dev");
+    await gitc(local, "config", "user.name", "Orca Test");
+    const root = join(local, ".worktrees");
+
+    // Three tracked worktrees off origin/main, each pushed so it has an upstream on origin.
+    for (const b of ["behind", "dirty", "diverged"]) {
+      const wt = join(root, b);
+      await gitc(local, "worktree", "add", "-b", b, wt, "origin/main");
+      await commit(wt, `${b}.txt`, "base\n", `${b}: base`);
+      await gitc(wt, "push", "-u", "origin", b);
+    }
+    // A branch with no upstream configured (off local HEAD, never pushed) → reported "no upstream".
+    await gitc(local, "worktree", "add", "-b", "lonely", join(root, "lonely"));
+
+    // Advance origin's copies of behind + dirty (a clean ff would now be possible for both).
+    const driver = await mkdtemp(join(tmpdir(), "orca-driver-"));
+    await run(["git", "clone", origin, driver]);
+    await gitc(driver, "config", "user.email", "test@orca.dev");
+    await gitc(driver, "config", "user.name", "Orca Test");
+    for (const b of ["behind", "dirty", "diverged"]) {
+      await gitc(driver, "checkout", b);
+      await commit(driver, `${b}.txt`, "remote\n", `${b}: remote advance`);
+      await gitc(driver, "push", "origin", b);
+    }
+
+    // Dirty: an uncommitted local edit that a sync must NOT discard.
+    await writeFile(join(root, "dirty", "dirty.txt"), "local uncommitted edit\n");
+    // Diverged: a local commit not on origin — origin also moved, so no fast-forward is possible.
+    await commit(join(root, "diverged"), "diverged.txt", "local\n", "diverged: local-only");
+    const divergedHeadBefore = (await gitc(join(root, "diverged"), "rev-parse", "HEAD")).trim();
+
+    const results = await syncWorktrees(local, root);
+    const outcome = (b: string) => results.find((r) => r.branch === b)?.outcome;
+    expect(outcome("behind")).toBe("synced");
+    expect(outcome("dirty")).toBe("dirty");
+    expect(outcome("diverged")).toBe("diverged");
+    expect(outcome("lonely")).toBe("no upstream");
+
+    // (a) behind fast-forwarded to origin's tip.
+    expect((await readFile(join(root, "behind", "behind.txt"), "utf8"))).toBe("remote\n");
+    expect((await gitc(join(root, "behind"), "rev-parse", "HEAD")).trim())
+      .toBe((await gitc(join(root, "behind"), "rev-parse", "@{u}")).trim());
+    // (b) dirty NOT clobbered: the uncommitted edit survives, HEAD untouched (still on base).
+    expect((await readFile(join(root, "dirty", "dirty.txt"), "utf8"))).toBe("local uncommitted edit\n");
+    // (c) diverged left untouched: HEAD is still the local-only commit.
+    expect((await gitc(join(root, "diverged"), "rev-parse", "HEAD")).trim()).toBe(divergedHeadBefore);
+
+    // A second sync is idempotent: the now-current worktree reports "up to date".
+    expect((await syncWorktrees(local, root)).find((r) => r.branch === "behind")?.outcome).toBe("up to date");
+  });
+
+  test("summarizeSync rolls per-branch outcomes into a one-line report", () => {
+    expect(summarizeSync([])).toBe("no worktrees");
+    expect(summarizeSync([
+      { branch: "a", outcome: "synced" }, { branch: "b", outcome: "synced" },
+      { branch: "c", outcome: "up to date" },
+      { branch: "d", outcome: "dirty" }, { branch: "e", outcome: "diverged" }, { branch: "f", outcome: "no upstream" },
+    ])).toBe("synced 2, up to date 1, skipped: dirty 1, diverged 1, no upstream 1");
   });
 });
