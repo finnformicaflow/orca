@@ -1,4 +1,4 @@
-// Launches Claude, Codex, or Antigravity headlessly and tracks status + provider-native
+// Launches Claude, Codex, or Cursor headlessly and tracks status + provider-native
 // session id, so the UI can show done/error and "Copy CLI" can resume the exact conversation.
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
@@ -6,7 +6,7 @@ import { retryTitle } from "./title";
 import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
-import { homedir, tmpdir } from "os";
+import { tmpdir } from "os";
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
 // cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
@@ -166,29 +166,25 @@ export function parseCodexOutput(raw: string): { sessionId?: string; result?: st
   } };
 }
 
-/** Antigravity print mode emits plain response text. Its workspace-scoped conversation UUID is
- *  stored separately so `agy --conversation <id>` can resume the exact thread. */
-export function parseAgyOutput(raw: string): { result?: string; meta: RunMeta } {
-  const result = raw.trim() || undefined;
-  return { result, meta: { model: "Antigravity", numTurns: result ? 1 : undefined } };
-}
-
-export function agySessionIdFromCache(raw: string, cwd: string): string | undefined {
+/** Cursor's `--print --output-format json` emits a single result object carrying the response, the
+ *  chosen chat id (`session_id`, resumable with `cursor-agent --resume <id>`), and token usage.
+ *  Cursor doesn't report which model ran, so the card just labels it "Cursor". Pure. */
+export function parseCursorOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta: RunMeta } {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   try {
-    const sessions = JSON.parse(raw);
-    return typeof sessions?.[cwd] === "string" ? sessions[cwd] : undefined;
+    const j = JSON.parse(raw.trim());
+    return {
+      sessionId: typeof j.session_id === "string" ? j.session_id : undefined,
+      result: typeof j.result === "string" ? j.result : undefined,
+      isError: Boolean(j.is_error),
+      meta: {
+        model: "Cursor", numTurns: 1, durationMs: num(j.duration_ms),
+        inputTokens: num(j.usage?.inputTokens), outputTokens: num(j.usage?.outputTokens),
+        cacheReadTokens: num(j.usage?.cacheReadTokens), cacheCreationTokens: num(j.usage?.cacheWriteTokens),
+      },
+    };
   } catch {
-    return undefined;
-  }
-}
-
-async function agySessionId(cwd: string): Promise<string | undefined> {
-  try {
-    const file = Bun.file(`${homedir()}/.gemini/antigravity-cli/cache/last_conversations.json`);
-    if (!await file.exists()) return undefined;
-    return agySessionIdFromCache(await file.text(), cwd);
-  } catch {
-    return undefined;
+    return { isError: false, meta: { model: "Cursor" } }; // non-JSON (crash) — let the exit code decide
   }
 }
 
@@ -199,8 +195,8 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
       ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, prompt]
       : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
   }
-  if (provider === "agy") {
-    return ["agy", ...(resume ? ["--conversation", resume] : []), "-p", prompt, "--dangerously-skip-permissions"];
+  if (provider === "cursor") {
+    return ["cursor-agent", "-p", prompt, ...(resume ? ["--resume", resume] : []), "--output-format", "json", "--force", "--trust"];
   }
   return ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json"];
 }
@@ -238,11 +234,12 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       isError = parsed.isError;
       meta = parsed.meta;
       resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
-    } else if (provider === "agy") {
-      const parsed = parseAgyOutput(out);
+    } else if (provider === "cursor") {
+      const parsed = parseCursorOutput(out);
       result = parsed.result;
+      isError = parsed.isError;
       meta = parsed.meta;
-      resolvedSessionId = await agySessionId(cwd);
+      resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
     } else {
       try {
         const j = JSON.parse(out.trim());
@@ -283,7 +280,7 @@ export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: str
     return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
   }
   if (provider === "codex") return ["codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--sandbox", "read-only", "-C", cwd, prompt];
-  return ["agy", "-p", prompt, "--mode", "plan", "--dangerously-skip-permissions"];
+  return ["cursor-agent", "-p", prompt, "--output-format", "json", "--mode", "ask", "--trust"];
 }
 
 /** Read-only argv for asking the implementation agent's native session to author its PR body. */
@@ -294,7 +291,7 @@ export function prDescriptionCommand(provider: AgentProvider, cwd: string, promp
   if (provider === "codex") {
     return ["codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', resume, prompt];
   }
-  return ["agy", "--conversation", resume, "-p", prompt, "--mode", "plan", "--dangerously-skip-permissions"];
+  return ["cursor-agent", "-p", prompt, "--resume", resume, "--output-format", "json", "--mode", "ask", "--trust"];
 }
 
 async function commandOutput(provider: AgentProvider, args: string[], cwd: string, purpose: "title" | "description"): Promise<string> {
@@ -310,12 +307,14 @@ async function commandOutput(provider: AgentProvider, args: string[], cwd: strin
     if (parsed.isError) throw new Error(`${provider} ${purpose} failed`);
     return parsed.result ?? "";
   }
-  return out.trim();
+  const parsed = parseCursorOutput(out);
+  if (parsed.isError) throw new Error(`${provider} ${purpose} failed`);
+  return parsed.result ?? "";
 }
 
 async function oneShot(provider: AgentProvider, prompt: string, purpose: "title" | "description"): Promise<string> {
   // The prompt is self-contained. Running outside the repo avoids loading project instructions and
-  // prevents Antigravity's helper conversation from replacing the worktree's resumable session.
+  // prevents the helper conversation from replacing the worktree's resumable session.
   const cwd = tmpdir();
   const args = oneShotCommand(provider, cwd, prompt, purpose);
   return commandOutput(provider, args, cwd, purpose);
@@ -350,11 +349,11 @@ export function stop(key: string): void {
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
 }
 
-/** Recognize the headless CLI forms Orca launches, including resumed Antigravity conversations. */
+/** Recognize the headless CLI forms Orca launches, including resumed Cursor conversations. */
 export function isHeadlessAgentProcess(line: string): boolean {
   return line.includes("claude -p")
     || line.includes("codex exec")
-    || (/(?:^|\s)(?:\S*\/)?agy(?:\s|$)/.test(line) && /(?:^|\s)(?:-p|--print)(?:\s|$)/.test(line));
+    || (/(?:^|\s)(?:\S*\/)?cursor-agent(?:\s|$)/.test(line) && /(?:^|\s)(?:-p|--print)(?:\s|$)/.test(line));
 }
 
 /** Kill a running agent by branch (via ps) — works even after a restart lost the handle. */

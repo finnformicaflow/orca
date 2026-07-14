@@ -9,8 +9,8 @@ prompt a coding agent → open PR → watch CI/comments → fix conflicts → Sl
 bump if it's been a day → merge. Every transition is hand-driven. **Orca automates the
 connective tissue between "managing agents" and "managing PRs."**
 
-**Orca launches Claude, Codex, or Antigravity headless.** On create, the user selects a provider and Orca runs
-`claude -p`, `codex exec`, or `agy -p` (using the CLI's existing login — no API key) in the new worktree, and shows a
+**Orca launches Claude, Codex, or Cursor headless.** On create, the user selects a provider and Orca runs
+`claude -p`, `codex exec`, or `cursor-agent -p` (using the CLI's existing login — no API key) in the new worktree, and shows a
 status badge (running/done/error). It does NOT stream output or host a chat — for that,
 "Copy CLI" gives you the provider-native resume command to jump into an interactive session.
 Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native

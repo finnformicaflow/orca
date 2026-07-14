@@ -58,7 +58,7 @@ export const apiFake = {
 
 mock.module("@/api", () => ({
   api: {
-    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "agy"] }),
+    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"] }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },

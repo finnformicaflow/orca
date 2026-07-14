@@ -639,7 +639,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
   const transcript = current.transcript ?? row.transcript ?? [];
   const nativeTurns = sessionId ? transcript.filter((turn) => turn.provider === provider && turn.sessionId === sessionId) : [];
   const repeatedFailures = nativeTurns.slice(-3).length === 3 && nativeTurns.slice(-3).every((turn) => turn.failed);
-  // Codex reports token usage but not its context-window occupancy; Antigravity exposes neither.
+  // Codex and Cursor report token usage but not their context-window occupancy.
   // Reset only on observable bounded history, never a fabricated percentage.
   const portableReset = provider !== "claude" && (nativeTurns.length >= 12 || repeatedFailures);
   const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull && !portableReset;

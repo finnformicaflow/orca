@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, agySessionIdFromCache, isHeadlessAgentProcess, oneShotCommand, parseAgyOutput, parseCodexOutput, prDescriptionCommand } from "../server/agent";
+import { agentCommand, isHeadlessAgentProcess, oneShotCommand, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
 import { attachCommand, handoffPrompt, parseAgentOutcome, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -23,10 +23,10 @@ afterEach(async () => {
 describe("provider adapters", () => {
   test("the provider snapshot is referentially stable for React cold starts", () => {
     expect(store.agentProviders()).toBe(store.agentProviders());
-    expect(store.agentProviders()).toContain("agy");
+    expect(store.agentProviders()).toContain("cursor");
   });
 
-  test("builds native fresh/resume commands for Claude, Codex, and Antigravity", () => {
+  test("builds native fresh/resume commands for Claude, Codex, and Cursor", () => {
     expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
       "claude", "-p", "go", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "json",
     ]);
@@ -36,27 +36,28 @@ describe("provider adapters", () => {
     expect(agentCommand("codex", "/wt/x", "go", "x-1")).toEqual([
       "codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "x-1", "go",
     ]);
-    expect(agentCommand("agy", "/wt/x", "go")).toEqual([
-      "agy", "-p", "go", "--dangerously-skip-permissions",
+    expect(agentCommand("cursor", "/wt/x", "go")).toEqual([
+      "cursor-agent", "-p", "go", "--output-format", "json", "--force", "--trust",
     ]);
-    expect(agentCommand("agy", "/wt/x", "go", "a-1")).toEqual([
-      "agy", "--conversation", "a-1", "-p", "go", "--dangerously-skip-permissions",
+    expect(agentCommand("cursor", "/wt/x", "go", "a-1")).toEqual([
+      "cursor-agent", "-p", "go", "--resume", "a-1", "--output-format", "json", "--force", "--trust",
     ]);
   });
 
-  test("recognizes new and resumed Antigravity runs for recovered status and stopping", () => {
-    expect(isHeadlessAgentProcess("123 /usr/local/bin/agy -p implement feat-1 --dangerously-skip-permissions")).toBe(true);
-    expect(isHeadlessAgentProcess("123 agy --conversation a-1 -p continue feat-1 --dangerously-skip-permissions")).toBe(true);
-    expect(isHeadlessAgentProcess("123 agy --conversation a-1")).toBe(false);
+  test("recognizes new and resumed Cursor runs for recovered status and stopping", () => {
+    expect(isHeadlessAgentProcess("123 /Users/x/.local/bin/cursor-agent -p implement feat-1 --force --trust")).toBe(true);
+    expect(isHeadlessAgentProcess("123 cursor-agent -p continue feat-1 --resume a-1 --force --trust")).toBe(true);
+    expect(isHeadlessAgentProcess("123 cursor-agent --resume a-1")).toBe(false);
   });
 
   test("uses the selected provider for isolated title and PR-description one-shots", () => {
     expect(oneShotCommand("claude", "/wt/x", "title", "title")).toContain("haiku");
     expect(oneShotCommand("codex", "/wt/x", "title", "title")[0]).toBe("codex");
     expect(oneShotCommand("codex", "/wt/x", "body", "description")).toContain("--ephemeral");
-    expect(oneShotCommand("agy", "/wt/x", "body", "description")[0]).toBe("agy");
+    expect(oneShotCommand("cursor", "/wt/x", "body", "description")[0]).toBe("cursor-agent");
+    expect(oneShotCommand("cursor", "/wt/x", "body", "description")).toContain("ask"); // read-only
     expect(oneShotCommand("codex", "/wt/x", "body", "description")).not.toContain("claude");
-    expect(oneShotCommand("agy", "/wt/x", "body", "description")).not.toContain("claude");
+    expect(oneShotCommand("cursor", "/wt/x", "body", "description")).not.toContain("claude");
   });
 
   test("PR descriptions resume each provider's native session in read-only mode", () => {
@@ -66,8 +67,8 @@ describe("provider adapters", () => {
     expect(prDescriptionCommand("codex", "/wt/x", "body", "x-1")).toEqual([
       "codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', "x-1", "body",
     ]);
-    expect(prDescriptionCommand("agy", "/wt/x", "body", "a-1")).toEqual([
-      "agy", "--conversation", "a-1", "-p", "body", "--mode", "plan", "--dangerously-skip-permissions",
+    expect(prDescriptionCommand("cursor", "/wt/x", "body", "a-1")).toEqual([
+      "cursor-agent", "-p", "body", "--resume", "a-1", "--output-format", "json", "--mode", "ask", "--trust",
     ]);
   });
 
@@ -84,12 +85,15 @@ describe("provider adapters", () => {
     });
   });
 
-  test("parses Antigravity print-mode output", () => {
-    expect(parseAgyOutput("Finished the work\n")).toEqual({
-      result: "Finished the work", meta: { model: "Antigravity", numTurns: 1 },
+  test("parses Cursor's JSON result, session id, and usage", () => {
+    expect(parseCursorOutput(JSON.stringify({
+      type: "result", is_error: false, duration_ms: 1943, result: "Finished the work",
+      session_id: "cursor-123", usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 5, cacheWriteTokens: 7 },
+    }))).toEqual({
+      sessionId: "cursor-123", result: "Finished the work", isError: false,
+      meta: { model: "Cursor", numTurns: 1, durationMs: 1943, inputTokens: 12, outputTokens: 3, cacheReadTokens: 5, cacheCreationTokens: 7 },
     });
-    expect(agySessionIdFromCache('{"/wt/x":"agy-123"}', "/wt/x")).toBe("agy-123");
-    expect(agySessionIdFromCache("not json", "/wt/x")).toBeUndefined();
+    expect(parseCursorOutput("not json").isError).toBe(false); // non-JSON crash → exit code decides
   });
 
   test("portable handoff includes prior instructions/outcomes and the new request", () => {
@@ -134,13 +138,13 @@ describe("provider adapters", () => {
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", sessionId: "c-1" })).toBe('cd "/wt/x" && claude --resume c-1 --permission-mode auto');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", sessionId: "x-1" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox x-1');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "codex" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", sessionId: "a-1" })).toBe('cd "/wt/x" && agy --conversation a-1 --dangerously-skip-permissions');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy" })).toBe('cd "/wt/x" && agy -c --dangerously-skip-permissions');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", sessionId: "a-1" })).toBe('cd "/wt/x" && cursor-agent --resume a-1 --force');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor" })).toBe('cd "/wt/x" && cursor-agent --continue --force');
     // No id but the provider has run here → continue its latest; `fresh` → start a new session.
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude" })).toBe('cd "/wt/x" && claude --continue --permission-mode auto');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", fresh: true })).toBe('cd "/wt/x" && claude --permission-mode auto');
     expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true })).toBe('cd "/wt/x" && codex --dangerously-bypass-approvals-and-sandbox');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "agy", fresh: true })).toBe('cd "/wt/x" && agy --dangerously-skip-permissions');
+    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", fresh: true })).toBe('cd "/wt/x" && cursor-agent --force');
   });
 });
 
@@ -227,10 +231,10 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
-  test("switching to Antigravity hands it the same portable transcript", async () => {
-    await store.followUp(row, "take over", [], { provider: "agy" });
+  test("switching to Cursor hands it the same portable transcript", async () => {
+    await store.followUp(row, "take over", [], { provider: "cursor" });
     const launch = apiFake.agentLaunches.at(-1)!;
-    expect(launch.provider).toBe("agy");
+    expect(launch.provider).toBe("cursor");
     expect(launch.resume).toBeUndefined();
     expect(launch.handoffFrom).toBe("claude");
     expect(launch.history).toEqual(prior);
@@ -292,14 +296,14 @@ describe("cross-provider continuation", () => {
     expect(launch.prompt).not.toContain("% context");
   });
 
-  test("Antigravity resets after repeated observed failures but otherwise resumes natively", async () => {
+  test("Cursor resets after repeated observed failures but otherwise resumes natively", async () => {
     const failed: AgentTurn[] = Array.from({ length: 3 }, (_, i) => ({
-      id: `a-${i}`, provider: "agy", prompt: `turn ${i}`, response: "failed", sessionId: "agy-session", failed: true,
+      id: `a-${i}`, provider: "cursor", prompt: `turn ${i}`, response: "failed", sessionId: "cursor-session", failed: true,
     }));
-    await store.followUp({ ...row, agentProvider: "agy", sessionId: "agy-session", transcript: failed }, "repair", [], { provider: "agy" });
+    await store.followUp({ ...row, agentProvider: "cursor", sessionId: "cursor-session", transcript: failed }, "repair", [], { provider: "cursor" });
     expect(apiFake.agentLaunches.at(-1)!.resume).toBeUndefined();
 
-    await store.followUp({ ...row, agentProvider: "agy", sessionId: "agy-session", transcript: failed.slice(0, 2) }, "continue", [], { provider: "agy" });
-    expect(apiFake.agentLaunches.at(-1)!.resume).toBe("agy-session");
+    await store.followUp({ ...row, agentProvider: "cursor", sessionId: "cursor-session", transcript: failed.slice(0, 2) }, "continue", [], { provider: "cursor" });
+    expect(apiFake.agentLaunches.at(-1)!.resume).toBe("cursor-session");
   });
 });

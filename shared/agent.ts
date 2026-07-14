@@ -1,4 +1,4 @@
-export const AGENT_PROVIDERS = ["claude", "codex", "agy"] as const;
+export const AGENT_PROVIDERS = ["claude", "codex", "cursor"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
 
 export type AgentOutcome = {
@@ -73,7 +73,7 @@ export function withOutcomeContract(instruction: string): string {
   return `${instruction}\n\nAvoid unrelated cleanup.\n\n${OUTCOME_CONTRACT}`;
 }
 
-export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "agy" ? "Antigravity" : "Claude";
+export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "cursor" ? "Cursor" : "Claude";
 
 export function isAgentProvider(value: unknown): value is AgentProvider {
   return AGENT_PROVIDERS.includes(value as AgentProvider);
@@ -140,9 +140,9 @@ export function attachCommand(input: { worktreePath: string; provider?: AgentPro
     if (input.sessionId) return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId}`;
     return input.fresh ? `${cd}codex --dangerously-bypass-approvals-and-sandbox` : `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last`;
   }
-  if (input.provider === "agy") {
-    if (input.sessionId) return `${cd}agy --conversation ${input.sessionId} --dangerously-skip-permissions`;
-    return `${cd}agy ${input.fresh ? "" : "-c "}--dangerously-skip-permissions`;
+  if (input.provider === "cursor") {
+    if (input.sessionId) return `${cd}cursor-agent --resume ${input.sessionId} --force`;
+    return `${cd}cursor-agent ${input.fresh ? "" : "--continue "}--force`;
   }
   if (input.sessionId) return `${cd}claude --resume ${input.sessionId} --permission-mode auto`;
   return `${cd}claude ${input.fresh ? "" : "--continue "}--permission-mode auto`;

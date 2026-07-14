@@ -82,7 +82,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
   if (req.method === "GET" && p === "/api/usage") {
-    return json(await usage()); // Claude + Codex account usage; Antigravity has no bridge here
+    return json(await usage()); // Claude + Codex account usage; Cursor has no usage bridge here
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
