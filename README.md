@@ -27,14 +27,18 @@ Orca infers which behavior is needed from the selected provider. See `CLAUDE.md`
 bun install
 ```
 
-Point Orca at the repo you want to manage — edit `orca.config.ts`, or set env vars:
+Point Orca at the repos you want to manage in `orca.config.ts` (each entry has its own
+`repoPath`/`worktreeRoot`/`baseBranch`/`previewServices`). Repo paths are resolved against a
+**required** base dir given by `ORCA_DEV_ROOT`, so the config needs no editing on a new laptop —
+set it to the directory that holds your repos:
 
 ```sh
-export ORCA_REPO_PATH=/absolute/path/to/your/repo
-export ORCA_WORKTREE_ROOT=/absolute/path/to/orca-worktrees
-export ORCA_BASE_BRANCH=main
-export ORCA_DEV_COMMAND="bun run dev --port {port}"   # how to start a preview; {port} is filled in
+export ORCA_DEV_ROOT=/absolute/path/to/your/dev/dir   # e.g. ~/Documents/dev; startup fails if unset
 ```
+
+At least one agent CLI (`claude`, `codex`, `agy`) must be on the **bridge's** `$PATH`. If a CLI
+lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shell you launch
+`bun run dev` from, or you'll see `Executable not found in $PATH`.
 
 ## Run
 

@@ -1,8 +1,10 @@
 import type { OrcaConfig } from "./server/config";
 
-// Base directory holding the managed repos. Override per-machine with ORCA_DEV_ROOT so this
-// file doesn't need editing on a new laptop; defaults to ~/Documents.
-const DEV = process.env.ORCA_DEV_ROOT ?? `${process.env.HOME}/Documents`;
+// Base directory holding the managed repos. REQUIRED — set ORCA_DEV_ROOT per-machine (e.g.
+// ~/Documents/dev) so this file needs no editing on a new laptop. Fail loudly if unset rather
+// than silently resolving repo paths against a wrong default.
+const DEV = process.env.ORCA_DEV_ROOT;
+if (!DEV) throw new Error("ORCA_DEV_ROOT is not set — point it at the base dir holding your managed repos (see README)");
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {

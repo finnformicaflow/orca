@@ -2,4 +2,4 @@
 # Register a DOM (happy-dom) before component tests run, and install the fake browser-api layer
 # before any test imports the store (which binds `api` + reads config once at module load). Server
 # tests ignore both.
-preload = ["./tests/happydom.ts", "./tests/apiFake.ts"]
+preload = ["./tests/env.ts", "./tests/happydom.ts", "./tests/apiFake.ts"]
