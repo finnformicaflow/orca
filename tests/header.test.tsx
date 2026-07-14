@@ -56,4 +56,14 @@ describe("header", () => {
     expect(btnByText("List")).toBeUndefined();
     expect(btnByText("Review")).toBeUndefined();
   });
+
+  test("the density toggle flips comfortable ⇄ dense (aria-pressed + persisted)", async () => {
+    await mount();
+    const toggle = container!.querySelector<HTMLButtonElement>('button[aria-label^="Switch to"]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-pressed")).toBe("false"); // comfortable by default
+    await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("orca.density")).toBe('"dense"');
+  });
 });

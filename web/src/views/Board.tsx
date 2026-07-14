@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
@@ -265,6 +265,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const isDone = row.lane === "DONE";
   const isOpenPr = Boolean(row.prNumber) && !isDone;
   const isLocal = !row.prNumber && !isDone; // draft or local (no-remote) branch
+  // Dense view strips the card to its at-a-glance status (kept: repo, title, status/condition
+  // badges); the prompt, diffstat, and preview+actions footer are dropped. Done cards are already
+  // compact, so they never densify.
+  const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
   // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
   // gain one on first action).
@@ -290,7 +294,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className={`bg-card relative flex flex-col gap-2 rounded-md border p-3 shadow-sm ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
+    <div className={`bg-card relative flex flex-col rounded-md border shadow-sm ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
       {busy && (
         <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-md">
           <Loader2 className="text-muted-foreground size-5 animate-spin" />
@@ -315,7 +319,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         ) : (
           <div className="truncate text-sm font-medium">{row.title}</div>
         )}
-        {row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
+        {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
       </div>
 
       {/* State: agent status leads (standardised across lanes), then Run, then condition badges.
@@ -340,7 +344,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
       {/* Detail: file changes + the card's agent picker, justified to opposite ends. All lanes but
           Done. (The worktree/branch name is dropped as visual noise — copy it from the top-right menu.) */}
-      {!isDone && (
+      {!isDone && !dense && (
         <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
           {summary ? (
             <Diffstat summary={summary} />
@@ -353,8 +357,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
       {/* Preview + actions, below a divider — separated from the session info above. The preview
-          (Test locally) leads, then the PR/agent verbs. */}
-      {!isDone && (
+          (Test locally) leads, then the PR/agent verbs. Dropped in dense view — flip back to
+          comfortable to act; the title still links to the detail view. */}
+      {!isDone && !dense && (
         <div className="space-y-2 border-t pt-2.5">
           <PreviewControl row={row} />
           <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
