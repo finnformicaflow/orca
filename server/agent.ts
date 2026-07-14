@@ -348,7 +348,9 @@ export async function describePr(provider: AgentProvider, prompt: string, option
 export function slackPostCommand(provider: AgentProvider, cwd: string, prompt: string): string[] {
   if (provider === "claude") return ["claude", "-p", prompt, "--model", "haiku", "--permission-mode", "bypassPermissions", "--output-format", "json"];
   if (provider === "codex") return ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
-  return ["cursor-agent", "-p", prompt, "--force", "--output-format", "json"];
+  // `--force` auto-allows commands but NOT MCP servers; `--approve-mcps` lets the headless run use the
+  // Slack MCP without an approval prompt.
+  return ["cursor-agent", "-p", prompt, "--force", "--approve-mcps", "--output-format", "json"];
 }
 
 /** Run the pinned provider headless to post a Slack message through its Slack tool. Returns true on a

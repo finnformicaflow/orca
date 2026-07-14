@@ -13,7 +13,7 @@ test("slackPostCommand runs each provider with tools enabled and a cheap model w
     "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/repo", "post it",
   ]);
   expect(slackPostCommand("cursor", "/repo", "post it")).toEqual([
-    "cursor-agent", "-p", "post it", "--force", "--output-format", "json",
+    "cursor-agent", "-p", "post it", "--force", "--approve-mcps", "--output-format", "json",
   ]);
   // NOT the read-only one-shot form: the agent must be able to actually call its Slack tool.
   expect(slackPostCommand("claude", "/repo", "x")).not.toContain("--tools");
