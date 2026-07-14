@@ -20,6 +20,7 @@ export type LiveAgent = {
   agentPrompt?: string;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";
+  tmux?: boolean; // a live interactive tmux terminal exists for this worktree
 };
 
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
@@ -51,6 +52,8 @@ export const api = {
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
   handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
+  ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
+    post("/api/terminal/ensure", { repo, ...b }),
   slack: (repo: string, provider: AgentProvider, text: string): Promise<{ posted: boolean }> => post("/api/slack", { repo, provider, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),

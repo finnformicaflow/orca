@@ -10,6 +10,7 @@ import { navigate, type PrTab } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
+import { TerminalPanel } from "@/components/Terminal";
 import { ActionButton } from "@/components/ActionButton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -85,6 +86,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
           <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
+          <TabsTrigger value="terminal">Terminal</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
 
@@ -117,6 +119,10 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               <Badge variant={c.status === "passing" ? "success" : c.status === "failing" ? "destructive" : "outline"} className="capitalize">{c.status}</Badge>
             </div>
           ))}
+        </TabsContent>
+
+        <TabsContent value="terminal" className="pt-3">
+          {sub === "terminal" && <TerminalPanel row={row} />}
         </TabsContent>
 
         <TabsContent value="preview">

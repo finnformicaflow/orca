@@ -11,8 +11,13 @@ connective tissue between "managing agents" and "managing PRs."**
 
 **Orca launches Claude, Codex, or Cursor headless.** On create, the user selects a provider and Orca runs
 `claude -p`, `codex exec`, or `cursor-agent -p` (using the CLI's existing login — no API key) in the new worktree, and shows a
-status badge (running/done/error). It does NOT stream output or host a chat — for that,
-"Copy CLI" gives you the provider-native resume command to jump into an interactive session. When you
+status badge (running/done/error). Headless one-shot is the mechanism for the AUTOMATED board actions
+(create, Fix CI, Resolve conflicts, Address review, Follow up, Slack, PR description) — they need the
+structured outcome / portable transcript / run ledger, so **board automation is never routed through
+tmux**. Alongside it there is now a deliberate **interactive tmux lane** (see below) — a live browser
+terminal you drive by hand. Both operate on the SAME worktree, so git stays the source of truth and
+they coexist. For a quick jump to a real terminal, "Copy CLI" still gives the provider-native resume
+command to jump into an interactive session. When you
 switch a card's agent (e.g. one model is maxed out), Copy CLI instead seeds a NEW interactive session
 of the pinned provider with the portable transcript (written to a handoff file under the state dir,
 never the worktree), so you keep prompting the new model in-context and the previous model is never
@@ -32,7 +37,10 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 ## Architecture
 
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
-  a plain-JSON API. `Vite` is dev-only (HMR + proxy). No streaming.
+  a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the interactive
+  terminal WebSocket (`/api/terminal/ws`) — everything else is request/response. The listen socket is
+  **bound to `127.0.0.1` only** (single-user local tool) so the terminal — which sends keystrokes into
+  a live shell — is never network-reachable.
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
   start a dev server. The bridge does *only* what the browser
   physically can't, plus proxies GitHub so tokens never touch the browser. It is not a
@@ -64,6 +72,34 @@ its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). T
 **all repos aggregated** — the store polls each repo and `useWorkstreams()` builds unified
 rows tagged by repo (each row carries `repo`; actions use `row.repo`). Enrichment is keyed
 `repo::branch`. The New-draft box has a repo **dropdown**; cards show a repo tag.
+
+## Interactive terminal (the hand-driven lane)
+
+A live browser terminal, backed by **tmux**, for driving an agent by hand — the deliberate exception
+to "hosts no chat UI and does not stream". It COEXISTS with headless one-shot (which stays the
+mechanism for every automated board action); both share the worktree, git is the source of truth.
+
+- **One tmux session per worktree**, namespaced `orca/<repo>/<branch-slug>` so it can't collide with
+  the user's own sessions. Pure naming lives in `shared/tmux.ts` (`sessionName`); the launch-vs-attach
+  *command* reuses `attachCommand` (`shared/agent.ts`) — so a terminal resumes EXACTLY like Copy CLI
+  (native resume, or a seeded cross-provider handoff file).
+- **`server/tmux.ts`** — thin wrappers over the real `tmux` binary (no node-pty / native module, per
+  the Bun-only rule): `ensureSession` (idempotent — re-open just re-attaches), `sessionExists`,
+  `sendKeys`, `capturePane`, `resize`, `killSession`, `listSessions`. tmux **outlives the bridge** by
+  design, so `listSessions` re-surfaces live terminals after a restart (dovetails with `lease.ts`);
+  `/api/agents` tags each worktree `tmux: true/false` for the card's live-session badge. If `tmux`
+  isn't installed the lane degrades (endpoint 501, no badge) rather than crashing.
+- **`server/terminal.ts` + `/api/terminal/ws`** — the WebSocket glue: on connect send the current
+  screen (`capture-pane -pe`), then stream raw ANSI via `tmux pipe-pane` → FIFO → `cat` → ws (binary
+  frames); client keystrokes → `send-keys -l`, resize → `resize-window`. Reconnects on drop.
+- **Frontend:** an xterm.js component (`web/src/components/Terminal.tsx`, all assets bundled — no CDN)
+  in a "Terminal" tab of the local/PR detail view.
+- **Two entry points:** "Open terminal" (card Agent menu + the Terminal tab, `ensureSession` first so
+  it works for a PR/worktree with no session yet); and "Start interactive session" in New-draft (the
+  ⌨ toggle) — cuts the worktree, starts the agent in tmux seeded with the typed prompt as its first
+  message, and drops you into the terminal. Closing the tab leaves it running.
+- **Lifecycle:** killed on Discard/Close (and when a merged branch is reaped); left running on normal
+  shutdown — persistence is the whole point.
 
 ## The one board & model
 

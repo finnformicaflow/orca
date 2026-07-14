@@ -3,6 +3,9 @@ import { API_PORT, loadConfig, repoOf } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
+import * as tmux from "./tmux";
+import { terminalWs, type TerminalData } from "./terminal";
+import { sessionName } from "../shared/tmux";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
@@ -11,7 +14,7 @@ import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { mergeSafe, prDescriptionPrompt, slackPostPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
-import { AGENT_PROVIDERS, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
+import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -183,6 +186,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/prs/close") {
     await gh.closePr(repo.repoPath, body.pr); // abandon without merging
+    if (body.branch) await tmux.killSession(sessionName(repo.name, body.branch)); // end the interactive terminal too
     if (body.worktreePath) {
       agent.stop(body.worktreePath);
       if (body.branch) await agent.killByBranch(body.branch);
@@ -229,6 +233,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.
     return json({ path: writeHandoffFile(repo.name, String(body.branch), String(body.content ?? "")) });
   }
+  if (req.method === "POST" && p === "/api/terminal/ensure") {
+    // Open (or re-open) the hand-driven tmux terminal for a worktree. Idempotent: an existing session
+    // is left as-is and the WS just re-attaches. The launch command reuses attachCommand — the exact
+    // native-resume / seeded-handoff logic Copy CLI uses — so the interactive lane and Copy CLI agree.
+    if (!tmux.available()) return json({ error: "tmux is not installed on this host" }, 501);
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!body.branch || !body.worktreePath) return json({ error: "branch and worktreePath required" }, 400);
+    const name = sessionName(repo.name, body.branch);
+    const command = attachCommand({ worktreePath: body.worktreePath, provider, sessionId: body.sessionId, fresh: body.fresh, seedFile: body.seedFile });
+    await tmux.ensureSession(name, body.worktreePath, command);
+    return json({ name });
+  }
   if (req.method === "POST" && p === "/api/worktrees/adopt") {
     const wt = await git.adoptWorktree(repo.repoPath, repo.worktreeRoot, body.branch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
@@ -242,6 +259,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/worktrees/remove") {
     agent.stop(body.worktreePath); // kill any running agent before removing its worktree
     if (body.branch) await agent.killByBranch(body.branch); // also catch ones orphaned by a restart
+    if (body.branch) await tmux.killSession(sessionName(repo.name, body.branch)); // and the interactive terminal
     preview.stop(body.worktreePath);
     await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     if (body.deleteBranch && body.branch) await git.deleteBranch(repo.repoPath, body.branch); // never for a PR branch
@@ -256,18 +274,23 @@ async function api(req: Request, url: URL): Promise<Response> {
     for (const w of wts.filter((w) => merged.has(w.branch))) {
       agent.stop(w.worktreePath);
       await agent.killByBranch(w.branch);
+      await tmux.killSession(sessionName(repo.name, w.branch));
       preview.stop(w.worktreePath);
       await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
       await git.deleteBranch(repo.repoPath, w.branch);
     }
     wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
+    // Interactive tmux sessions outlive the bridge, so discover them each poll (not from memory) —
+    // this is how the board re-surfaces a live terminal after a restart. Empty when tmux is absent.
+    const tmuxSessions = new Set(await tmux.listSessions());
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
     return json(await Promise.all(wts.map(async (w) => {
       const run = agent.status(w.worktreePath);
       const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
       return {
         ...w,
+        tmux: tmuxSessions.has(sessionName(repo.name, w.branch)),
         agentStatus,
         agentError: run.error,
         agentResult: run.result,
@@ -348,19 +371,34 @@ async function serveStatic(url: URL): Promise<Response> {
   return new Response("Orca bridge up. Build the UI with `bun run build`, or use `bun run dev`.");
 }
 
-Bun.serve({
+Bun.serve<TerminalData>({
   port: API_PORT,
+  // The interactive terminal streams a raw shell over this WS. Bind to localhost ONLY so it (and the
+  // rest of the bridge — a single-user local tool) is never exposed on the network. `send-keys` into
+  // a session would otherwise be remotely reachable.
+  hostname: "127.0.0.1",
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,
-  async fetch(req) {
+  async fetch(req, server) {
     const url = new URL(req.url);
+    // Interactive terminal WebSocket, scoped to repo+branch. The listen socket is localhost-only, so
+    // this endpoint is unreachable off the machine by construction.
+    if (url.pathname === "/api/terminal/ws") {
+      const repoName = url.searchParams.get("repo") ?? undefined;
+      const branch = url.searchParams.get("branch");
+      if (!branch) return json({ error: "branch required" }, 400);
+      const name = sessionName(repoOf(cfg, repoName).name, branch);
+      if (server.upgrade(req, { data: { name } })) return undefined;
+      return new Response("expected a websocket upgrade", { status: 426 });
+    }
     try {
       return url.pathname.startsWith("/api/") ? await api(req, url) : await serveStatic(url);
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
   },
+  websocket: terminalWs,
 });
 
 // Preview servers hold ports, so free them on shutdown. Agents are left running so a restart

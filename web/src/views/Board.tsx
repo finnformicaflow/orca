@@ -3,11 +3,11 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, startInteractive, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
+import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -212,6 +212,9 @@ function NewDraft() {
   const [provider, setProvider] = useState<AgentProvider>(() => providers[0] ?? "claude");
   useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
   const active = repo || repos[0]?.name || "";
+  // Interactive mode: instead of a headless one-shot run, start the agent in a tmux session seeded
+  // with the prompt and drop into the browser terminal to drive it by hand (see store.startInteractive).
+  const [interactive, setInteractive] = useState(false);
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
   // draft (wrong repo) can be reverted; Undo discards it (kills the run, removes the worktree+branch).
@@ -225,8 +228,15 @@ function NewDraft() {
   return (
     <ChatComposer
       persistKey="orca.newDraft"
-      placeholder="Describe a feature…  (⌘+Enter)"
-      onSubmit={async (text, images) => setUndoable(createWorkstream(active, text, images, provider))}
+      placeholder={interactive ? "Describe a feature — you'll drive it in a terminal…  (⌘+Enter)" : "Describe a feature…  (⌘+Enter)"}
+      onSubmit={async (text, images) => {
+        if (interactive) {
+          const { branch } = await startInteractive(active, text, provider);
+          navigate(`/${active}/local/${encodeURIComponent(branch)}/terminal`);
+        } else {
+          setUndoable(createWorkstream(active, text, images, provider));
+        }
+      }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
           Sent to <span className="text-foreground font-medium">{undoable.repo}</span>
@@ -253,6 +263,15 @@ function NewDraft() {
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>
           </Select>
+          <button
+            type="button"
+            aria-pressed={interactive}
+            onClick={() => setInteractive((v) => !v)}
+            title={interactive ? "Interactive: start the agent in a terminal you drive by hand" : "Headless: run the agent one-shot (default)"}
+            className={`hover:bg-accent inline-flex size-7 shrink-0 items-center justify-center rounded transition-colors ${interactive ? "text-foreground bg-accent" : "text-muted-foreground"}`}
+          >
+            <SquareTerminal className="size-4" />
+          </button>
         </div>
       }
     />
@@ -328,6 +347,15 @@ export function WorkstreamCard({ row }: { row: Row }) {
             </Badge>
           )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
+          {row.tmux && (
+            <button
+              type="button"
+              onClick={() => navigate(isOpenPr ? `/${row.repo}/prs/${row.prNumber}/terminal` : `/${row.repo}/local/${encodeURIComponent(row.branch)}/terminal`)}
+              title="A live terminal session is running — open it"
+            >
+              <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">Terminal <SquareTerminal /></Badge>
+            </button>
+          )}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
