@@ -7,8 +7,10 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const IMPORT_CONFIG = "await import('./orca.config.ts')";
 
+// `--env-file=/dev/null` stops Bun auto-loading the repo's own .env, so the unset case stays a
+// genuine "unset" even on a machine (or CI) that has a local .env setting ORCA_DEV_ROOT.
 async function importConfig(env: Record<string, string | undefined>) {
-  const proc = Bun.spawn(["bun", "-e", IMPORT_CONFIG], { cwd: ROOT, env, stdout: "ignore", stderr: "pipe" });
+  const proc = Bun.spawn(["bun", "--env-file=/dev/null", "-e", IMPORT_CONFIG], { cwd: ROOT, env, stdout: "ignore", stderr: "pipe" });
   return { code: await proc.exited, stderr: await new Response(proc.stderr).text() };
 }
 

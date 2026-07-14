@@ -29,11 +29,13 @@ bun install
 
 Point Orca at the repos you want to manage in `orca.config.ts` (each entry has its own
 `repoPath`/`worktreeRoot`/`baseBranch`/`previewServices`). Repo paths are resolved against a
-**required** base dir given by `ORCA_DEV_ROOT`, so the config needs no editing on a new laptop —
-set it to the directory that holds your repos:
+**required** base dir given by `ORCA_DEV_ROOT`, so the config needs no editing on a new laptop.
+Set it in a `.env` file at the repo root — Bun auto-loads it, and it's gitignored so it stays
+per-machine (the bridge fails loudly at startup if it's unset):
 
 ```sh
-export ORCA_DEV_ROOT=/absolute/path/to/your/dev/dir   # e.g. ~/Documents/dev; startup fails if unset
+cp .env.example .env
+# .env → ORCA_DEV_ROOT=$HOME/Documents/dev   (the dir that holds your repos)
 ```
 
 At least one agent CLI (`claude`, `codex`, `agy`) must be on the **bridge's** `$PATH`. If a CLI

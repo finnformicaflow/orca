@@ -4,3 +4,4 @@ web/dist/
 .DS_Store
 orca.config.local.ts
 .worktrees/
+.env
