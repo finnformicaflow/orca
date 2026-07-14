@@ -159,7 +159,7 @@ function ProviderPicker({ row }: { row: Row }) {
         size="sm"
         aria-label="Agent for this card"
         onClick={(e) => e.stopPropagation()}
-        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -mx-1 h-auto w-fit gap-0.5 border-transparent bg-transparent px-1 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
+        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent pl-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
       >
         {agentLabel(provider)}
       </SelectTrigger>
@@ -167,31 +167,6 @@ function ProviderPicker({ row }: { row: Row }) {
         {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
       </SelectContent>
     </Select>
-  );
-}
-
-// The card's agent picker + model/context for the last run. Claude exposes its actual model and
-// context fill; Codex exposes the provider but no trustworthy context-window percentage in exec
-// JSONL — keep those states honest rather than leaving a stale Claude model on a Codex-run card.
-function AgentMeta({ row }: { row: Row }) {
-  // Model/context describe the LAST run; show them only when the pinned agent is the one that ran,
-  // else the card would read e.g. "Claude · Codex 45% ctx" — a pin over another agent's stale meta.
-  const meta = providerFor(row) === (row.agentProvider ?? "claude") ? row.agentMeta : undefined;
-  const providerName = agentLabel(providerFor(row));
-  const extra: string[] = [];
-  if (meta?.model && meta.model.toLowerCase() !== providerName.toLowerCase()) extra.push(meta.model);
-  if (typeof meta?.contextPct === "number") extra.push(`${meta.contextPct}% ctx`);
-  const cost = typeof meta?.costUsd === "number" ? (meta.costUsd < 0.01 ? `$${meta.costUsd.toFixed(4)}` : `$${meta.costUsd.toFixed(2)}`) : "";
-  const tokens = meta?.inputTokens != null || meta?.outputTokens != null
-    ? `${(meta.inputTokens ?? 0).toLocaleString()} in / ${(meta.outputTokens ?? 0).toLocaleString()} out`
-    : "";
-  const cached = meta?.cacheReadTokens != null ? `${meta.cacheReadTokens.toLocaleString()} cached` : "";
-  const tip = [cost, tokens, cached, meta?.numTurns != null ? `${meta.numTurns} turns` : "", meta?.durationMs != null ? `${(meta.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ");
-  return (
-    <div className="flex min-w-0 items-center gap-1 truncate" title={tip || undefined}>
-      <ProviderPicker row={row} />
-      {extra.length > 0 && <span className="truncate">{" · "}{extra.join(" · ")}</span>}
-    </div>
   );
 }
 
@@ -365,8 +340,8 @@ export function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
 
-      {/* Detail: file changes + model/context, justified to opposite ends. All lanes but Done. (The
-          worktree/branch name is dropped as visual noise — copy it from the top-right menu.) */}
+      {/* Detail: file changes + the card's agent picker, justified to opposite ends. All lanes but
+          Done. (The worktree/branch name is dropped as visual noise — copy it from the top-right menu.) */}
       {!isDone && (
         <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
           {summary ? (
@@ -374,7 +349,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : isLocal ? (
             <div>no changes yet</div>
           ) : <div />}
-          {(row.agentMeta || row.agentProvider || row.worktreePath || row.prNumber) && <AgentMeta row={row} />}
+          {(row.agentMeta || row.agentProvider || row.worktreePath || row.prNumber) && <ProviderPicker row={row} />}
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}

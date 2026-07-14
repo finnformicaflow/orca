@@ -52,26 +52,21 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("card metadata identifies the provider before model and context", async () => {
+  test("the card shows only the agent picker — no model or context-fill readout", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, agentProvider: "claude", agentMeta: { model: "Opus 4.8", contextPct: 12 } });
-    expect(container!.textContent).toContain("Claude · Opus 4.8 · 12% ctx");
-  });
-
-  test("Codex metadata does not duplicate the provider as a model or show stale context", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount({ ...base, agentProvider: "codex", agentMeta: { model: "Codex", numTurns: 1 } });
-    expect(container!.textContent).toContain("Codex");
-    expect(container!.textContent).not.toContain("Codex · Codex");
+    const picker = container!.querySelector<HTMLElement>('[aria-label="Agent for this card"]');
+    expect(picker?.textContent).toContain("Claude");
+    expect(container!.textContent).not.toContain("Opus 4.8");
     expect(container!.textContent).not.toContain("ctx");
   });
 
-  test("agent metadata exposes measured token usage in its detail tooltip", async () => {
+  test("the agent picker names the run's provider, without a token/cost tooltip", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, agentProvider: "codex", agentMeta: { model: "Codex", inputTokens: 1234, outputTokens: 56, cacheReadTokens: 900 } });
-    const meta = [...container!.querySelectorAll("div")].find((node) => node.textContent === "Codex" && node.title);
-    expect(meta?.title).toContain("1,234 in / 56 out");
-    expect(meta?.title).toContain("900 cached");
+    const picker = container!.querySelector<HTMLElement>('[aria-label="Agent for this card"]');
+    expect(picker?.textContent).toContain("Codex");
+    expect([...container!.querySelectorAll("[title]")].some((n) => n.getAttribute("title")?.includes("in / "))).toBe(false);
   });
 
   test("a non-local (In Review) card shows a coloured diffstat, but not the (redundant) branch name", async () => {
