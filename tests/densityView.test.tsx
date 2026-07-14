@@ -44,36 +44,43 @@ afterEach(() => {
   apiFake.reset();
 });
 
+const byAria = (label: string) => container!.querySelector<HTMLElement>(`button[aria-label^="${label}"]`);
+const labelledBtn = (label: string) => [...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === label);
+
 describe("dense view", () => {
-  test("comfortable (default) shows the prompt, diffstat and actions footer", async () => {
+  test("comfortable (default) shows the prompt, diffstat and full labelled actions", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount(base);
+    await mount({ ...base, lane: "MERGEABLE" });
     expect(container!.textContent).toContain("Make the board denser"); // prompt
     expect(container!.textContent).toContain("2 files"); // diffstat
-    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(true); // actions
-    // Full-size badges + buttons — no dense size-down variants.
+    // Labelled toolbar (text buttons), not icon-only.
+    expect(labelledBtn("Follow up")).toBe(true);
+    expect(container!.textContent).toContain("Test locally");
+    expect(container!.textContent).toContain("Merge (unreviewed)");
+    // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
-    expect(hasClass("[data-slot=button]]:h-7")).toBe(false);
   });
 
-  test("dense drops the prompt, diffstat and preview but keeps title, status badges AND actions", async () => {
+  test("dense folds the toolbar into icon buttons: Test locally, Follow up, Merge, Actions", async () => {
     getDefaultStore().set(densityAtom, "dense");
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount(base);
+    await mount({ ...base, lane: "MERGEABLE" });
     // At-a-glance status survives.
     expect(container!.textContent).toContain("Add dense view"); // title
     expect(container!.textContent).toContain("CI"); // condition badge
     expect(container!.querySelector('[href="https://x/7"]')).not.toBeNull(); // PR destination link
-    // Actions stay so the card is still driveable.
-    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(true);
-    expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim().startsWith("Actions"))).toBe(true);
-    // Detail + preview are gone.
+    // Every verb is an icon button (found by aria-label), and none renders its text label.
+    expect(byAria("Test locally")).not.toBeNull();
+    expect(byAria("Follow up")).not.toBeNull();
+    expect(byAria("Merge")).not.toBeNull();
+    expect(byAria("Actions")).not.toBeNull();
+    expect(labelledBtn("Follow up")).toBe(false);
+    expect(container!.textContent).not.toContain("Test locally"); // label hidden, icon only
+    expect(container!.textContent).not.toContain("Merge (unreviewed)");
+    // Detail is gone; badges shrink.
     expect(container!.textContent).not.toContain("Make the board denser"); // prompt
     expect(container!.textContent).not.toContain("2 files"); // diffstat
-    expect(container!.textContent).not.toContain("Test locally"); // preview control
-    // Status badges + footer actions render a size smaller.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(true);
-    expect(hasClass("[data-slot=button]]:h-7")).toBe(true);
   });
 
   test("a Done card ignores dense (stays as-is)", async () => {

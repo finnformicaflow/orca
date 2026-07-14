@@ -265,10 +265,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const isDone = row.lane === "DONE";
   const isOpenPr = Boolean(row.prNumber) && !isDone;
   const isLocal = !row.prNumber && !isDone; // draft or local (no-remote) branch
-  // Dense view strips the card to its at-a-glance status (kept: repo, title, status/condition
-  // badges) plus the actions footer (Follow up + Actions menu, so it stays driveable); the prompt,
-  // diffstat, and preview control are dropped, and the badges + footer buttons render a size smaller.
-  // Done cards are already compact, so they never densify.
+  // Dense view strips the card to its at-a-glance status (kept: repo, title, smaller status/condition
+  // badges) plus a single toolbar row of icon buttons (Test locally, Follow up, Merge, Actions) so it
+  // stays driveable; the prompt and diffstat are dropped. Done cards stay compact — they never densify.
   const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
   // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
@@ -357,13 +356,19 @@ export function WorkstreamCard({ row }: { row: Row }) {
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}
 
-      {/* Preview + actions, below a divider — separated from the session info above. The preview
-          (Test locally) leads, then the PR/agent verbs. Dense keeps the actions (Follow up + the
-          Actions menu) so a card stays driveable, but drops the taller preview control. */}
+      {/* Preview + actions, below a divider — separated from the session info above. Comfortable
+          stacks the full-width Test-locally control over the labelled verbs; dense folds every verb
+          (Test locally, Follow up, Merge, Actions) into one row of icon buttons. */}
       {!isDone && (
-        <div className={`space-y-2 border-t ${dense ? "pt-1.5 [&_[data-slot=button]]:h-7 [&_[data-slot=button]]:gap-1 [&_[data-slot=button]]:px-2 [&_[data-slot=button]]:text-xs" : "pt-2.5"}`}>
-          {!dense && <PreviewControl row={row} />}
-          <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
+        <div className={`space-y-2 border-t ${dense ? "pt-1.5" : "pt-2.5"}`}>
+          {dense ? (
+            <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} compact leading={<PreviewControl row={row} compact />} />
+          ) : (
+            <>
+              <PreviewControl row={row} />
+              <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
+            </>
+          )}
         </div>
       )}
     </div>

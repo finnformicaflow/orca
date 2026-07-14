@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
   cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
@@ -25,7 +25,9 @@ import {
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
 
-export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void }) {
+// `compact` renders the toolbar as icon-only buttons (dense view); `leading` slots an extra control
+// (the dense Test-locally icon) into the front of that same row so the whole toolbar reads as one line.
+export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
   // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
@@ -74,20 +76,30 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
     ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
     : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`;
 
+  // Icon-only in compact (dense) view; labelled otherwise. `icon` keeps every toolbar button a
+  // consistent square so the row lines up regardless of which verbs are present.
+  const icon = compact ? "icon" : "sm";
+  const iconClass = compact ? "size-7" : undefined;
+  const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)}>
-          {submitting && <Loader2 className="size-4 animate-spin" />}Follow up
+        {leading}
+        <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
+          {compact
+            ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
+            : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>
         {row.lane === "MERGEABLE" && (
-          <Button size="sm" variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
-            Merge{unreviewed ? " (unreviewed)" : ""}
+          <Button size={icon} className={iconClass} variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }} title={mergeLabel} aria-label={mergeLabel}>
+            {compact ? <GitMerge className="size-3.5" /> : mergeLabel}
           </Button>
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="ghost">Actions <ChevronDown className="size-3.5" /></Button>
+            <Button size={icon} className={iconClass} variant="ghost" title="Actions" aria-label="Actions">
+              {compact ? <MoreHorizontal className="size-4" /> : <>Actions <ChevronDown className="size-3.5" /></>}
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[12rem]">
             {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
