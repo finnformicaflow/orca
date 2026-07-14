@@ -18,6 +18,8 @@ import type { Row } from "@/store";
 beforeAll(() => store.configReady);
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+// Raw (unescaped) class strings, so we can assert the dense size-down variants are wired on.
+const hasClass = (needle: string) => [...container!.querySelectorAll("*")].some((e) => e.getAttribute("class")?.includes(needle));
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
@@ -49,6 +51,9 @@ describe("dense view", () => {
     expect(container!.textContent).toContain("Make the board denser"); // prompt
     expect(container!.textContent).toContain("2 files"); // diffstat
     expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Follow up")).toBe(true); // actions
+    // Full-size badges + buttons — no dense size-down variants.
+    expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
+    expect(hasClass("[data-slot=button]]:h-7")).toBe(false);
   });
 
   test("dense drops the prompt, diffstat and preview but keeps title, status badges AND actions", async () => {
@@ -66,6 +71,9 @@ describe("dense view", () => {
     expect(container!.textContent).not.toContain("Make the board denser"); // prompt
     expect(container!.textContent).not.toContain("2 files"); // diffstat
     expect(container!.textContent).not.toContain("Test locally"); // preview control
+    // Status badges + footer actions render a size smaller.
+    expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(true);
+    expect(hasClass("[data-slot=button]]:h-7")).toBe(true);
   });
 
   test("a Done card ignores dense (stays as-is)", async () => {
