@@ -16,7 +16,7 @@ import {
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
-import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setReviewEvidenceFixture, setRunLogFixture, setViewFixture } from "./helpers";
+import { installFakeGh, makeScratchRepo, recordGhArgs, restorePath, setPrFixture, setPrListFixture, setRequiredChecksFixture, setReviewEvidenceFixture, setRunLogFixture, setViewFixture } from "./helpers";
 
 let repo: string;
 beforeAll(async () => {
@@ -493,6 +493,30 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
   expect(prs[0]!.failingChecks).toEqual(["unit"]);
   expect(prs[0]!.feedback).toEqual(["Please add a regression test"]);
+});
+
+test("S2b required-check gating: only merge-gating checks decide CI (advisory bots ignored)", async () => {
+  const rollup = [
+    { name: "build-backend", conclusion: "SUCCESS" },
+    { name: "claude-review", conclusion: "FAILURE" }, // advisory AI-review bot — not a merge gate
+  ];
+  const prFixture = (n: number) => [{ number: n, title: "Legible", headRefName: "feat-leg", baseRefName: "main", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, statusCheckRollup: rollup }];
+
+  // Branch protection requires only build-backend → the failing advisory bot is ignored, CI passes.
+  const gated = await makeScratchRepo(); // fresh cwd = fresh requiredChecks cache key
+  await setRequiredChecksFixture(["build-backend"]);
+  await setPrListFixture(prFixture(50));
+  const gatedPrs = await listPrs(gated);
+  expect(gatedPrs[0]!.ciStatus).toBe("passing");
+  expect(gatedPrs[0]!.failingChecks).toBeUndefined();
+
+  // Control: no branch protection (empty required set) → all checks count, so the bot fails CI.
+  const ungated = await makeScratchRepo();
+  await setRequiredChecksFixture([]);
+  await setPrListFixture(prFixture(51));
+  const ungatedPrs = await listPrs(ungated);
+  expect(ungatedPrs[0]!.ciStatus).toBe("failing");
+  expect(ungatedPrs[0]!.failingChecks).toEqual(["claude-review"]);
 });
 
 test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boolean flag", async () => {

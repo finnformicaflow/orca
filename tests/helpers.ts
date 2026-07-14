@@ -28,6 +28,7 @@ case "$1 $2" in
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
   "repo view") cat "$ORCA_GH_REPO_FIXTURE" ;;
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
+  *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;
   "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
   "pr merge") exit 0 ;;
   "pr ready") exit 0 ;;
@@ -94,6 +95,13 @@ export async function setReviewEvidenceFixture(obj: unknown): Promise<void> {
 
 export async function setRunLogFixture(log: string): Promise<void> {
   process.env.ORCA_GH_RUN_LOG_FIXTURE = await fixtureEnv("run-log", log);
+}
+
+/** Point the fake `gh api .../rules/branches/*` at a canned rules array (what requiredChecks parses).
+ *  Pass the required check names; unset (or []) means no branch protection. */
+export async function setRequiredChecksFixture(contexts: string[]): Promise<void> {
+  const rules = contexts.length ? [{ type: "required_status_checks", parameters: { required_status_checks: contexts.map((context) => ({ context })) } }] : [];
+  process.env.ORCA_GH_RULES_FIXTURE = await fixtureEnv("rules", JSON.stringify(rules));
 }
 
 /** Start recording every fake-`gh` invocation's args; returns a reader for what's been logged. */

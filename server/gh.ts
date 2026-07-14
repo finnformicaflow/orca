@@ -160,9 +160,9 @@ export function countExternalFeedback(
 // call at a time — `comments` and `statusCheckRollup` (CI). Together they turn a ~3s list of 200
 // PRs into ~14s, so both are detail-only (see listReviewPrs / prDetail). What's left are plain
 // index fields (state/draft/mergeable/reviewDecision) that come back in the single list call.
-const PR_META_FIELDS = "number,title,headRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest";
+const PR_META_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest";
 type RawPr = {
-  number: number; title: string; headRefName: string; url: string;
+  number: number; title: string; headRefName: string; baseRefName?: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
   autoMergeRequest?: { enabledAt?: string } | null;
   statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
@@ -170,16 +170,23 @@ type RawPr = {
   comments?: Array<{ author?: { login?: string }; body?: string }>;
   reviews?: Array<{ author?: { login?: string }; state?: string; body?: string }>;
 };
-const mapSummary = (j: RawPr): PrSummary => {
+const checkName = (c: { name?: string; context?: string }) => c.name ?? c.context ?? "";
+/** Keep only the checks that GATE merge (GitHub's required set). Empty `required` → keep all, so a
+ *  repo with no branch protection behaves as before and advisory bots there still show. */
+const gatingChecks = <T extends { name?: string; context?: string }>(checks: T[], required: Set<string>): T[] =>
+  required.size ? checks.filter((c) => required.has(checkName(c))) : checks;
+const mapSummary = (j: RawPr, required: Set<string> = new Set()): PrSummary => {
   const author = j.author?.login ?? "";
   const isOther = (login?: string) => Boolean(login) && login !== author && !login!.endsWith("[bot]");
   const feedback = [
     ...(j.comments ?? []).filter((x) => isOther(x.author?.login)).map((x) => x.body?.trim() ?? ""),
     ...(j.reviews ?? []).filter((x) => isOther(x.author?.login) && (x.state === "COMMENTED" || x.state === "CHANGES_REQUESTED")).map((x) => x.body?.trim() ?? ""),
   ].filter(Boolean).slice(-10);
-  const failingChecks = (j.statusCheckRollup ?? [])
+  // Only required checks decide CI pass/fail (badge, Merge gate, Fix CI); advisory bots are ignored.
+  const gating = gatingChecks(j.statusCheckRollup ?? [], required);
+  const failingChecks = gating
     .filter((check) => checkOutcome(check) === "failing")
-    .map((check) => check.name ?? check.context ?? "unnamed check");
+    .map((check) => checkName(check) || "unnamed check");
   return {
     number: j.number,
     title: j.title,
@@ -188,7 +195,7 @@ const mapSummary = (j: RawPr): PrSummary => {
     state: j.state,
     isDraft: Boolean(j.isDraft),
     autoMergeEnabled: Boolean(j.autoMergeRequest),
-    ciStatus: rollupCi(j.statusCheckRollup ?? []),
+    ciStatus: rollupCi(gating),
     reviewStatus: mapReview(j.reviewDecision ?? ""),
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
     previewUrl: j.comments ? extractPreviewUrl(j.comments) : undefined,
@@ -203,7 +210,34 @@ const mapSummary = (j: RawPr): PrSummary => {
  *  preview, and "Follow PR" can react to new reviewer feedback. */
 export async function listPrs(cwd: string): Promise<PrSummary[]> {
   const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments,author,reviews`);
-  return (JSON.parse(raw) as RawPr[]).map(mapSummary);
+  const prs = JSON.parse(raw) as RawPr[];
+  // Resolve each distinct base branch's required-check set once, so CI status reflects only checks
+  // that actually gate merge (advisory bots like an AI reviewer don't turn the badge red).
+  const bases = [...new Set(prs.map((p) => p.baseRefName).filter((b): b is string => Boolean(b)))];
+  const required = new Map(await Promise.all(bases.map(async (b) => [b, await requiredChecks(cwd, b)] as const)));
+  return prs.map((j) => mapSummary(j, (j.baseRefName && required.get(j.baseRefName)) || new Set()));
+}
+
+const REQUIRED_TTL_MS = 5 * 60_000;
+const requiredCache = new Map<string, { at: number; checks: Set<string> }>();
+
+/** The check names that GATE merge for a branch — GitHub's own required status checks (classic branch
+ *  protection AND rulesets, already merged by the `rules/branches` endpoint), read once per base and
+ *  cached. Everything else (advisory bots) is ignored when deciding CI pass/fail. An empty set (no
+ *  protection, or any error/permission issue) means callers don't filter — preserving all-checks
+ *  behaviour so a repo without protection still surfaces failures. */
+export async function requiredChecks(cwd: string, branch: string): Promise<Set<string>> {
+  const key = `${cwd}::${branch}`;
+  const hit = requiredCache.get(key);
+  if (hit && Date.now() - hit.at < REQUIRED_TTL_MS) return hit.checks;
+  const checks = new Set<string>();
+  try {
+    const raw = await gh(cwd, "api", `repos/{owner}/{repo}/rules/branches/${branch}`);
+    const rules = JSON.parse(raw) as Array<{ type?: string; parameters?: { required_status_checks?: Array<{ context?: string }> } }>;
+    for (const r of rules) if (r.type === "required_status_checks") for (const c of r.parameters?.required_status_checks ?? []) if (c.context) checks.add(c.context);
+  } catch { /* no protection / no access → empty set → callers keep the all-checks behaviour */ }
+  requiredCache.set(key, { at: Date.now(), checks });
+  return checks;
 }
 
 export type ReviewPr = PrSummary & { author: string; authorName: string; updatedAt: string };
