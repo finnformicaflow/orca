@@ -12,7 +12,7 @@ import * as slack from "./slack";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
-import { AGENT_PROVIDERS, isAgentProvider, type AgentOutcome } from "../shared/agent";
+import { AGENT_PROVIDERS, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -84,7 +84,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
   if (req.method === "GET" && p === "/api/usage") {
-    return json(await usage()); // Claude + Codex account usage; Cursor has no usage bridge here
+    // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
+    // windows from the CLI's login. The Cursor CLI exposes no such endpoint — `about`/`status` report
+    // only auth + subscription tier, no utilization — so there is deliberately no Cursor usage here.
+    return json(await usage());
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
@@ -99,7 +102,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       hasRemote: await git.hasRemote(r.repoPath),
       hasSlackWebhook: Boolean(r.slackWebhook), // client auto-sends when true, else copies
     })));
-    const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(provider)));
+    const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     return json({ repos, staleHours: cfg.staleHours, agentProviders });
   }
   if (req.method === "POST" && p === "/api/workstreams") {

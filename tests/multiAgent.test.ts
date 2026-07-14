@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { agentCommand, isHeadlessAgentProcess, oneShotCommand, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
-import { attachCommand, handoffPrompt, parseAgentOutcome, withOutcomeContract, type AgentTurn } from "../shared/agent";
+import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 
@@ -24,6 +24,14 @@ describe("provider adapters", () => {
   test("the provider snapshot is referentially stable for React cold starts", () => {
     expect(store.agentProviders()).toBe(store.agentProviders());
     expect(store.agentProviders()).toContain("cursor");
+  });
+
+  test("maps each provider to the CLI binary the availability check probes — Cursor's is cursor-agent, not cursor", () => {
+    // The bug: /api/config filtered providers by Bun.which(provider), so Cursor (binary `cursor-agent`)
+    // was never detected and never offered as an agent. Availability must probe the real binary name.
+    expect(providerBinary("cursor")).toBe("cursor-agent");
+    expect(providerBinary("claude")).toBe("claude");
+    expect(providerBinary("codex")).toBe("codex");
   });
 
   test("builds native fresh/resume commands for Claude, Codex, and Cursor", () => {

@@ -75,6 +75,9 @@ export function withOutcomeContract(instruction: string): string {
 
 export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "cursor" ? "Cursor" : "Claude";
 
+/** The CLI binary each provider shells out to — Cursor's is `cursor-agent`, not `cursor`. */
+export const providerBinary = (provider: AgentProvider): string => provider === "cursor" ? "cursor-agent" : provider;
+
 export function isAgentProvider(value: unknown): value is AgentProvider {
   return AGENT_PROVIDERS.includes(value as AgentProvider);
 }
