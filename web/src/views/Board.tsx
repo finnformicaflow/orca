@@ -159,7 +159,7 @@ function ProviderPicker({ row }: { row: Row }) {
         size="sm"
         aria-label="Agent for this card"
         onClick={(e) => e.stopPropagation()}
-        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent px-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
+        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent pl-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
       >
         {agentLabel(provider)}
       </SelectTrigger>
