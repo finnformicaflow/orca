@@ -36,6 +36,7 @@ export const apiFake = {
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
+  handoffs: [] as { branch: string; content: string }[],
   titleProviders: [] as AgentProvider[],
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
@@ -53,7 +54,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -92,6 +93,9 @@ mock.module("@/api", () => ({
     summary: async () => apiFake.summaryData,
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
+    },
+    handoff: async (_repo: string, branch: string, content: string) => {
+      apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
     },
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);

@@ -28,6 +28,19 @@ export function writeJsonSync(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
+/** Persist a cross-provider handoff seed for a branch so the interactive CLI can start a NEW native
+ *  session already primed with the portable transcript — the maxed/previous model is never resumed.
+ *  Lives under the state dir, never a worktree, so it can't leak into a diff or PR. Returns the
+ *  absolute path for the shell to `cat`. Atomic write so a concurrent read never sees a torn file. */
+export function writeHandoffFile(repo: string, branch: string, content: string): string {
+  const name = `${repo}--${branch}`.replace(/[^\w.-]+/g, "-");
+  const path = statePath("handoff", `${name}.md`);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
+  return path;
+}
+
 /** Read + parse JSON, or `undefined` if the file is missing or corrupt (never throws). */
 export function readJsonSync<T>(path: string): T | undefined {
   try {

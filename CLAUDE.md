@@ -12,8 +12,11 @@ connective tissue between "managing agents" and "managing PRs."**
 **Orca launches Claude, Codex, or Cursor headless.** On create, the user selects a provider and Orca runs
 `claude -p`, `codex exec`, or `cursor-agent -p` (using the CLI's existing login — no API key) in the new worktree, and shows a
 status badge (running/done/error). It does NOT stream output or host a chat — for that,
-"Copy CLI" gives you the provider-native resume command to jump into an interactive session.
-Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
+"Copy CLI" gives you the provider-native resume command to jump into an interactive session. When you
+switch a card's agent (e.g. one model is maxed out), Copy CLI instead seeds a NEW interactive session
+of the pinned provider with the portable transcript (written to a handoff file under the state dir,
+never the worktree), so you keep prompting the new model in-context and the previous model is never
+resumed. Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
 session seeded with Orca's bounded portable transcript (instructions + final outcomes); files/git in
 the shared worktree remain the source of truth. Each worktree is one feature/session, so Orca infers
 native resume versus cross-provider handoff from the selected provider instead of exposing a chat-mode toggle.

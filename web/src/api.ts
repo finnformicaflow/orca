@@ -49,6 +49,7 @@ export const api = {
   autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
+  handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),

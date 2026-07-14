@@ -10,6 +10,7 @@ import {
   rerunFailedPrompt, resolveConflictsPrompt, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
+import { attachCommand, handoffPrompt } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -498,6 +499,29 @@ export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: s
   // means nothing ran, so an adopted PR / just-switched pin gets a fresh session, not a failing continue).
   const ranHere = row.agentProvider === provider || (row.transcript ?? []).some((t) => t.provider === provider);
   return { provider, fresh: !ranHere };
+}
+
+// Opening instruction for a handed-off interactive session: orient from the transcript + live worktree
+// without doing work, then wait — so you carry on prompting the new model in-context.
+const HANDOFF_SEED_INSTRUCTION =
+  "Get up to speed from the transcript above and the current worktree (files, git status, recent commits, test results). Then wait for my next instruction — don't make changes yet.";
+
+/** The terminal command to (re)enter this workstream's pinned agent, for Copy CLI. Adopts a worktree
+ *  if the branch lacks one. When the pinned agent has never run here but there IS prior context (a
+ *  model switch / handoff), write a seed file from the portable transcript and start a NEW interactive
+ *  session primed with it — so a maxed-out or previous model is never resumed. */
+export async function cliCommand(row: Row): Promise<string> {
+  const worktreePath = row.worktreePath ?? (await ensureWorktree(row));
+  const target = resumeTarget(row);
+  const e = enrichOf(row.repo, row.branch);
+  const transcript = e.transcript ?? row.transcript ?? [];
+  let seedFile: string | undefined;
+  if (target.fresh && transcript.length) {
+    const from = e.agentProvider ?? row.agentProvider;
+    const seed = handoffPrompt(transcript, HANDOFF_SEED_INSTRUCTION, from, target.provider);
+    seedFile = (await api.handoff(row.repo, row.branch, seed)).path;
+  }
+  return attachCommand({ worktreePath, ...target, seedFile });
 }
 
 export function rerunAgent(row: Row) {

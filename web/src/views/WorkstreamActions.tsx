@@ -2,9 +2,9 @@ import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  merge, promote, providerFor, resolveConflicts, resumeTarget, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
+  cliCommand, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
 } from "../store";
-import { attachCommand, prMenuActions, shouldBump } from "../workstream";
+import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -62,8 +62,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
     try { await navigator.clipboard.writeText(path); } catch { window.prompt("Copy the worktree path:", path); }
   };
   const copyCli = async () => {
-    const path = row.worktreePath ?? (await ensureWorktree(row));
-    const command = attachCommand({ worktreePath: path, ...resumeTarget(row) });
+    const command = await cliCommand(row);
     try { await navigator.clipboard.writeText(command); } catch { window.prompt("Copy the CLI command:", command); }
   };
   const copyLink = async () => {

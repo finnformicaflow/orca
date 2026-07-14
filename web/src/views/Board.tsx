@@ -3,10 +3,9 @@ import { useAtom, useAtomValue } from "jotai";
 import { draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, createWorkstream, ensureWorktree, providerFor, rerunAgent, resumeTarget, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
-import { attachCommand } from "../workstream";
 import { navigate } from "@/lib/route";
 import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -110,11 +109,10 @@ function CopyMenu({ row }: { row: Row }) {
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(flash, () => window.prompt(`Copy the ${label}:`, text));
   };
-  // Copy CLI needs a worktree to cd into; adopt one if the branch doesn't have one yet (same as the
-  // agent actions), then resume the pinned agent's session id when it's the one that last ran.
+  // Copy CLI adopts a worktree if needed, resumes the pinned agent's session when it last ran here,
+  // or (on a model switch) seeds a fresh interactive session with the portable transcript.
   const copyCli = async () => {
-    const worktreePath = row.worktreePath ?? (await ensureWorktree(row));
-    const cmd = attachCommand({ worktreePath, ...resumeTarget(row) });
+    const cmd = await cliCommand(row);
     try { await navigator.clipboard.writeText(cmd); flash(); } catch { window.prompt("Copy the CLI command:", cmd); }
   };
   return (

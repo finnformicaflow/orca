@@ -132,18 +132,25 @@ export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentPro
 // its most recent conversation; `fresh` (the provider has never run in this worktree, e.g. right
 // after switching the pinned agent) → start a new session, since `--continue`/`resume --last`/`-c`
 // would error with "no conversation to continue".
-export function attachCommand(input: { worktreePath: string; provider?: AgentProvider; sessionId?: string; fresh?: boolean }): string {
+export function attachCommand(input: { worktreePath: string; provider?: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): string {
   const cd = `cd "${input.worktreePath}" && `;
+  // A seed file (written when handing off to a provider that hasn't run here) starts a NEW interactive
+  // session with the portable transcript as its opening prompt — so the maxed/previous model is never
+  // resumed, and you can carry on prompting the new model in-context. Only set on the `fresh` path.
+  const seed = input.seedFile ? `"$(cat "${input.seedFile}")" ` : "";
   // Orca launches Codex through `codex exec`, so its threads are marked non-interactive. The TUI's
   // resume command excludes those by default; include them explicitly or it opens a blank session.
   if (input.provider === "codex") {
     if (input.sessionId) return `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox ${input.sessionId}`;
+    if (seed) return `${cd}codex ${seed}--dangerously-bypass-approvals-and-sandbox`;
     return input.fresh ? `${cd}codex --dangerously-bypass-approvals-and-sandbox` : `${cd}codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last`;
   }
   if (input.provider === "cursor") {
     if (input.sessionId) return `${cd}cursor-agent --resume ${input.sessionId} --force`;
+    if (seed) return `${cd}cursor-agent ${seed}--force`;
     return `${cd}cursor-agent ${input.fresh ? "" : "--continue "}--force`;
   }
   if (input.sessionId) return `${cd}claude --resume ${input.sessionId} --permission-mode auto`;
+  if (seed) return `${cd}claude ${seed}--permission-mode auto`;
   return `${cd}claude ${input.fresh ? "" : "--continue "}--permission-mode auto`;
 }

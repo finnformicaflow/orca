@@ -7,6 +7,7 @@ import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
+import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
@@ -212,6 +213,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/preview/stop") {
     preview.stop(body.key);
     return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/handoff") {
+    // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.
+    return json({ path: writeHandoffFile(repo.name, String(body.branch), String(body.content ?? "")) });
   }
   if (req.method === "POST" && p === "/api/worktrees/adopt") {
     const wt = await git.adoptWorktree(repo.repoPath, repo.worktreeRoot, body.branch);
