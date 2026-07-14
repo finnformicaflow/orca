@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  cliCommand, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
+  cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -118,7 +118,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
                 <DropdownMenuSubContent>
                   {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
                   {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
-                  {prActions.includes("autoMerge") && <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>}
+                  {prActions.includes("autoMerge") && (row.autoMergeEnabled
+                    ? <DropdownMenuItem onSelect={run(() => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
+                    : <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
                   {prActions.includes("resolveConflicts") && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
                   {prActions.includes("fixCi") && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
                   {prActions.includes("addressReview") && <DropdownMenuItem onSelect={run(() => addressReview(row))}>Address review</DropdownMenuItem>}

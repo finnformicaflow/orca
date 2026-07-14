@@ -295,6 +295,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/prs/disable-auto-merge") {
+    await gh.disableAutoMerge(repo.repoPath, body.pr); // cancel the queued auto-merge
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/prs/draft") {
     await gh.convertToDraft(repo.repoPath, body.pr);
     return json({ ok: true });

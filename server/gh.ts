@@ -400,6 +400,10 @@ export async function mergePr(cwd: string, pr: number): Promise<void> {
 export const enableAutoMerge = (cwd: string, pr: number) =>
   gh(cwd, "pr", "merge", String(pr), "--auto", "--squash");
 
+/** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */
+export const disableAutoMerge = (cwd: string, pr: number) =>
+  gh(cwd, "pr", "merge", String(pr), "--disable-auto");
+
 export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
   const raw = await gh(cwd, "pr", "view", String(pr),
     "--json", "state,mergeable,reviewDecision,statusCheckRollup");

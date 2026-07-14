@@ -701,6 +701,12 @@ export async function autoMerge(row: Row) {
   await refresh();
 }
 
+export async function disableAutoMerge(row: Row) {
+  if (!row.prNumber) return;
+  await api.disableAutoMerge(row.repo, row.prNumber);
+  await refresh();
+}
+
 export async function merge(row: Row) {
   if (row.prNumber) await api.merge(row.repo, row.prNumber, row.worktreePath);
   else await api.mergeLocal(row.repo, row.branch, row.worktreePath);

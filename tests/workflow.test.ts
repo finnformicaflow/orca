@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
-import { ciEvidence, convertToDraft, countExternalFeedback, createPr, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
+import { ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
@@ -530,6 +530,15 @@ test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boole
   // …and guard the field is actually *requested* from gh — without it the live API omits the flag
   // (the badge silently never shows), even though the mapping above still passes on the fixture.
   expect(await readArgs()).toContain("autoMergeRequest");
+});
+
+test("S4 auto-merge is a toggle: enable and disable issue the matching gh commands", async () => {
+  const readArgs = await recordGhArgs();
+  await enableAutoMerge(repo, 42);
+  await disableAutoMerge(repo, 42);
+  const args = await readArgs();
+  expect(args).toContain("pr merge 42 --auto --squash"); // enable
+  expect(args).toContain("pr merge 42 --disable-auto");   // disable — the previously-missing half
 });
 
 test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no comments", async () => {
