@@ -33,7 +33,7 @@ async function res(r: Response) {
   return data;
 }
 
-export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean };
+export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; hasSlackWebhook?: boolean };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
@@ -50,6 +50,7 @@ export const api = {
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
   handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
+  slack: (repo: string, text: string): Promise<{ posted: boolean }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),

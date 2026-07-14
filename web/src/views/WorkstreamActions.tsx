@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  cliCommand, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
+  cliCommand, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, slackAuto, staleHours, toggleFollow, useAgentProviders, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -145,8 +145,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy }: { row: Row; h
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Copy message{notified ? " again" : ""}</DropdownMenuItem>
-                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Copy bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>{slackAuto(row.repo) ? "Send" : "Copy"} message{notified ? " again" : ""}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>{slackAuto(row.repo) ? "Send" : "Copy"} bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             )}

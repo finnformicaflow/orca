@@ -7,7 +7,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
-  rerunFailedPrompt, resolveConflictsPrompt, slackClipboard, titleFromPrompt, withAttachments,
+  rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -718,8 +718,19 @@ export async function closePr(row: Row) {
   });
 }
 
+/** Whether Slack notify/bump auto-send (a webhook is configured) — drives the menu label only. */
+export const slackAuto = (repo: string): boolean => Boolean(repoInfo(repo)?.hasSlackWebhook);
+
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
-  const { text, html } = slackClipboard({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl }, kind);
+  const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl };
+  const stamp = () => patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
+  // Auto-send via the repo's incoming webhook (no agent, zero LLM cost). The server posts if a webhook
+  // is configured and reports posted:false otherwise; the message is Slack mrkdwn so it renders as the
+  // same linked `#7 Title` the copy produces. Fall back to copying on posted:false or any error.
+  try {
+    if ((await api.slack(row.repo, slackApiText(ws, kind))).posted) { stamp(); return; }
+  } catch { /* fall through to the clipboard path */ }
+  const { text, html } = slackClipboard(ws, kind);
   // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text, then a
   // prompt, on browsers without ClipboardItem or when the write is blocked.
   try {
@@ -735,7 +746,7 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
     try { await navigator.clipboard.writeText(text); }
     catch { window.prompt(`Copy the Slack ${kind === "bump" ? "bump" : "message"}:`, text); }
   }
-  patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
+  stamp();
 }
 
 export async function resolveConflicts(row: Row) {

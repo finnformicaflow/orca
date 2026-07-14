@@ -51,7 +51,10 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
   git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
   PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
-- **GitHub = the `gh` CLI; Slack = an exact message copied by the user.** No OAuth app or Slack token.
+- **GitHub = the `gh` CLI; Slack = an incoming-webhook POST when `slackWebhook` is configured, else
+  an exact message copied by the user.** No OAuth app or bot token — the webhook is a secret URL
+  (`server/slack.ts`), and no model is involved, so an auto-send costs zero LLM tokens. The message is
+  the same linked `#7 Title` in either path (Slack mrkdwn for the POST, rich HTML for the copy).
 
 ## Multi-repo (aggregated)
 
@@ -96,7 +99,7 @@ DRAFTING → READY → (promote) → IN_REVIEW → (approved) → MERGEABLE → 
 
 Lanes are review-driven only (`deriveKanbanState`): approved→MERGEABLE, else IN_REVIEW.
 Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Agent actions use
-the workstream's selected provider; Slack copy actions launch no model. Previews start N services
+the workstream's selected provider; Slack actions (webhook POST or copy) launch no model. Previews start N services
 (frontend+backend) on assigned ports via
 `server/preview.ts`.
 

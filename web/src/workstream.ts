@@ -148,6 +148,18 @@ export function slackMessage(
   return kind === "bump" ? `Bump:\n${link}` : link;
 }
 
+/** The same linked `#7 Title` message in Slack's native mrkdwn link syntax (`<url|label>`), so an
+ *  auto-send via a webhook renders identically to the rich-html copy — a hyperlink, not literal
+ *  Markdown. Used only when posting through the API; the clipboard path keeps using slackClipboard. */
+export function slackApiText(
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  kind: "notify" | "bump",
+): string {
+  const label = `#${ws.prNumber} ${ws.title}`;
+  const link = ws.prUrl ? `<${ws.prUrl}|${label}>` : label;
+  return kind === "bump" ? `Bump:\n${link}` : link;
+}
+
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 

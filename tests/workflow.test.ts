@@ -12,7 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
   addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
-  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
+  DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
 import { parseRunMeta, prettyModel } from "../server/agent";
@@ -351,6 +351,12 @@ test("W6 slack-notify-and-bump: bump only fires past the stale window", () => {
   expect(bumpClip.text).toBe("Bump:\n#7 Add X\nhttps://gh/pr/7");
   // A title with HTML-special characters can't break the anchor markup.
   expect(slackClipboard({ title: "A & B <ok>", prNumber: 1, prUrl: "u" }, "notify").html).toBe('<a href="u">#1 A &amp; B &lt;ok&gt;</a>');
+
+  // Webhook auto-send uses Slack's native mrkdwn link so it renders as the SAME linked `#7 Title`
+  // (a hyperlink, not literal Markdown) as the rich-html copy.
+  expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "notify")).toBe("<https://gh/pr/7|#7 Add X>");
+  expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "bump")).toBe("Bump:\n<https://gh/pr/7|#7 Add X>");
+  expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "" }, "notify")).toBe("#7 Add X"); // no URL → plain label
 });
 
 test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears once mergeable", async () => {
