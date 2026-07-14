@@ -219,6 +219,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     await git.linkToWorktree(repo.repoPath, wt.worktreePath, repo.linkToWorktree);
     return json(wt);
   }
+  if (req.method === "POST" && p === "/api/worktrees/sync") {
+    // Pull remote work down: fetch once, fast-forward each worktree to its upstream (never forces).
+    return json(await git.syncWorktrees(repo.repoPath, repo.worktreeRoot));
+  }
   if (req.method === "POST" && p === "/api/worktrees/remove") {
     agent.stop(body.worktreePath); // kill any running agent before removing its worktree
     if (body.branch) await agent.killByBranch(body.branch); // also catch ones orphaned by a restart

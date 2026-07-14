@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
-import { CircleUser, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
+import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Sun, X } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
 import { repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
 import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage } from "../../server/usage";
 import { useRepos } from "./store";
+import { summarizeSync } from "./workstream";
 import { Board } from "./views/Board";
 import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
 import { PrDetail } from "./views/PrDetail";
@@ -229,6 +230,40 @@ function SpendStat({ extra }: { extra: ExtraUsage }) {
   );
 }
 
+// Pull remote work down across every configured repo: fetch each, fast-forward its worktrees to
+// their upstreams (never forces). Keeps the menu open (onSelect preventDefault) so its inline
+// spinner → ✓/✗ feedback and per-outcome summary stay visible, matching the ActionButton pattern.
+function SyncWorktreesItem() {
+  const repos = useRepos();
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [summary, setSummary] = useState("");
+  const run = async () => {
+    if (state === "loading") return;
+    setState("loading");
+    setSummary("");
+    try {
+      const results = (await Promise.all(repos.map((r) => api.syncWorktrees(r.name)))).flat();
+      setSummary(summarizeSync(results));
+      setState("done");
+    } catch {
+      setSummary("sync failed");
+      setState("error");
+    }
+    setTimeout(() => { setState("idle"); setSummary(""); }, 6000);
+  };
+  const Icon = state === "loading" ? Loader2 : state === "done" ? Check : state === "error" ? X : FolderSync;
+  return (
+    <DropdownMenuItem
+      onSelect={(e) => { e.preventDefault(); void run(); }}
+      disabled={state === "loading"}
+      title="Fetch each repo and fast-forward every worktree to its upstream (never forces, skips dirty/diverged)"
+    >
+      <Icon className={`size-3.5${state === "loading" ? " animate-spin" : ""}`} /> Sync worktrees
+      {summary && <span className="text-muted-foreground ml-auto pl-3 text-xs">{summary}</span>}
+    </DropdownMenuItem>
+  );
+}
+
 const THEMES: { value: Theme; label: string; Icon: typeof Sun }[] = [
   { value: "light", label: "Light", Icon: Sun },
   { value: "dark", label: "Dark", Icon: Moon },
@@ -249,6 +284,7 @@ function ProfileMenu() {
         <DropdownMenuItem onSelect={() => window.location.reload()} title="Reload the app (pick up rebuilt code + refetch)">
           <RefreshCw className="size-3.5" /> Refresh
         </DropdownMenuItem>
+        <SyncWorktreesItem />
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Theme</DropdownMenuSubTrigger>

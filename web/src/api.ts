@@ -3,6 +3,7 @@ import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, MergedPr, PrDetail, PrSummary, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
+import type { SyncResult } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -67,6 +68,7 @@ export const api = {
   previewStatus: (key: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}`).then(res),
   previews: (): Promise<{ key: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
+  syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
   runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>

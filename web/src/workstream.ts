@@ -443,3 +443,19 @@ export function nextPort(used: number[], range: [number, number]): number {
   for (let p = range[0]; p <= range[1]; p++) if (!used.includes(p)) return p;
   throw new Error(`no free port in ${range[0]}-${range[1]}`);
 }
+
+/** Outcome of fast-forwarding one worktree to its upstream (see server/git.ts syncWorktrees). */
+export type SyncOutcome = "synced" | "up to date" | "dirty" | "diverged" | "no upstream";
+export type SyncResult = { branch: string; outcome: SyncOutcome };
+
+/** One-line summary of a worktree sync: "synced N, up to date M, skipped: dirty X, diverged Y". */
+export function summarizeSync(results: SyncResult[]): string {
+  if (!results.length) return "no worktrees";
+  const n = (o: SyncOutcome) => results.filter((r) => r.outcome === o).length;
+  const parts: string[] = [];
+  if (n("synced")) parts.push(`synced ${n("synced")}`);
+  if (n("up to date")) parts.push(`up to date ${n("up to date")}`);
+  const skipped = (["dirty", "diverged", "no upstream"] as const).filter((o) => n(o)).map((o) => `${o} ${n(o)}`);
+  if (skipped.length) parts.push(`skipped: ${skipped.join(", ")}`);
+  return parts.join(", ");
+}
