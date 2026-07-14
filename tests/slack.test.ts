@@ -1,24 +1,28 @@
-// Slack auto-send goes through an incoming webhook — no agent, no OAuth, zero LLM cost. Verify the
-// adapter forms the exact request and surfaces failures so the caller falls back to copy. `fetch` is
-// stubbed (a platform API, not our code) because the suite preloads happy-dom, whose window `fetch`
-// enforces CORS and can't reach a local server; production uses Bun's native fetch.
-import { test, expect, afterEach } from "bun:test";
-import { postToWebhook } from "../server/slack";
+// Slack auto-send now runs the card's pinned agent headless to post via its own Slack tool (from your
+// identity), using a lightweight model. These pin the per-provider argv and the post instruction; the
+// live post depends on each provider's Slack integration, so it's exercised manually (see QA.md).
+import { test, expect } from "bun:test";
+import { slackPostCommand } from "../server/agent";
+import { slackPostPrompt } from "../web/src/workstream";
 
-const realFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = realFetch; });
-
-test("postToWebhook POSTs the message as JSON to the webhook URL", async () => {
-  let call: { url: unknown; init: RequestInit } | undefined;
-  globalThis.fetch = (async (url: unknown, init: RequestInit) => { call = { url, init }; return new Response("ok"); }) as unknown as typeof fetch;
-  await postToWebhook("https://hooks.slack.test/abc", "<https://gh/pr/7|#7 Add X>");
-  expect(call!.url).toBe("https://hooks.slack.test/abc");
-  expect(call!.init.method).toBe("POST");
-  expect((call!.init.headers as Record<string, string>)["content-type"]).toBe("application/json");
-  expect(JSON.parse(call!.init.body as string)).toEqual({ text: "<https://gh/pr/7|#7 Add X>" });
+test("slackPostCommand runs each provider with tools enabled and a cheap model where available", () => {
+  expect(slackPostCommand("claude", "/repo", "post it")).toEqual([
+    "claude", "-p", "post it", "--model", "haiku", "--permission-mode", "bypassPermissions", "--output-format", "json",
+  ]);
+  expect(slackPostCommand("codex", "/repo", "post it")).toEqual([
+    "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/repo", "post it",
+  ]);
+  expect(slackPostCommand("cursor", "/repo", "post it")).toEqual([
+    "cursor-agent", "-p", "post it", "--force", "--output-format", "json",
+  ]);
+  // NOT the read-only one-shot form: the agent must be able to actually call its Slack tool.
+  expect(slackPostCommand("claude", "/repo", "x")).not.toContain("--tools");
 });
 
-test("postToWebhook throws on a non-2xx response so the caller can fall back to copy", async () => {
-  globalThis.fetch = (async () => new Response("no_service", { status: 404 })) as unknown as typeof fetch;
-  await expect(postToWebhook("https://hooks.slack.test/abc", "hi")).rejects.toThrow(/404/);
+test("slackPostPrompt tells the agent to post the exact content to the channel", () => {
+  const p = slackPostPrompt("#eng", "<https://gh/pr/7|#7 Add X>");
+  expect(p).toContain("#eng");
+  expect(p).toContain("<https://gh/pr/7|#7 Add X>");
+  expect(p).toContain("exactly this content");
+  expect(slackPostPrompt(undefined, "hi")).not.toContain("channel"); // no channel → don't name one
 });

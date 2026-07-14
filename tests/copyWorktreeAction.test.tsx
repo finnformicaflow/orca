@@ -83,21 +83,21 @@ describe("Copy worktree action", () => {
   };
   const pr = { ...row, hasRemote: true, lane: "IN_REVIEW" as const, prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" };
 
-  test("Slack action lives only in Actions → Slack, not as a card button, and copies when no webhook", async () => {
-    apiFake.slackWebhook = false; // no webhook → server reports posted:false → clipboard fallback
+  test("Slack action lives only in Actions → Slack, not as a card button, and copies when the agent can't post", async () => {
+    apiFake.slackPosted = false; // agent couldn't reach Slack → posted:false → clipboard fallback
     mount(pr);
     expect([...container!.querySelectorAll("button")].some((button) => button.textContent?.includes("Copy Slack"))).toBe(false);
-    await openSlackItem("Copy message");
+    await openSlackItem("Send message");
     // No ClipboardItem in the test DOM → the plain-text fallback: title + URL, NOT the Markdown link
     // that pasted literally into Slack. (The rich text/html flavour is unit-tested via slackClipboard.)
     expect(copied).toBe("#7 Feat\nhttps://github.com/acme/app/pull/7");
   });
 
-  test("Slack notify auto-sends the mrkdwn message via the webhook without touching the clipboard", async () => {
-    apiFake.slackWebhook = true; // a webhook is configured → server posts, no copy
+  test("Slack notify posts the mrkdwn message via the pinned agent without touching the clipboard", async () => {
+    apiFake.slackPosted = true; // the agent posts via its Slack tool → no copy
     mount(pr);
-    await openSlackItem("Copy message"); // label stays "Copy" here (config cached webhook-off); behavior sends
-    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://github.com/acme/app/pull/7|#7 Feat>" }]);
+    await openSlackItem("Send message");
+    expect(apiFake.slackSends).toEqual([{ repo: "r", provider: "claude", text: "<https://github.com/acme/app/pull/7|#7 Feat>" }]);
     expect(copied).toBe(""); // posted → clipboard untouched
   });
 });

@@ -160,6 +160,13 @@ export function slackApiText(
   return kind === "bump" ? `Bump:\n${link}` : link;
 }
 
+/** Instruction for a lightweight agent to post a prepared Slack message via its own Slack tool, from
+ *  your Slack identity. The content is already the linked `#7 Title` mrkdwn (slackApiText). */
+export function slackPostPrompt(channel: string | undefined, content: string): string {
+  const where = channel ? ` to the ${channel} channel` : "";
+  return `Using your Slack tool, post a new message${where} with exactly this content and nothing else — no preamble, no emojis, no extra text, and do not reply in a thread:\n\n${content}`;
+}
+
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 

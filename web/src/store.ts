@@ -718,17 +718,14 @@ export async function closePr(row: Row) {
   });
 }
 
-/** Whether Slack notify/bump auto-send (a webhook is configured) — drives the menu label only. */
-export const slackAuto = (repo: string): boolean => Boolean(repoInfo(repo)?.hasSlackWebhook);
-
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
   const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl };
   const stamp = () => patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
-  // Auto-send via the repo's incoming webhook (no agent, zero LLM cost). The server posts if a webhook
-  // is configured and reports posted:false otherwise; the message is Slack mrkdwn so it renders as the
-  // same linked `#7 Title` the copy produces. Fall back to copying on posted:false or any error.
+  // Post via the card's pinned agent using its own Slack tool (from your Slack identity), with a
+  // lightweight model. The message is Slack mrkdwn so it renders as the linked `#7 Title`. Falls back
+  // to copying on posted:false (agent couldn't reach Slack) or any error.
   try {
-    if ((await api.slack(row.repo, slackApiText(ws, kind))).posted) { stamp(); return; }
+    if ((await api.slack(row.repo, providerFor(row), slackApiText(ws, kind))).posted) { stamp(); return; }
   } catch { /* fall through to the clipboard path */ }
   const { text, html } = slackClipboard(ws, kind);
   // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text, then a

@@ -12,11 +12,8 @@ export type RepoConfig = {
   baseBranch: string;
   /** Services started per workstream preview. `open` marks the one to open in the browser. */
   previewServices: PreviewService[];
-  /** Channel named in the Slack message. */
+  /** Channel the Slack notify/bump message names (the agent posts to it via its Slack tool). */
   slackChannel?: string;
-  /** Slack incoming-webhook URL. When set, Slack notify/bump POST here directly (no agent, no OAuth,
-   *  zero LLM cost); without it they fall back to copying the message. A secret — set via env. */
-  slackWebhook?: string;
   /** Label that triggers the deploy-preview action (added by the "Add preview" button). */
   previewLabel?: string;
   /**

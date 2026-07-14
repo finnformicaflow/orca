@@ -15,7 +15,6 @@ const config: OrcaConfig = {
       worktreeRoot: `${DEV}/branch-demo/.worktrees`,
       baseBranch: "master",
       slackChannel: "#v3-engineering",
-      slackWebhook: process.env.ORCA_SLACK_WEBHOOK, // set in .env to auto-send; else Slack actions copy
       previewLabel: "preview",
       // Uses the repo's own dev scripts (test-auth, shared local Postgres on :5432 — must be
       // running, and backend/.env present). Each service gets its OWN assigned port: the backend
@@ -79,7 +78,6 @@ const config: OrcaConfig = {
       worktreeRoot: `${DEV}/orca/.worktrees`,
       baseBranch: "main",
       slackChannel: "#v3-engineering",
-      slackWebhook: process.env.ORCA_SLACK_WEBHOOK, // set in .env to auto-send; else Slack actions copy
       previewServices: [
         { name: "web", command: "cd web && bunx --bun vite --port {port}", open: true },
       ],

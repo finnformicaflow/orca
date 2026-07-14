@@ -341,6 +341,31 @@ export async function describePr(provider: AgentProvider, prompt: string, option
   }
 }
 
+/** Argv to post a Slack message via the provider's OWN Slack integration. Unlike the read-only
+ *  title/description one-shots, tools ARE enabled (so the agent can call its Slack tool) and it runs
+ *  with permissions bypassed. Uses a cheap model where the provider has a distinct one (Claude→Haiku);
+ *  Codex/Cursor have no tiny tier, but posting one message is a single cheap turn regardless. Pure. */
+export function slackPostCommand(provider: AgentProvider, cwd: string, prompt: string): string[] {
+  if (provider === "claude") return ["claude", "-p", prompt, "--model", "haiku", "--permission-mode", "bypassPermissions", "--output-format", "json"];
+  if (provider === "codex") return ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
+  return ["cursor-agent", "-p", prompt, "--force", "--output-format", "json"];
+}
+
+/** Run the pinned provider headless to post a Slack message through its Slack tool. Returns true on a
+ *  clean run; false (so the caller falls back to copying) on non-zero exit or an agent-reported error.
+ *  Bounded by a 2-minute timeout — a Slack post should be near-instant. */
+export async function postSlackViaAgent(provider: AgentProvider, cwd: string, prompt: string): Promise<boolean> {
+  const proc = Bun.spawn(slackPostCommand(provider, cwd, prompt), { cwd, env: process.env, stdout: "pipe", stderr: "pipe" });
+  const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
+  const [out] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  const code = await proc.exited;
+  clearTimeout(timeout);
+  if (code !== 0) return false;
+  if (provider === "codex") return !parseCodexOutput(out).isError;
+  if (provider === "cursor") return !parseCursorOutput(out).isError;
+  try { return !JSON.parse(out.trim()).is_error; } catch { return false; }
+}
+
 /** Kill and forget a run (e.g. on discard). */
 export function stop(key: string): void {
   const r = runs.get(key);
