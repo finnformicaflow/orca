@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
-import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Sun, X } from "lucide-react";
+import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Sun, X } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
-import { repoFilterAtom } from "@/lib/atoms";
+import { densityAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
 import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage } from "../../server/usage";
@@ -40,6 +40,7 @@ export function App() {
               </div>
             )}
             {topLevel && <RepoFilter />}
+            {topLevel && <DensityToggle />}
             <ProfileMenu />
           </div>
         </div>
@@ -67,6 +68,23 @@ function OrcaMark({ className }: { className?: string }) {
     <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className} aria-hidden="true">
       <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
     </svg>
+  );
+}
+
+// Board-only control: flip every (non-Done) card between the full comfortable card and a compact,
+// status-only dense card — one persisted toggle, so a board with many sessions fits on screen.
+function DensityToggle() {
+  const [density, setDensity] = useAtom(densityAtom);
+  const dense = density === "dense";
+  return (
+    <Button
+      size="icon" variant="outline" className="size-8" aria-pressed={dense}
+      onClick={() => setDensity(dense ? "comfortable" : "dense")}
+      title={dense ? "Switch to comfortable view" : "Switch to dense view"}
+      aria-label={dense ? "Switch to comfortable view" : "Switch to dense view"}
+    >
+      {dense ? <Rows2 className="size-4" /> : <Rows3 className="size-4" />}
+    </Button>
   );
 }
 

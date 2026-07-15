@@ -93,13 +93,22 @@ function ErrorLog({ error }: { error: string }) {
   );
 }
 
-/** Compact "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). */
-export function PreviewControl({ row }: { row: Row }) {
+/** "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). `compact`
+ *  renders it as an icon button (dense view) instead of a full-width labelled one. */
+export function PreviewControl({ row, compact = false }: { row: Row; compact?: boolean }) {
   const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
 
   // Idle (incl. after a failure — the crashed preview auto-stops, so there's no Stop button here,
-  // just Retry + the expandable log).
+  // just Retry + the expandable log). Compact drops the label + log to a single icon (flip back to
+  // comfortable to read the failure log).
   if (!active && !busy) {
+    if (compact) {
+      return (
+        <Button size="icon" variant="outline" className="size-7" onClick={() => void start()} title={error ? "Preview failed — retry local test" : "Test locally"} aria-label="Test locally">
+          {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+        </Button>
+      );
+    }
     return (
       <div className="w-full space-y-1">
         <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — expand the log below" : "Spin up a local preview of this branch"}>
@@ -111,7 +120,7 @@ export function PreviewControl({ row }: { row: Row }) {
     );
   }
   // Running/starting: the state button + Stop read as one connected control.
-  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open local" startingLabel="Starting local…" />;
+  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open local" startingLabel="Starting local…" compact={compact} />;
 }
 
 // The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview
@@ -156,24 +165,28 @@ function useElapsed(active: boolean, svcs: PreviewSvc[]): number {
 /** Running/starting state of a live preview: an Open button once the whole stack is up (else a
  *  "Starting Ns" placeholder), joined to a Stop button so the pair reads as one connected control.
  *  Shared by the card's Test-locally control, the Test-master rows, and the running-previews menu. */
-function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel }: {
-  svcs: PreviewSvc[]; busy: boolean; onStop: () => void; openLabel: string; startingLabel: string;
+function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel, compact = false }: {
+  svcs: PreviewSvc[]; busy: boolean; onStop: () => void; openLabel: string; startingLabel: string; compact?: boolean;
 }) {
   const open = svcs.find((s) => s.open) ?? svcs[0];
   const ready = svcs.length > 0 && svcs.every((s) => s.ready); // whole stack up (frontend AND backend)
   const elapsed = useElapsed(!ready, svcs);
+  // Compact (dense) drops the labels to icons and squares the buttons; otherwise it's a full-width
+  // labelled pair. Both keep the Open/Stop connected-control look (shared radius trim).
+  const size = compact ? "icon" : "sm";
+  const stateClass = compact ? "size-7 rounded-r-none" : "flex-1 justify-center rounded-r-none";
   return (
-    <div className="inline-flex w-full">
+    <div className={`inline-flex ${compact ? "" : "w-full"}`}>
       {ready && open ? (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open preview on :${open.port}`}>
-          <ExternalLink className="size-3.5" /> {openLabel}
+        <Button size={size} variant="outline" className={stateClass} onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
+          <ExternalLink className="size-3.5" /> {!compact && openLabel}
         </Button>
       ) : (
-        <Button size="sm" variant="outline" className="flex-1 justify-center rounded-r-none" disabled>
-          <Loader2 className="size-3.5 animate-spin" /> {startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}
+        <Button size={size} variant="outline" className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
+          <Loader2 className="size-3.5 animate-spin" /> {!compact && <>{startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}</>}
         </Button>
       )}
-      <Button size="sm" variant="outline" className="rounded-l-none border-l-0" disabled={busy} onClick={onStop} title="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+      <Button size={size} variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
     </div>
   );
 }
