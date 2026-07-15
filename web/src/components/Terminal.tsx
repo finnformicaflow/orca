@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { openTerminal, type Row } from "../store";
+import { Button } from "@/components/ui/button";
 
 // The browser terminal: an xterm.js view wired to the bridge's per-worktree tmux session over a
 // WebSocket. All assets are bundled (no CDN) so a strict CSP has nothing external to allow. On open
@@ -71,4 +73,36 @@ export function TerminalPanel({ row }: { row: Row }) {
   if (error) return <p className="text-destructive text-sm">Couldn't open a terminal: {error}</p>;
   if (!ready) return <p className="text-muted-foreground text-sm">Starting session…</p>;
   return <Terminal repo={row.repo} branch={row.branch} />;
+}
+
+// The board's primary terminal entry point: a modal so you drive the hand-driven lane in place,
+// without navigating to the PR/local detail page. The native <dialog> gives the backdrop, ESC-close
+// and focus trap for free (no new dependency). TerminalPanel resumes the pinned agent's session — so
+// the past conversation is right there — and mounts ONLY while open, so xterm + the WebSocket aren't
+// created (nor torn down) until you actually open/close the dialog.
+export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onCancel={onClose}
+      onClick={(e) => { if (e.target === ref.current) onClose(); }} // click the backdrop → close
+      className="bg-card text-foreground m-auto w-[90vw] max-w-5xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50"
+    >
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        <div className="truncate text-sm font-medium">Terminal · {row.title}</div>
+        <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Close" aria-label="Close terminal" onClick={onClose}>
+          <X className="size-4" />
+        </Button>
+      </div>
+      <div className="p-3">{open && <TerminalPanel row={row} />}</div>
+    </dialog>
+  );
 }

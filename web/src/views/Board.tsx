@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, startInteractive, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { navigate } from "@/lib/route";
@@ -15,6 +15,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
+import { TerminalDialog } from "@/components/Terminal";
 import { agentLabel, type AgentProvider } from "../../../shared/agent";
 
 const LANES: { lane: Lane; title: string }[] = [
@@ -212,9 +213,6 @@ function NewDraft() {
   const [provider, setProvider] = useState<AgentProvider>(() => providers[0] ?? "claude");
   useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
   const active = repo || repos[0]?.name || "";
-  // Interactive mode: instead of a headless one-shot run, start the agent in a tmux session seeded
-  // with the prompt and drop into the browser terminal to drive it by hand (see store.startInteractive).
-  const [interactive, setInteractive] = useState(false);
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
   // draft (wrong repo) can be reverted; Undo discards it (kills the run, removes the worktree+branch).
@@ -228,14 +226,9 @@ function NewDraft() {
   return (
     <ChatComposer
       persistKey="orca.newDraft"
-      placeholder={interactive ? "Describe a feature — you'll drive it in a terminal…  (⌘+Enter)" : "Describe a feature…  (⌘+Enter)"}
+      placeholder="Describe a feature…  (⌘+Enter)"
       onSubmit={async (text, images) => {
-        if (interactive) {
-          const { branch } = await startInteractive(active, text, provider);
-          navigate(`/${active}/local/${encodeURIComponent(branch)}/terminal`);
-        } else {
-          setUndoable(createWorkstream(active, text, images, provider));
-        }
+        setUndoable(createWorkstream(active, text, images, provider));
       }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
@@ -263,15 +256,6 @@ function NewDraft() {
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>
           </Select>
-          <button
-            type="button"
-            aria-pressed={interactive}
-            onClick={() => setInteractive((v) => !v)}
-            title={interactive ? "Interactive: start the agent in a terminal you drive by hand" : "Headless: run the agent one-shot (default)"}
-            className={`hover:bg-accent inline-flex size-7 shrink-0 items-center justify-center rounded transition-colors ${interactive ? "text-foreground bg-accent" : "text-muted-foreground"}`}
-          >
-            <SquareTerminal className="size-4" />
-          </button>
         </div>
       }
     />
@@ -306,6 +290,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
   // a spinner, so a multi-second op (promote push + PR create, merge, …) doesn't look frozen.
   const [busy, setBusy] = useState(false);
   const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
+
+  // The hand-driven terminal opens in a modal on the board (no navigating to the detail page). Both
+  // the "live session" badge and the button beside Test locally drive this one dialog.
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
@@ -351,15 +339,6 @@ export function WorkstreamCard({ row }: { row: Row }) {
             </Badge>
           )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
-          {row.tmux && (
-            <button
-              type="button"
-              onClick={() => navigate(isOpenPr ? `/${row.repo}/prs/${row.prNumber}/terminal` : `/${row.repo}/local/${encodeURIComponent(row.branch)}/terminal`)}
-              title="A live terminal session is running — open it"
-            >
-              <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">Terminal <SquareTerminal /></Badge>
-            </button>
-          )}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
@@ -390,13 +369,34 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {!isDone && (
         <div className={`space-y-2 border-t ${dense ? "pt-1.5" : "pt-2.5"}`}>
           {dense ? (
-            <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} compact leading={<PreviewControl row={row} compact />} />
+            // Dense folds every verb into one icon row; keep the terminal button beside the (compact)
+            // Test-locally control by slotting both into the leading slot.
+            <WorkstreamActions
+              row={row}
+              hasWork={hasWork}
+              onBusy={setBusy}
+              compact
+              leading={
+                <>
+                  <PreviewControl row={row} compact />
+                  <Button size="icon" variant="outline" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                    <SquareTerminal className="size-3.5" />
+                  </Button>
+                </>
+              }
+            />
           ) : (
             <>
-              <PreviewControl row={row} />
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1"><PreviewControl row={row} /></div>
+                <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                  <SquareTerminal className="size-3.5" />
+                </Button>
+              </div>
               <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
             </>
           )}
+          <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />
         </div>
       )}
     </div>
