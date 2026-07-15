@@ -335,15 +335,6 @@ export function WorkstreamCard({ row }: { row: Row }) {
             </Badge>
           )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
-          {row.tmux && (
-            <button
-              type="button"
-              onClick={() => setTerminalOpen(true)}
-              title="A live terminal session is running — open it"
-            >
-              <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">Terminal <SquareTerminal /></Badge>
-            </button>
-          )}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
