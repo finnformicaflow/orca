@@ -558,7 +558,7 @@ export function rerunAgent(row: Row) {
   return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), providerFor(row), { action: "rerun" }).then(refresh);
 }
 
-export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabel?: boolean }) {
+export async function promote(row: Row, opts?: { draft?: boolean; labels?: string[] }) {
   if (!row.worktreePath) return;
   if (row.hasRemote) {
     const outcome = row.agentOutcome ?? row.transcript?.slice().reverse().find((turn) => turn.structured)?.structured;
@@ -566,7 +566,7 @@ export async function promote(row: Row, opts?: { draft?: boolean; addPreviewLabe
     await api.promote(row.repo, {
       worktreePath: row.worktreePath, branch: row.branch, title: row.title,
       provider, task: row.prompt, sessionId, outcome,
-      draft: opts?.draft, addPreviewLabel: opts?.addPreviewLabel,
+      draft: opts?.draft, labels: opts?.labels,
     });
   } else {
     patchEnrich(row.repo, row.branch, { promoted: true }); // local repos have no PR — just mark ready

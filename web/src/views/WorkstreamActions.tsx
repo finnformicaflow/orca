@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, type Row,
+  cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { navigate } from "@/lib/route";
@@ -206,20 +206,27 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   );
 }
 
-// Promote a local branch into a PR — choose ready/draft and optionally set the preview label.
+// Promote a local branch into a PR — choose ready/draft and toggle the repo's configured PR labels
+// (config `prLabels`; entries with `default: true` start checked). Repos with none show no toggles.
 function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; run: (fn: () => Promise<unknown>) => () => void }) {
-  const [label, setLabel] = useState(false);
+  const prLabels = useRepos().find((r) => r.name === row.repo)?.prLabels ?? [];
+  const [checked, setChecked] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(prLabels.map((l) => [l.name, l.default ?? false])));
+  const labels = prLabels.filter((l) => checked[l.name]).map((l) => l.name);
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger disabled={disabled}>Promote to PR</DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
         <DropdownMenuLabel>Promote to PR</DropdownMenuLabel>
-        <DropdownMenuCheckboxItem checked={label} onCheckedChange={(c) => setLabel(Boolean(c))} onSelect={(e) => e.preventDefault()}>
-          Add preview label
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={run(() => promote(row, { draft: false, addPreviewLabel: label }))}>Create PR (ready)</DropdownMenuItem>
-        <DropdownMenuItem onSelect={run(() => promote(row, { draft: true, addPreviewLabel: label }))}>Create draft PR</DropdownMenuItem>
+        {prLabels.map((l) => (
+          <DropdownMenuCheckboxItem key={l.name} checked={checked[l.name] ?? false}
+            onCheckedChange={(c) => setChecked((s) => ({ ...s, [l.name]: Boolean(c) }))} onSelect={(e) => e.preventDefault()}>
+            {l.name}
+          </DropdownMenuCheckboxItem>
+        ))}
+        {prLabels.length > 0 && <DropdownMenuSeparator />}
+        <DropdownMenuItem onSelect={run(() => promote(row, { draft: false, labels }))}>Create PR (ready)</DropdownMenuItem>
+        <DropdownMenuItem onSelect={run(() => promote(row, { draft: true, labels }))}>Create draft PR</DropdownMenuItem>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );

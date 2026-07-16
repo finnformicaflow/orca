@@ -16,6 +16,8 @@ export type RepoConfig = {
   slackChannel?: string;
   /** Label that triggers the deploy-preview action (added by the "Add preview" button). */
   previewLabel?: string;
+  /** Labels offered as toggles in the Promote-to-PR menu; `default: true` starts checked. */
+  prLabels?: { name: string; default?: boolean }[];
   /**
    * Gitignored config files to copy from the main repo into each new/adopted worktree, so
    * previews inherit local secrets a checkout can't (e.g. `backend/.env`). Repo-relative paths;

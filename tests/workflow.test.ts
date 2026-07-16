@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
-import { ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
+import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
@@ -174,6 +174,14 @@ test("W3 promote-to-pr: gh pr create returns number + url", async () => {
   const pr = await createPr(wt, { title: "Feat", body: "b", base: "main", head: "feat-pr" });
   expect(pr.number).toBe(42);
   expect(pr.url).toEndWith("/42");
+});
+
+test("W3c promote labels: configured PR labels are applied comma-joined in one gh call", async () => {
+  const read = await recordGhArgs();
+  await addLabel(repo, 42, ["preview", "urgent"].join(",")); // what /api/promote does with body.labels
+  process.env.ORCA_GH_ARGS_LOG = ""; // stop recording so later tests aren't polluted
+  const log = await read();
+  expect(log).toContain("pr edit 42 --add-label preview,urgent");
 });
 
 test("W3b promote body: no blank PRs — commit summary by default, the repo's PR template if present", async () => {
