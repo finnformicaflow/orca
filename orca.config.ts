@@ -56,13 +56,15 @@ const config: OrcaConfig = {
         // RETRY migrate: migrate-local.sh is idempotent but `set -e`, so any transient hiccup during
         // boot would kill the whole preview. Retry up to 3× with backoff as cheap insurance; a genuine
         // failure (DB down, real migration error) still fails all 3 and surfaces in the preview log.
-        // Per-preview DATABASE: each preview restores its OWN Postgres database (Orca's {db}) from the
-        // pg_dump snapshot and migrates it, instead of sharing branch_demo — so a branch's migration
-        // (e.g. views storage) runs against a fresh copy of real data without touching your dev DB, all
-        // on the same :5432. `export DB_NAME={db}` points MikroORM (backend), the migrator, and the
-        // reseed invites at that database. create-preview-db-local.sh does drop-if-exists + restore +
-        // migrate; retried 3× (idempotent) as cheap insurance. onStop drops the DB on teardown.
-        // Prereq: snapshot the source once with `backend/scripts/snapshot-preview-db.sh`.
+        // Per-preview DATABASE: each preview gets its OWN Postgres database (Orca's {db}) — a clone of
+        // your local branch_demo (public registry + every seeded tenant schema) that then runs THIS
+        // branch's migrations, instead of sharing branch_demo. So a branch's migration (e.g. views
+        // storage) runs against a real copy of your data without touching your dev DB, all on the same
+        // :5432. `export DB_NAME={db}` points MikroORM (backend), the migrator, and the reseed invites
+        // at that database. create-preview-db-local.sh clones (WITH TEMPLATE) + migrates; retried 3×
+        // (idempotent) as cheap insurance. onStop drops the DB on teardown.
+        // Note: the clone briefly disconnects branch_demo (WITH TEMPLATE needs it free of sessions);
+        // your dev backend's pool reconnects.
         { name: "backend", command: "export DB_NAME={db} && cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash scripts/create-preview-db-local.sh {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash scripts/create-preview-db-local.sh {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash scripts/create-preview-db-local.sh {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }", onStop: "cd backend && bash scripts/drop-preview-db-local.sh {db}" },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
@@ -82,7 +84,6 @@ const config: OrcaConfig = {
         "backend/.env",
         "backend/scripts/create-preview-db-local.sh",
         "backend/scripts/drop-preview-db-local.sh",
-        "backend/scripts/snapshot-preview-db.sh",
       ],
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
