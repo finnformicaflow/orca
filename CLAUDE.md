@@ -59,10 +59,13 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
   git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
   PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
-- **GitHub = the `gh` CLI; Slack = the card's pinned agent posting via its own Slack tool** (a
-  lightweight model — Claude→Haiku — so it's from your Slack identity, not a bot). No OAuth app or
-  token in Orca. Falls back to copying the exact message when the agent can't reach Slack. The message
-  is the same linked `#7 Title` (Slack mrkdwn for the post, rich HTML for the copy).
+- **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity when a user token
+  (`SLACK_MCP_TOKEN`) is set — deterministic, verbatim, instant, no model in the loop (via
+  `server/slack-mcp.ts`'s `postMessage`, reused by `/api/slack`). Without a token it falls back to the
+  card's pinned agent posting through its own Slack tool (a lightweight model — Claude→Haiku), which
+  is non-deterministic (may reword, and can drop under concurrent sends). Both fall back to copying
+  the exact message on failure. No OAuth app. The message is the same linked `#7 Title` (Slack mrkdwn
+  for the post, rich HTML for the copy).
 
 ## Multi-repo (aggregated)
 

@@ -3,7 +3,29 @@
 // live post depends on each provider's Slack integration, so it's exercised manually (see QA.md).
 import { test, expect } from "bun:test";
 import { slackPostCommand } from "../server/agent";
+import { postMessage } from "../server/slack-mcp";
 import { slackPostPrompt } from "../web/src/workstream";
+
+test("postMessage sends the channel and text VERBATIM to chat.postMessage as the user", async () => {
+  const orig = globalThis.fetch;
+  let seen: { url: string; body: any; auth: string } | undefined;
+  process.env.SLACK_MCP_TOKEN = "xoxp-test";
+  globalThis.fetch = (async (url: any, init: any) => {
+    seen = { url: String(url), body: JSON.parse(init.body), auth: init.headers.authorization };
+    return new Response(JSON.stringify({ ok: true, channel: "C123" }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const r = await postMessage("#eng", "<https://gh/pr/7|#7 Add X>");
+    expect(r.ok).toBe(true);
+    expect(seen!.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(seen!.body.channel).toBe("#eng");
+    expect(seen!.body.text).toBe("<https://gh/pr/7|#7 Add X>"); // verbatim — no model rewording
+    expect(seen!.auth).toBe("Bearer xoxp-test"); // posts as YOU, not a bot
+  } finally {
+    globalThis.fetch = orig;
+    delete process.env.SLACK_MCP_TOKEN;
+  }
+});
 
 test("slackPostCommand runs each provider with tools enabled and a cheap model where available", () => {
   expect(slackPostCommand("claude", "/repo", "post it")).toEqual([

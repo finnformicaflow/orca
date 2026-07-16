@@ -13,6 +13,7 @@ import * as ledger from "./ledger";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
+import { postMessage as slackPost } from "./slack-mcp";
 import { mergeSafe, prDescriptionPrompt, slackPostPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
@@ -222,11 +223,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {
-    // Post via the pinned provider's own Slack tool (from your Slack identity), using a lightweight
-    // model. Report posted:false so the client falls back to copying if the agent can't reach Slack.
+    const text = String(body.text ?? "");
+    // Preferred path: post the message VERBATIM via Slack's chat.postMessage using your user token
+    // (SLACK_MCP_TOKEN), from your identity. Deterministic and instant — no model reformats it, and
+    // concurrent sends don't contend (unlike spawning a Haiku agent per card, which reworded posts
+    // and dropped them under load). posted:false → the client falls back to copying.
+    if (process.env.SLACK_MCP_TOKEN && repo.slackChannel) {
+      const r = await slackPost(repo.slackChannel, text).catch(() => ({ ok: false }));
+      if (r.ok) return json({ posted: true });
+    }
+    // Fallback (no user token wired): the pinned provider posts through its own Slack tool.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    const prompt = slackPostPrompt(repo.slackChannel, String(body.text ?? ""));
+    const prompt = slackPostPrompt(repo.slackChannel, text);
     return json({ posted: await agent.postSlackViaAgent(provider, repo.repoPath, prompt) });
   }
   if (req.method === "POST" && p === "/api/handoff") {
