@@ -29,14 +29,15 @@ function stagingSweep(): string {
   return m[0];
 }
 
-/** The `{ bash scripts/migrate-local.sh || { … } || { … }; }` retry block out of the real command. */
+/** The `{ bash scripts/create-preview-db-local.sh {db} || { … } || { … }; }` retry block out of the
+ *  real command — now restores+migrates the per-preview database, still retried 3×. */
 function migrateRetry(): string {
-  const m = backendCmd().match(/\{ bash scripts\/migrate-local\.sh[\s\S]*?migrate-local\.sh; \}; \}/);
-  if (!m) throw new Error("migrate retry block not found in branch-demo backend command");
+  const m = backendCmd().match(/\{ bash scripts\/create-preview-db-local\.sh \{db\}[\s\S]*?create-preview-db-local\.sh \{db\}; \}; \}/);
+  if (!m) throw new Error("preview-DB setup retry block not found in branch-demo backend command");
   return m[0];
 }
 
-/** Run the real retry block with `migrate-local.sh` swapped for a command that fails until its
+/** Run the real retry block with the preview-DB script swapped for a command that fails until its
  *  Nth call (counter file), and sleeps zeroed. Returns the overall exit code. */
 async function runRetryWithFlaky(succeedsOnAttempt: number): Promise<number> {
   const dir = await mkdtemp(join(tmpdir(), "orca-retry-"));
@@ -45,7 +46,7 @@ async function runRetryWithFlaky(succeedsOnAttempt: number): Promise<number> {
   await writeFile(flaky, `#!/bin/bash\nc=$(cat "${cf}" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "${cf}"\n[ "$c" -ge ${succeedsOnAttempt} ]\n`);
   await chmod(flaky, 0o755);
   const script = migrateRetry()
-    .replaceAll("bash scripts/migrate-local.sh", `bash ${flaky}`)
+    .replaceAll("bash scripts/create-preview-db-local.sh {db}", `bash ${flaky}`)
     .replaceAll("sleep 3", "sleep 0").replaceAll("sleep 5", "sleep 0");
   const p = Bun.spawn(["bash", "-c", script], { stdout: "ignore", stderr: "ignore" });
   return p.exited;
@@ -105,4 +106,15 @@ test("migrate retry rides out a transient failure (succeeds by the 3rd attempt)"
 
 test("migrate retry still surfaces a genuine failure (all 3 attempts fail → non-zero)", async () => {
   expect(await runRetryWithFlaky(4)).not.toBe(0); // never succeeds within 3 tries
+});
+
+// Per-preview DB wiring: the backend command must point everything (MikroORM/backend, migrator,
+// reseed) at Orca's {db}, restore+migrate it via create-preview-db-local.sh, and drop it on teardown.
+test("backend preview is wired to a per-preview database", () => {
+  const cmd = backendCmd();
+  expect(cmd).toContain("export DB_NAME={db}");              // MikroORM + children target the preview DB
+  expect(cmd).toContain("bash scripts/create-preview-db-local.sh {db}"); // restore snapshot + migrate it
+  expect(cmd).not.toContain("bash scripts/migrate-local.sh"); // no longer migrates the shared branch_demo
+  const svc = config.repos.find((r) => r.name === "branch-demo")?.previewServices.find((s) => s.name === "backend");
+  expect(svc?.onStop).toBe("cd backend && bash scripts/drop-preview-db-local.sh {db}"); // dropped on teardown
 });
