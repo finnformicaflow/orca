@@ -754,30 +754,28 @@ export async function closePr(row: Row) {
 
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
   const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl };
-  const stamp = () => patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
-  // Post via the card's pinned agent using its own Slack tool (from your Slack identity), with a
-  // lightweight model. The message is Slack mrkdwn so it renders as the linked `#7 Title`. Falls back
-  // to copying on posted:false (agent couldn't reach Slack) or any error.
+  // One path for every provider: post the message VERBATIM from your identity via chat.postMessage
+  // (server-side). On failure, copy the message so it isn't lost, then rethrow so the UI shows the
+  // error — a post that didn't land must never be stamped as notified.
   try {
-    if ((await api.slack(row.repo, providerFor(row), slackApiText(ws, kind))).posted) { stamp(); return; }
-  } catch { /* fall through to the clipboard path */ }
-  const { text, html } = slackClipboard(ws, kind);
-  // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text, then a
-  // prompt, on browsers without ClipboardItem or when the write is blocked.
-  try {
-    if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-      await navigator.clipboard.write([new ClipboardItem({
-        "text/html": new Blob([html], { type: "text/html" }),
-        "text/plain": new Blob([text], { type: "text/plain" }),
-      })]);
-    } else {
-      await navigator.clipboard.writeText(text);
-    }
-  } catch {
-    try { await navigator.clipboard.writeText(text); }
-    catch { window.prompt(`Copy the Slack ${kind === "bump" ? "bump" : "message"}:`, text); }
+    await api.slack(row.repo, slackApiText(ws, kind));
+  } catch (e) {
+    const { text, html } = slackClipboard(ws, kind);
+    // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
+    // browsers without ClipboardItem or when the write is blocked.
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch { /* clipboard unavailable — the error below is still surfaced */ }
+    throw e instanceof Error ? e : new Error(String(e));
   }
-  stamp();
+  patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
 }
 
 export async function resolveConflicts(row: Row) {

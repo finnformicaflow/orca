@@ -54,7 +54,7 @@ export const api = {
   handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
   ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
     post("/api/terminal/ensure", { repo, ...b }),
-  slack: (repo: string, provider: AgentProvider, text: string): Promise<{ posted: boolean }> => post("/api/slack", { repo, provider, text }),
+  slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),

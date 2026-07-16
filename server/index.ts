@@ -13,8 +13,8 @@ import * as ledger from "./ledger";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
-import { postMessage as slackPost } from "./slack-mcp";
-import { mergeSafe, prDescriptionPrompt, slackPostPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
+import { postMessage as slackPost } from "./slack-api";
+import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -223,20 +223,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {
-    const text = String(body.text ?? "");
-    // Preferred path: post the message VERBATIM via Slack's chat.postMessage using your user token
-    // (SLACK_MCP_TOKEN), from your identity. Deterministic and instant — no model reformats it, and
-    // concurrent sends don't contend (unlike spawning a Haiku agent per card, which reworded posts
-    // and dropped them under load). posted:false → the client falls back to copying.
-    if (process.env.SLACK_MCP_TOKEN && repo.slackChannel) {
-      const r = await slackPost(repo.slackChannel, text).catch(() => ({ ok: false }));
-      if (r.ok) return json({ posted: true });
-    }
-    // Fallback (no user token wired): the pinned provider posts through its own Slack tool.
-    const provider = body.provider ?? "claude";
-    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    const prompt = slackPostPrompt(repo.slackChannel, text);
-    return json({ posted: await agent.postSlackViaAgent(provider, repo.repoPath, prompt) });
+    // The one Slack path for every provider: post the message VERBATIM from your identity via
+    // chat.postMessage (SLACK_TOKEN). No model, no per-agent branching — deterministic and instant.
+    // A failure surfaces as an error rather than silently degrading, so a post that didn't land is
+    // never mistaken for one that did.
+    if (!repo.slackChannel) return json({ error: "no Slack channel configured for this repo" }, 400);
+    const r = await slackPost(repo.slackChannel, String(body.text ?? ""));
+    if (!r.ok) return json({ error: `Slack post failed: ${r.error ?? "unknown error"}` }, 502);
+    return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/handoff") {
     // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.

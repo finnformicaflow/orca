@@ -83,8 +83,8 @@ describe("Copy worktree action", () => {
   };
   const pr = { ...row, hasRemote: true, lane: "IN_REVIEW" as const, prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" };
 
-  test("Slack action lives only in Actions → Slack, not as a card button, and copies when the agent can't post", async () => {
-    apiFake.slackPosted = false; // agent couldn't reach Slack → posted:false → clipboard fallback
+  test("Slack action lives only in Actions → Slack, not as a card button, and copies the message when the post fails", async () => {
+    apiFake.slackPosted = false; // chat.postMessage failed → the client copies so the message isn't lost
     mount(pr);
     expect([...container!.querySelectorAll("button")].some((button) => button.textContent?.includes("Copy Slack"))).toBe(false);
     await openSlackItem("Send message");
@@ -93,11 +93,11 @@ describe("Copy worktree action", () => {
     expect(copied).toBe("#7 Feat\nhttps://github.com/acme/app/pull/7");
   });
 
-  test("Slack notify posts the mrkdwn message via the pinned agent without touching the clipboard", async () => {
-    apiFake.slackPosted = true; // the agent posts via its Slack tool → no copy
+  test("Slack notify posts the mrkdwn message via chat.postMessage without touching the clipboard", async () => {
+    apiFake.slackPosted = true; // posted verbatim from your identity → no copy
     mount(pr);
     await openSlackItem("Send message");
-    expect(apiFake.slackSends).toEqual([{ repo: "r", provider: "claude", text: "<https://github.com/acme/app/pull/7|#7 Feat>" }]);
+    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://github.com/acme/app/pull/7|#7 Feat>" }]);
     expect(copied).toBe(""); // posted → clipboard untouched
   });
 });

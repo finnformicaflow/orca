@@ -40,8 +40,8 @@ export const apiFake = {
   // carries the past chat's context) by matching these.
   terminalEnsures: [] as { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }[],
   handoffs: [] as { branch: string; content: string }[],
-  slackSends: [] as { repo: string; provider: AgentProvider; text: string }[],
-  slackPosted: false, // when true, api.slack reports posted:true (the agent reached Slack); else copy
+  slackSends: [] as { repo: string; text: string }[],
+  slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
   titleProviders: [] as AgentProvider[],
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
@@ -59,7 +59,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = false; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -105,8 +105,10 @@ mock.module("@/api", () => ({
     ensureTerminal: async (_repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }) => {
       apiFake.terminalEnsures.push(b); return { name: `orca/r/${b.branch}` };
     },
-    slack: async (repo: string, provider: AgentProvider, text: string) => {
-      apiFake.slackSends.push({ repo, provider, text }); return { posted: apiFake.slackPosted };
+    slack: async (repo: string, text: string) => {
+      apiFake.slackSends.push({ repo, text });
+      if (!apiFake.slackPosted) throw new Error("Slack post failed: not_authed");
+      return { ok: true as const };
     },
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
