@@ -1,3 +1,4 @@
+import { join } from "path";
 import type { OrcaConfig } from "./server/config";
 
 // Base directory holding the managed repos. REQUIRED — set ORCA_DEV_ROOT per-machine (e.g.
@@ -5,6 +6,11 @@ import type { OrcaConfig } from "./server/config";
 // than silently resolving repo paths against a wrong default.
 const DEV = process.env.ORCA_DEV_ROOT;
 if (!DEV) throw new Error("ORCA_DEV_ROOT is not set — point it at the base dir holding your managed repos (see README)");
+
+// Per-preview Postgres helper, hosted in THIS (Orca) repo — not the app repo — so previews work on
+// any branch without the app carrying the script. Absolute path resolved from this config's own
+// location, so it's laptop-portable. See scripts/preview-db.sh.
+const previewDb = join(import.meta.dir, "scripts/preview-db.sh");
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {
@@ -61,11 +67,13 @@ const config: OrcaConfig = {
         // branch's migrations, instead of sharing branch_demo. So a branch's migration (e.g. views
         // storage) runs against a real copy of your data without touching your dev DB, all on the same
         // :5432. `export DB_NAME={db}` points MikroORM (backend), the migrator, and the reseed invites
-        // at that database. create-preview-db-local.sh clones (WITH TEMPLATE) + migrates; retried 3×
-        // (idempotent) as cheap insurance. onStop drops the DB on teardown.
+        // at that database. The Orca-hosted preview-db.sh (see `previewDb` above) clones (WITH TEMPLATE)
+        // + migrates; retried 3× (idempotent) as cheap insurance. onStop drops the DB on teardown.
+        // Hosting the script in Orca (not the app repo) is deliberate: it needs nothing from the branch
+        // but the worktree's own .env + scripts/migrate-local.sh, so previews work on ANY branch.
         // Note: the clone briefly disconnects branch_demo (WITH TEMPLATE needs it free of sessions);
         // your dev backend's pool reconnects.
-        { name: "backend", command: "export DB_NAME={db} && cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash scripts/create-preview-db-local.sh {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash scripts/create-preview-db-local.sh {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash scripts/create-preview-db-local.sh {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com \"$org\" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }", onStop: "cd backend && bash scripts/drop-preview-db-local.sh {db}" },
+        { name: "backend", command: `export DB_NAME={db} && cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash '${previewDb}' create {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash '${previewDb}' create {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash '${previewDb}' create {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com "$org" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }`, onStop: `cd backend && bash '${previewDb}' drop {db}` },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
@@ -76,15 +84,9 @@ const config: OrcaConfig = {
         { name: "frontend", command: "cd frontend && { [ -f node_modules/@hey-api/openapi-ts/package.json ] || npm install --no-audit --no-fund; } && { [ -f .env ] || cp .env.template .env; } && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
-      // provider/AWS keys. Copied on create + checkout. The per-preview DB scripts are copied too so
-      // the preview works on ANY branch (incl. ones cut before the scripts landed) — the preview
-      // tooling shouldn't depend on the feature branch carrying it. Sourced from the main checkout,
-      // so keep the scripts there (i.e. on branch-demo master once merged).
-      copyToWorktree: [
-        "backend/.env",
-        "backend/scripts/create-preview-db-local.sh",
-        "backend/scripts/drop-preview-db-local.sh",
-      ],
+      // provider/AWS keys. Copied on create + checkout. (The per-preview DB scripts now live in the
+      // Orca repo — see `previewDb` — so they no longer need copying into each worktree.)
+      copyToWorktree: ["backend/.env"],
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)
