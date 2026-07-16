@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { openTerminal, type Row } from "../store";
+import { apiPort, openTerminal, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 
 // The browser terminal: an xterm.js view wired to the bridge's per-worktree tmux session over a
@@ -31,7 +31,9 @@ export function Terminal({ repo, branch }: { repo: string; branch: string }) {
     const sendResize = () => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/api/terminal/ws?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`);
+      // Straight to the bridge port, NOT location.host — in dev that's Vite, whose Bun runtime can't
+      // proxy a WS upgrade. In the built app apiPort() is the page's own port, so this is same-origin.
+      ws = new WebSocket(`${proto}://${location.hostname}:${apiPort()}/api/terminal/ws?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => sendResize();
       ws.onmessage = (e) => term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data as ArrayBuffer));

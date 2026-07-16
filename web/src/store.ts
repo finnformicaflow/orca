@@ -28,10 +28,14 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[] } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number } | null = null;
 export const configReady = api.config()
   .then((c) => { cfg = c; notify(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; });
+
+/** The bridge's port — the terminal WebSocket targets it directly (the Bun-run Vite dev proxy can't
+ *  forward a WS upgrade). Falls back to the page's own port, which is correct for the built app. */
+export const apiPort = (): string => String(cfg?.apiPort ?? location.port);
 
 const repoInfo = (repo: string) => cfg?.repos.find((r) => r.name === repo);
 export const useRepos = (): RepoInfo[] => useSyncExternalStore(subscribe, () => cfg?.repos ?? EMPTY_REPOS);

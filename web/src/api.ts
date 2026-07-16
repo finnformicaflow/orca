@@ -38,7 +38,7 @@ export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[] }> => fetch("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
   createWorktree: (repo: string, prompt: string, provider: AgentProvider): Promise<{ branch: string; worktreePath: string; title: string }> =>
     post("/api/workstreams", { repo, prompt, provider }),

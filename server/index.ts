@@ -105,7 +105,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       hasRemote: await git.hasRemote(r.repoPath),
     })));
     const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
-    return json({ repos, staleHours: cfg.staleHours, agentProviders });
+    // apiPort lets the browser open the terminal WebSocket straight at the bridge — the Vite dev proxy
+    // (Bun runtime) can't forward a WS upgrade. In the built app this equals the page's own port.
+    return json({ repos, staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT });
   }
   if (req.method === "POST" && p === "/api/workstreams") {
     // The selected provider summarises the prompt into a short title (falls back locally); jitter suffix
