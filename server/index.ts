@@ -193,7 +193,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (body.worktreePath) {
       agent.stop(body.worktreePath);
       if (body.branch) await agent.killByBranch(body.branch);
-      preview.stop(body.worktreePath);
+      preview.stop(body.worktreePath, true); // teardown: drop this preview's DB
       await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     }
     if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
@@ -221,7 +221,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(key ? await preview.status(key) : []);
   }
   if (req.method === "POST" && p === "/api/preview/stop") {
-    preview.stop(body.key);
+    preview.stop(body.key, true); // teardown: drop this preview's DB
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {
@@ -280,7 +280,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       agent.stop(w.worktreePath);
       await agent.killByBranch(w.branch);
       await tmux.killSession(sessionName(repo.name, w.branch));
-      preview.stop(w.worktreePath);
+      preview.stop(w.worktreePath, true); // merged branch reaped → drop its preview DB too
       await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
       await git.deleteBranch(repo.repoPath, w.branch);
     }

@@ -1,5 +1,13 @@
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
-export type PreviewService = { name: string; command: string; open?: boolean };
+export type PreviewService = {
+  name: string;
+  command: string;
+  open?: boolean;
+  /** Command run when the preview is torn down (Discard / preview-stop), NOT on the reap-before-restart
+   *  or on shutdown. `{db}` is substituted with this preview's per-worktree database name — the hook is
+   *  how a per-preview Postgres DB gets dropped. Runs with the worktree as cwd, best-effort. */
+  onStop?: string;
+};
 
 export type RepoConfig = {
   /** Short id used in the URL and repo switcher, e.g. "orca". */

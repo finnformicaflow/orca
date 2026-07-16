@@ -12,14 +12,26 @@
 //      (or anything else on the machine) still hold, so the new server crashes on bind. We probe
 //      the OS for a genuinely free port instead.
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { portFree } from "./net";
 import type { PreviewService } from "./config";
 
+/** A stable, Postgres-identifier-safe database name for one preview (keyed by its worktree path), so
+ *  the `{db}` placeholder in a preview command resolves to a per-worktree database on the shared
+ *  server. Deterministic (a restart/re-spin of the same worktree targets the same DB), unique (an
+ *  8+ char hash of the full path avoids collisions when two branches slug alike), and matches
+ *  MikroORM's `^[a-z][a-z0-9_]{0,62}$`: lowercase, leading letter (`orca_`), ≤63 chars. */
+export function previewDbName(key: string): string {
+  const slug = (key.split("/").pop() ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "preview";
+  const hash = createHash("sha1").update(key).digest("hex").slice(0, 10);
+  return `orca_${slug}_${hash}`;
+}
+
 // Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
 // only know their port, and reap them via killPort. Owned svcs (started this run) have both.
-type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number };
+type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string };
 export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
@@ -29,8 +41,9 @@ const previews = new Map<string, Svc[]>();
 // instead of orphaning them + forcing a re-spin. Only ports still responding are re-adopted.
 const REG = join(tmpdir(), "orca-previews.json");
 function persist(): void {
-  const data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number }>> = {};
-  for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt }) => ({ name, port, open, logPath, startedAt }));
+  const data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>> = {};
+  // onStop persists so a preview re-adopted after a bridge restart still drops its DB on teardown.
+  for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt, onStop }) => ({ name, port, open, logPath, startedAt, onStop }));
   try { writeFileSync(REG, JSON.stringify(data)); } catch { /* best effort */ }
 }
 
@@ -48,7 +61,7 @@ function listenerCwd(port: number): string | null {
 /** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
  *  dead. Call once on boot, before serving. */
 export async function reattach(): Promise<void> {
-  let data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number }>>;
+  let data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>>;
   try { data = JSON.parse(readFileSync(REG, "utf8")); } catch { return; } // no registry yet / unreadable
   for (const [key, svcs] of Object.entries(data)) {
     const live: Svc[] = [];
@@ -111,14 +124,17 @@ export async function start(key: string, cwd: string, services: PreviewService[]
   stop(key); // reap tracked procs + orphaned servers for this worktree so we never serve stale code
   const ports: Record<string, number> = {};
   for (const s of services) ports[s.name] = await freePort(portRange);
+  const db = previewDbName(key); // this preview's own database name — `{db}` in commands / onStop
   const svcs: Svc[] = services.map((s) => {
     const cmd = s.command
       .replace(/\{port\}/g, String(ports[s.name]))
-      .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""));
+      .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""))
+      .replace(/\{db\}/g, db);
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
     const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
-    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now() };
+    const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
+    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop };
     void proc.exited.then(() => { svc.exited = true; });
     return svc;
   });
@@ -163,8 +179,21 @@ export async function list(): Promise<{ key: string; svcs: SvcStatus[] }[]> {
   return Promise.all([...previews.keys()].map(async (key) => ({ key, svcs: await status(key) })));
 }
 
-export function stop(key: string): void {
-  for (const s of previews.get(key) ?? []) {
+/** Stop a preview's services. `teardown` = an explicit Discard / preview-stop (not the reap-before-
+ *  restart, and not shutdown): only then do we run each service's onStop, so a per-preview database is
+ *  dropped when you're done with the branch — but never on a routine restart, which would drop the DB
+ *  out from under a re-spin. onStop runs with the worktree (still present at this point) as cwd. */
+export function stop(key: string, teardown = false): void {
+  const svcs = previews.get(key) ?? [];
+  if (teardown) {
+    for (const s of svcs) {
+      if (!s.onStop) continue;
+      // Best-effort and synchronous: a drop-database is quick, and the worktree it needs (env + drop
+      // script) is still on disk here — callers remove it only after stop() returns.
+      try { Bun.spawnSync(["sh", "-lc", s.onStop], { cwd: key, env: process.env, stdout: "ignore", stderr: "ignore" }); } catch { /* best effort */ }
+    }
+  }
+  for (const s of svcs) {
     if (s.proc?.pid) { try { killTree(s.proc.pid); } catch { /* gone */ } } // reap the sh wrapper + ALL its children (nest/vite + the backgrounded reseed loop)
     else { try { s.proc?.kill(); } catch { /* already gone / adopted, no handle */ } }
     killPort(s.port); // precise: reap the actual listener the sh-wrapper kill (or adoption) leaves behind
@@ -175,7 +204,8 @@ export function stop(key: string): void {
   persist();
 }
 
-/** Kill all preview services — call on server shutdown. */
+/** Kill all preview services — call on server shutdown. Not a teardown: leaves per-preview DBs intact
+ *  so a restart re-spins against them (they're dropped only on an explicit Discard / preview-stop). */
 export function killAll(): void {
   for (const key of [...previews.keys()]) stop(key);
 }
