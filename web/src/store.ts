@@ -178,7 +178,10 @@ export const pollAgents = coalesced(async () => {
   for (const [name, s] of polled) agentsByRepo.set(name, s);
   rebuildLive();
   persistAgentEnrichment();
-  notify();
+  // No notify() here: the individual streams settle at different times, so rendering off one alone
+  // shows a partial view where the sources disagree — a PR branch whose worktree loaded but whose PR
+  // hasn't looks like a bare LOCAL card, then jumps. The coordinator (refreshAndGc / the solo merged
+  // poll) notifies once after its streams settle, so the board only ever paints a consistent view.
 });
 
 export const pollPrs = coalesced(async () => {
@@ -188,7 +191,7 @@ export const pollPrs = coalesced(async () => {
   for (const [name, s] of polled) prsByRepo.set(name, s);
   rebuildLive();
   runFollowers(); // auto-drive any followed PRs off the status we just polled
-  notify();
+  // notify() is the coordinator's job (see pollAgents) — never render off PRs alone.
 });
 
 export const pollMerged = coalesced(async () => {
@@ -198,7 +201,8 @@ export const pollMerged = coalesced(async () => {
   pollCounts.merged++;
   for (const [name, s] of polled) mergedByRepo.set(name, s);
   rebuildLive();
-  notify();
+  // notify() is the coordinator's job (see pollAgents): refreshAndGc after a full refresh, or the
+  // solo TTL caller below via `.then(notify)`.
 });
 
 // GC runs only after a COORDINATED settle of the streams that can make a branch disappear (agents +
@@ -209,6 +213,7 @@ async function refreshAndGc(streams: Promise<void>[]): Promise<void> {
   const known = enrichKeysAtStart();
   await Promise.all(streams);
   gcEnrichment(known);
+  notify(); // one render off the fully-settled view — never mid-flight (see pollAgents)
 }
 
 /** Imperative full refresh (after a mutation) — all three streams, then GC once on a consistent view. */
@@ -231,7 +236,7 @@ setInterval(() => {
   // Merged history changes slowly — poll on a TTL, and far slower when the tab is hidden. It only
   // ever ADDS branches to the "alive" set, so it can't trigger a prune and needs no GC of its own.
   const mergedTtl = hidden ? MERGED_TTL_MS * 8 : MERGED_TTL_MS;
-  if (Date.now() - lastMergedAt >= mergedTtl) { lastMergedAt = Date.now(); void pollMerged(); }
+  if (Date.now() - lastMergedAt >= mergedTtl) { lastMergedAt = Date.now(); void pollMerged().then(notify); }
 }, 8_000);
 
 // Prune enrichment for branches that no longer exist — merged / closed / branch-deleted, whether via

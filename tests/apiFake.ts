@@ -20,6 +20,10 @@ export const apiFake = {
   prsData: [] as unknown[],
   // When set, api.prs rejects — lets a GC test simulate a transient poll failure (must NOT prune).
   prsError: null as null | string,
+  // When true, api.prs blocks until releasePrs() — lets a test settle the agents stream first and
+  // prove the board doesn't paint a partial (worktree-but-no-PR) view.
+  holdPrs: false,
+  releasePrs: null as null | (() => void),
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
   // Preview services served by api.previewMaster (on start) + api.previewStatus (the poll) — tests set
@@ -59,7 +63,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
 };
 
 mock.module("@/api", () => ({
@@ -67,7 +71,11 @@ mock.module("@/api", () => ({
     config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"] }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
-    prs: async () => { if (apiFake.prsError) throw new Error(apiFake.prsError); return apiFake.prsData; },
+    prs: async () => {
+      if (apiFake.holdPrs) await new Promise<void>((resolve) => { apiFake.releasePrs = () => { apiFake.holdPrs = false; resolve(); }; });
+      if (apiFake.prsError) throw new Error(apiFake.prsError);
+      return apiFake.prsData;
+    },
     mergedPrs: async () => [],
     reviewEvidence: async () => { if (apiFake.reviewEvidenceError) throw new Error(apiFake.reviewEvidenceError); return apiFake.reviewEvidenceData; },
     ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
