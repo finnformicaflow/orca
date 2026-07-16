@@ -14,10 +14,16 @@ import { run } from "./run";
 
 export type TerminalData = { name: string; dir?: string; reader?: Bun.Subprocess };
 
+/** `tmux capture-pane` joins lines with bare `\n`; a raw xterm needs `\r\n` or the one-shot initial
+ *  screen staircases down-and-right off the viewport and looks blank. The live `pipe-pane` stream is
+ *  untouched — it already carries the pty's real `\r\n`. Lookbehind so an existing `\r\n` isn't
+ *  doubled. */
+export const snapshotFrame = (capture: string): string => capture.replace(/(?<!\r)\n/g, "\r\n");
+
 export const terminalWs = {
   async open(ws: ServerWebSocket<TerminalData>) {
     const { name } = ws.data;
-    try { ws.send(await tmux.capturePane(name)); } catch { /* session may have just died */ }
+    try { ws.send(snapshotFrame(await tmux.capturePane(name))); } catch { /* session may have just died */ }
     // FIFO in a private temp dir; `cat` blocks on it until tmux's pipe-pane opens the write end.
     const dir = mkdtempSync(join(tmpdir(), "orca-term-"));
     const fifo = join(dir, "pane");

@@ -3,7 +3,17 @@
 import { afterAll, expect, test } from "bun:test";
 import { tmpdir } from "os";
 import * as tmux from "../server/tmux";
+import { snapshotFrame } from "../server/terminal";
 import { isOrcaSession, sessionName } from "../shared/tmux";
+
+// The initial screen a browser terminal gets: capture-pane's bare \n must become \r\n so xterm draws
+// each line at column 0 instead of staircasing off-screen (which read as a blank terminal). Idempotent
+// on already-correct \r\n so nothing gets doubled.
+test("snapshotFrame turns capture-pane's bare \\n into \\r\\n without doubling existing \\r\\n", () => {
+  expect(snapshotFrame("line1\nline2\nline3")).toBe("line1\r\nline2\r\nline3");
+  expect(snapshotFrame("already\r\ncrlf")).toBe("already\r\ncrlf");
+  expect(snapshotFrame("")).toBe("");
+});
 
 // Pure naming: namespaced under orca/ and stripped of tmux's reserved `.`/`:`/`/` characters, so an
 // Orca session can never collide with (or be confused for) the user's own tmux sessions.
@@ -43,4 +53,13 @@ t("ensureSession → sendKeys → capturePane round-trips, killSession cleans up
   await tmux.killSession(name);
   expect(await tmux.sessionExists(name)).toBe(false);
   expect(await tmux.listSessions()).not.toContain(name);
+});
+
+t("concurrent ensureSession doesn't error on the create race (both see 'absent', one would dup)", async () => {
+  await tmux.killSession(name);
+  // Two ensures in parallel: both pass the exists-check before either creates, so the loser hits
+  // tmux's "duplicate session". ensureSession must swallow that and leave exactly one live session.
+  await Promise.all([tmux.ensureSession(name, tmpdir(), ""), tmux.ensureSession(name, tmpdir(), "")]);
+  expect(await tmux.sessionExists(name)).toBe(true);
+  await tmux.killSession(name);
 });

@@ -32,7 +32,15 @@ export async function ensureSession(name: string, worktree: string, command: str
   if (await sessionExists(name)) return;
   const args = ["new-session", "-d", "-s", name, "-c", worktree, "-x", String(size.cols), "-y", String(size.rows)];
   if (command) args.push(command); // omitted → tmux starts the default shell (used by tests)
-  await tmux(args);
+  try {
+    await tmux(args);
+  } catch (e) {
+    // A concurrent ensure (e.g. React strict-mode double-mounting the terminal, or the menu action
+    // and the tab both firing) can create the session between our check and this create, so tmux
+    // errors "duplicate session". That IS the desired end state — stay idempotent, don't surface it.
+    if (!String(e).includes("duplicate session")) throw e;
+    return;
+  }
   await tmux(["set-option", "-t", name, "window-size", "manual"]).catch(() => {});
 }
 
