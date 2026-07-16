@@ -74,8 +74,16 @@ const config: OrcaConfig = {
         { name: "frontend", command: "cd frontend && { [ -f node_modules/@hey-api/openapi-ts/package.json ] || npm install --no-audit --no-fund; } && { [ -f .env ] || cp .env.template .env; } && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
-      // provider/AWS keys. Copied on create + checkout.
-      copyToWorktree: ["backend/.env"],
+      // provider/AWS keys. Copied on create + checkout. The per-preview DB scripts are copied too so
+      // the preview works on ANY branch (incl. ones cut before the scripts landed) — the preview
+      // tooling shouldn't depend on the feature branch carrying it. Sourced from the main checkout,
+      // so keep the scripts there (i.e. on branch-demo master once merged).
+      copyToWorktree: [
+        "backend/.env",
+        "backend/scripts/create-preview-db-local.sh",
+        "backend/scripts/drop-preview-db-local.sh",
+        "backend/scripts/snapshot-preview-db.sh",
+      ],
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)
