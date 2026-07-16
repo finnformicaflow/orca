@@ -101,7 +101,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
-      name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel,
+      name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
       hasRemote: await git.hasRemote(r.repoPath),
     })));
     const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
@@ -144,7 +144,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
-    if (body.addPreviewLabel) await gh.addLabel(repo.repoPath, pr.number, repo.previewLabel ?? "preview").catch(() => {});
+    if (body.labels?.length) await gh.addLabel(repo.repoPath, pr.number, body.labels.join(",")).catch(() => {});
     return json(pr);
   }
   if (req.method === "GET" && p === "/api/prs") {

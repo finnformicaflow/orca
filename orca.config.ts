@@ -16,6 +16,8 @@ const config: OrcaConfig = {
       baseBranch: "master",
       slackChannel: "#v3-engineering",
       previewLabel: "preview",
+      // Labels the Promote-to-PR menu offers as toggles; `preview` starts checked.
+      prLabels: [{ name: "preview", default: true }],
       // Uses the repo's own dev scripts (test-auth, shared local Postgres on :5432 — must be
       // running, and backend/.env present). Each service gets its OWN assigned port: the backend
       // must not fall back to :3000 (it would collide with your main dev backend / other previews,

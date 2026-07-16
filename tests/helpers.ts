@@ -32,6 +32,7 @@ case "$1 $2" in
   "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
   "pr merge") exit 0 ;;
   "pr ready") exit 0 ;;
+  "pr edit") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
 esac
 `;
