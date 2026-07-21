@@ -2,8 +2,8 @@
 // the Bun server and Vite dev do SPA fallback, so these paths serve index.html.
 import { useSyncExternalStore } from "react";
 
-export type PrTab = "overview" | "files" | "checks" | "preview" | "terminal";
-export type LocalTab = "overview" | "files" | "preview" | "terminal";
+export type PrTab = "overview" | "chat" | "files" | "checks" | "preview" | "terminal";
+export type LocalTab = "overview" | "chat" | "files" | "preview" | "terminal";
 export type Route =
   | { name: "board" }
   | { name: "pr"; repo: string; number: number; sub: PrTab }

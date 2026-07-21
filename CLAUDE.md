@@ -153,8 +153,15 @@ dragging an almost-full native context into another turn.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
-them. Routing: `/` = board, `/{repo}/prs/:n[/files|/checks|/preview]` = PR detail,
-`/{repo}/local/:branch[/files|/preview]` = local-session detail.
+them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/checks|/preview]` = PR detail,
+`/{repo}/local/:branch[/chat|/files|/preview]` = local-session detail.
+
+**Chat tab** (`web/src/views/Chat.tsx`): the branch's whole conversation, read from `GET /api/turns`.
+Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board action
+uses, and tmux stays the interactive lane. It closes the gap where turns were recorded but rendered
+nowhere, so the detail view showed only the latest run's prompt and final blob. A turn written at
+launch but not yet finished renders as in-progress (that's how an interrupted run stays visible);
+a turn with a parsed outcome renders its sections rather than the raw markdown blob.
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
