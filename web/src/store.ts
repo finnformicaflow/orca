@@ -164,12 +164,15 @@ function persistAgentEnrichment() {
 // which reflects state from BEFORE the caller asked (the caller may have just created/merged
 // something). So it gets exactly one fresh poll chained after the current one finishes. This is what
 // makes an imperative refresh() reliably reflect a just-applied mutation.
-function coalesced(run: () => Promise<void>): () => Promise<void> {
+export function coalesced(run: () => Promise<void>): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
   let trailing: Promise<void> | null = null;
   const fn = (): Promise<void> => {
     if (!inFlight) { inFlight = run().finally(() => { inFlight = null; }); return inFlight; }
-    if (!trailing) trailing = inFlight.then(() => { trailing = null; return fn(); });
+    // Swallow the in-flight poll's rejection before chaining: `.then(onFulfilled)` alone would skip
+    // the `trailing = null` reset when it rejects, leaving a rejected promise wedged in the slot that
+    // every later caller is handed forever (refresh() never notifies again until a reload).
+    if (!trailing) trailing = inFlight.catch(() => {}).then(() => { trailing = null; return fn(); });
     return trailing;
   };
   return fn;
