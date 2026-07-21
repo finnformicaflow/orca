@@ -105,6 +105,75 @@ export function workstreamId(repo: string, branch: string): number {
   return created.id;
 }
 
+/** The client's enrichment fields, stored as one opaque JSON blob per workstream. Deliberately NOT
+ *  columns: the shape is the client's (`Enrichment` in web/src/store.ts) and grows regularly, and a
+ *  column per field would mean a migration per field for no query we actually run. SQLite's
+ *  `json_extract` covers reading individual fields if a later feature needs to. */
+export type Fields = Record<string, unknown>;
+
+/** Every live workstream in a repo, keyed by branch. Archived ones are excluded — they're history,
+ *  not board state. */
+export function enrichment(repo: string): Record<string, Fields> {
+  const rows = db().query("SELECT branch, data FROM workstream WHERE repo = ? AND archived_at IS NULL AND branch IS NOT NULL")
+    .all(repo) as { branch: string; data: string }[];
+  const out: Record<string, Fields> = {};
+  for (const r of rows) {
+    try { out[r.branch] = JSON.parse(r.data) as Fields; } catch { out[r.branch] = {}; }
+  }
+  return out;
+}
+
+/** Merge `fields` into a workstream's blob, creating it if absent. `null` (or `undefined`) deletes
+ *  that key — the client's patch semantics use `undefined` to clear a field (e.g. `followSig`), and
+ *  JSON.stringify drops undefined keys entirely, so deletion travels over the wire as null. */
+export function patchEnrichment(repo: string, branch: string, fields: Fields): void {
+  const id = workstreamId(repo, branch);
+  const row = db().query("SELECT data FROM workstream WHERE id = ?").get(id) as { data: string };
+  let current: Fields = {};
+  try { current = JSON.parse(row.data) as Fields; } catch { /* corrupt blob → start clean */ }
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) delete current[k]; else current[k] = v;
+  }
+  db().query("UPDATE workstream SET data = ? WHERE id = ?").run(JSON.stringify(current), id);
+}
+
+/** One-shot adoption of a browser's existing localStorage enrichment. Only fills workstreams that
+ *  have no data yet, so re-running it can't overwrite anything the DB already owns. */
+export function importEnrichment(entries: { repo: string; branch: string; fields: Fields }[]): number {
+  let imported = 0;
+  db().transaction(() => {
+    for (const e of entries) {
+      if (!e.repo || !e.branch) continue;
+      const id = workstreamId(e.repo, e.branch);
+      const row = db().query("SELECT data FROM workstream WHERE id = ?").get(id) as { data: string };
+      if (row.data !== "{}") continue; // already owned by the DB — leave it alone
+      const { transcript, ...rest } = (e.fields ?? {}) as Fields & { transcript?: AgentTurn[] };
+      db().query("UPDATE workstream SET data = ? WHERE id = ?").run(JSON.stringify(rest), id);
+      // The old browser-side transcript becomes real turns rather than being dropped — this is the
+      // one chance to keep history that predates the DB (bounded at 25 turns by the old .slice).
+      for (const t of Array.isArray(transcript) ? transcript : []) {
+        if (!t?.id) continue;
+        adoptTurn(id, t);
+      }
+      imported++;
+    }
+  })();
+  return imported;
+}
+
+/** Insert a turn already known to be complete (a migrated one). Ignores ids the DB has, so a repeat
+ *  import — or a second browser carrying overlapping history — can't duplicate turns. */
+function adoptTurn(workstreamId: number, t: AgentTurn): void {
+  db().query(
+    `INSERT INTO turn (workstream_id, run_id, provider, status, prompt, response, structured, session_id, raw_ref, started_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO NOTHING`,
+  ).run(
+    workstreamId, t.id, t.provider ?? "claude", t.failed ? "error" : "done",
+    t.prompt ?? "", t.response ?? null, t.structured ? JSON.stringify(t.structured) : null,
+    t.sessionId ?? null, t.sessionId ?? null, t.startedAt ?? 0, t.finishedAt ?? null,
+  );
+}
+
 // ---- turns ----
 
 type TurnRow = {

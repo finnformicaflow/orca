@@ -366,6 +366,21 @@ async function api(req: Request, url: URL): Promise<Response> {
     });
     return json(receipt);
   }
+  if (req.method === "GET" && p === "/api/enrichment") {
+    // What git/gh can't recover about a branch — prompt, title, provider/session pointer, follow
+    // state, Slack timestamps. Lived in localStorage until it outgrew a 5MB shared bucket.
+    return json(db.enrichment(repo.name));
+  }
+  if (req.method === "POST" && p === "/api/enrichment") {
+    if (!body.branch) return json({ error: "branch required" }, 400);
+    db.patchEnrichment(repo.name, body.branch, body.fields ?? {});
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/enrichment/import") {
+    // One-shot adoption of a browser's pre-DB localStorage, transcripts included. Idempotent: it
+    // only fills workstreams the DB doesn't already own.
+    return json({ imported: db.importEnrichment(body.entries ?? []) });
+  }
   if (req.method === "GET" && p === "/api/turns") {
     // The durable conversation for a branch — written server-side at run start/exit, so it survives
     // a bridge restart, a closed tab, and follow-ups that land faster than the client polls.

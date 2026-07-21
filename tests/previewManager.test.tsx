@@ -52,7 +52,7 @@ test("PM2 badge counts running previews and lists each by its session title, wit
   // localStorage alone won't touch the store's in-memory map — a storage event reloads it (as another
   // Orca tab's write would), see store.ts.
   apiFake.worktrees.set("dark-mode", { branch: "dark-mode", worktreePath: "/wt/dark-mode" });
-  localStorage.setItem("orca.enrichment", JSON.stringify({ "r::dark-mode": { title: "Add dark mode" } }));
+  apiFake.enrichmentData.set("r::dark-mode", { title: "Add dark mode" }); // titles come from the bridge now
   const storageEvent = new Event("storage") as Event & { key?: string };
   storageEvent.key = "orca.enrichment";
   await act(async () => { window.dispatchEvent(storageEvent); await store.refresh(); });

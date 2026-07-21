@@ -75,7 +75,7 @@ test("review launch sends unresolved thread evidence and persists IDs only after
   await store.addressReview(row, false);
   expect(apiFake.claudePrompts.at(-1)).toContain("Thread T1");
   expect(apiFake.claudePrompts.at(-1)).toContain("src/a.ts:12");
-  expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat-threads"].handedReviewThreadIds).toEqual(["T1"]);
+  expect(apiFake.enrichmentData.get("r::feat-threads")?.handedReviewThreadIds).toEqual(["T1"]);
 
   await store.addressReview(row, false);
   expect(apiFake.calls.filter((call) => call === "agent:/wt/feat-threads")).toHaveLength(1);
@@ -96,7 +96,7 @@ test("failed review launch does not persist handed IDs", async () => {
   apiFake.claudeError = "launch rejected";
   const row = { repo: "r", hasRemote: true, branch: "feat-reject", title: "reject", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-reject", prNumber: 1 } as store.Row;
   await expect(store.addressReview(row, false)).rejects.toThrow("launch rejected");
-  expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat-reject"]?.handedReviewThreadIds).toBeUndefined();
+  expect(apiFake.enrichmentData.get("r::feat-reject")?.handedReviewThreadIds).toBeUndefined();
 });
 
 test("evidence endpoint failure falls back to generic review discovery", async () => {

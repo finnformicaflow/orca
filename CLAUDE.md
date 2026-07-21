@@ -72,11 +72,20 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   dir is kept OUT of every worktree so none of it can leak into a diff or PR body. Leases persist
   across shutdown by design (the bridge leaves agents running; the lease is how the restart sees
   them). For everything except the chat history, live system + git + gh remain the sources of truth.
-- **Source of truth is the LIVE system, not localStorage.** Draft column is driven by
+- **Source of truth for lanes is the LIVE system.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
-  (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
-  git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
-  PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
+  (`gh pr list --author @me`). **Enrichment** only decorates that live data with what
+  git/gh can't recover — prompt, title, provider/session pointer, transcript, Slack timestamps — keyed
+  by repo+branch. It lives in the DB (`GET/POST /api/enrichment`); `web/src/store.ts` keeps a
+  synchronous in-memory **mirror** so reads stay sync during render, writes go through the server, and
+  the agents poll re-hydrates. Writes still in flight are re-applied over a hydration
+  (`pendingWrites`) — a poll that started before a write returns data predating it, and silently
+  reverting `followSig` would re-fire a follower's action every poll. Rows are assembled from live
+  PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
+  enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
+  bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
+  only per-browser UI state (theme, density, composer drafts); a one-shot `migrateLocalEnrichment`
+  hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
   no MCP (via `server/slack-api.ts`'s `postMessage`, reused by `/api/slack`). No OAuth app. A failed

@@ -1,7 +1,10 @@
 // Source of truth is the LIVE system across ALL configured repos: worktrees + running
 // agents (GET /api/agents) and open PRs (GET /api/prs) per repo, polled together and
-// aggregated into unified rows tagged by repo. localStorage only *enriches* (prompt, title,
-// local-promote flag, Slack timestamps), keyed by repo+branch.
+// aggregated into unified rows tagged by repo. That live data is *enriched* (prompt, title,
+// local-promote flag, Slack timestamps) with what git/gh can't recover, keyed by repo+branch.
+// Enrichment and the chat transcript now live in the bridge's SQLite store (server/db.ts); this
+// module keeps a synchronous in-memory mirror of it. localStorage holds only per-browser UI state
+// (theme, density, composer drafts) — see the migration below for the one-shot handover.
 import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
@@ -30,8 +33,30 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.
 // ---- config ----
 let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number } | null = null;
 export const configReady = api.config()
-  .then((c) => { cfg = c; notify(); void refresh(); })
+  .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; });
+
+/** Hand this browser's pre-DB enrichment to the bridge, once. Transcripts come across as real turns
+ *  (see db.importEnrichment), so history predating the DB isn't lost. The local copy is dropped only
+ *  after the server confirms, and the import is idempotent — a second browser with overlapping keys
+ *  can't overwrite what the DB already owns. */
+export async function migrateLocalEnrichment(): Promise<void> {
+  const raw = localStorage.getItem(KEY);
+  if (!raw) return;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const entries = Object.entries(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, Record<string, unknown>> : {})
+      .flatMap(([key, fields]) => {
+        const sep = key.indexOf("::");
+        return sep < 0 ? [] : [{ repo: key.slice(0, sep), branch: key.slice(sep + 2), fields }];
+      });
+    if (entries.length) await api.importEnrichment(entries);
+    localStorage.removeItem(KEY);
+  } catch (e) {
+    // Leave the blob in place so a later load can retry — dropping it would lose the only copy.
+    console.error("orca: enrichment migration failed", e);
+  }
+}
 
 /** The bridge's port — the terminal WebSocket targets it directly (the Bun-run Vite dev proxy can't
  *  forward a WS upgrade). Falls back to the page's own port, which is correct for the built app. */
@@ -53,30 +78,54 @@ export type Enrichment = {
   handedReviewThreadIds?: string[];
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
-let enrichMap: Record<string, Enrichment> = load();
-function load(): Record<string, Enrichment> {
-  try { return JSON.parse(localStorage.getItem(KEY) ?? "{}"); } catch { return {}; }
-}
+// The bridge owns enrichment (server/db.ts); this map is a local MIRROR of it. Reads stay synchronous
+// — `enrichOf` is called from render and from poll handlers — while writes go through the server and
+// are re-hydrated on the next poll. The mirror is updated optimistically first so the UI never waits
+// on a round-trip for a value it just set.
+let enrichMap: Record<string, Enrichment> = {};
 const ekey = (repo: string, branch: string) => `${repo}::${branch}`;
 const enrichOf = (repo: string, branch: string): Enrichment => enrichMap[ekey(repo, branch)] ?? {};
-// Merge against the FRESHEST localStorage, not the in-memory copy: another Orca tab on the same
-// origin (common while developing Orca itself) polls every 8s and writes the whole blob, so a
-// stale in-memory map would clobber entries that tab just added — the "names lost on refresh" bug.
+/** Read a branch's enrichment straight off the mirror — for views (and tests) that need it outside
+ *  an assembled Row. Synchronous by design; the mirror is kept in step by the agents poll. */
+export const enrichmentFor = enrichOf;
+
+// Fields written locally whose POST hasn't come back yet. A poll that started before the write can
+// return data that predates it, so hydration re-applies these on top — otherwise the mirror silently
+// reverts. That reversion is not cosmetic: `runFollowers` records `followSig` BEFORE firing so a
+// steady blocker acts once, and losing it re-fires the same action on the very next poll.
+const pendingWrites = new Map<string, Enrichment>();
+
+/** Replace the mirror for one repo from a server payload. Other repos' entries are untouched. */
+function hydrateEnrich(repo: string, byBranch: Record<string, Record<string, unknown>>) {
+  const next: Record<string, Enrichment> = {};
+  for (const [k, v] of Object.entries(enrichMap)) if (!k.startsWith(`${repo}::`)) next[k] = v;
+  for (const [branch, fields] of Object.entries(byBranch)) next[ekey(repo, branch)] = fields as Enrichment;
+  for (const [k, fields] of pendingWrites) next[k] = { ...next[k], ...fields };
+  enrichMap = next;
+}
+
 function patchEnrich(repo: string, branch: string, fields: Enrichment) {
   const k = ekey(repo, branch);
-  const fresh = load();
-  enrichMap = { ...fresh, [k]: { ...fresh[k], ...fields } };
-  localStorage.setItem(KEY, JSON.stringify(enrichMap));
+  enrichMap = { ...enrichMap, [k]: { ...enrichMap[k], ...fields } };
   notify();
+  const inFlight = { ...pendingWrites.get(k), ...fields };
+  pendingWrites.set(k, inFlight);
+  // Deletion travels as null: JSON.stringify drops undefined keys, so `{ followSig: undefined }`
+  // would otherwise reach the server as an empty patch and never clear the field.
+  const wire = Object.fromEntries(Object.entries(fields).map(([f, v]) => [f, v === undefined ? null : v]));
+  void api.patchEnrichment(repo, branch, wire)
+    .catch((e) => console.error("orca: enrichment write failed", e))
+    // Only retire this write if no later one superseded it (identity check, not key presence).
+    .finally(() => { if (pendingWrites.get(k) === inFlight) pendingWrites.delete(k); });
 }
+/** Drop a branch from the mirror. The server ARCHIVES the workstream on merge/close/discard — the
+ *  history is kept, it just stops being live board state. */
 function deleteEnrich(repo: string, branch: string) {
-  const { [ekey(repo, branch)]: _drop, ...rest } = load();
+  const { [ekey(repo, branch)]: _drop, ...rest } = enrichMap;
+  pendingWrites.delete(ekey(repo, branch)); // nothing left to re-apply over a hydration
   enrichMap = rest;
-  localStorage.setItem(KEY, JSON.stringify(enrichMap));
   notify();
 }
-// Adopt another tab's writes so our in-memory map (and the board) stay in sync without a refresh.
-window.addEventListener("storage", (e) => { if (e.key === KEY) { enrichMap = load(); notify(); } });
 
 // Branches mid-removal (close/discard) — optimistically hidden so a poll that lands between "PR
 // closed" and "worktree removed" doesn't flash the row back as a bare Local worktree.
@@ -184,6 +233,11 @@ export const pollAgents = coalesced(async () => {
   pollCounts.agents++;
   for (const [name, s] of polled) agentsByRepo.set(name, s);
   rebuildLive();
+  // Enrichment rides the agents stream: both are local-only bridge calls (no GitHub quota), and it
+  // keeps the mirror in step with the run status it decorates. A failed fetch leaves the mirror as-is
+  // — it must never read as "this branch has no enrichment" and blank out titles mid-session.
+  await Promise.all((cfg?.repos ?? []).map((r) =>
+    api.enrichment(r.name).then((e) => hydrateEnrich(r.name, e)).catch(() => {})));
   persistAgentEnrichment();
   // No notify() here: the individual streams settle at different times, so rendering off one alone
   // shows a partial view where the sources disagree — a PR branch whose worktree loaded but whose PR
@@ -212,20 +266,15 @@ export const pollMerged = coalesced(async () => {
   // solo TTL caller below via `.then(notify)`.
 });
 
-// GC runs only after a COORDINATED settle of the streams that can make a branch disappear (agents +
-// PRs) — never off a single stream mid-flight, where another stream's map could still hold a stale
-// value and make a live branch look gone. `known` is snapshotted first so a key written during the
-// polls (a new draft) is never judged by data gathered before it existed.
-async function refreshAndGc(streams: Promise<void>[]): Promise<void> {
-  const known = enrichKeysAtStart();
+// One render off the fully-settled view — never mid-flight (see pollAgents).
+async function refreshAll(streams: Promise<void>[]): Promise<void> {
   await Promise.all(streams);
-  gcEnrichment(known);
-  notify(); // one render off the fully-settled view — never mid-flight (see pollAgents)
+  notify();
 }
 
 /** Imperative full refresh (after a mutation) — all three streams, then GC once on a consistent view. */
 export function refresh(): Promise<void> {
-  return refreshAndGc([pollAgents(), pollPrs(), pollMerged()]);
+  return refreshAll([pollAgents(), pollPrs(), pollMerged()]);
 }
 
 let pollTick = 0;
@@ -239,55 +288,20 @@ setInterval(() => {
   const hidden = document.visibilityState === "hidden";
   // Keep transitions responsive; idle boards poll every 32s, hidden idle tabs every 64s.
   const every = active ? 1 : hidden ? 8 : 4;
-  if (pollTick % every === 0) void refreshAndGc([pollAgents(), pollPrs()]); // agents + PRs together; GC on the settled pair
+  if (pollTick % every === 0) void refreshAll([pollAgents(), pollPrs()]); // agents + PRs together; GC on the settled pair
   // Merged history changes slowly — poll on a TTL, and far slower when the tab is hidden. It only
   // ever ADDS branches to the "alive" set, so it can't trigger a prune and needs no GC of its own.
   const mergedTtl = hidden ? MERGED_TTL_MS * 8 : MERGED_TTL_MS;
   if (Date.now() - lastMergedAt >= mergedTtl) { lastMergedAt = Date.now(); void pollMerged().then(notify); }
 }, 8_000);
 
-// Prune enrichment for branches that no longer exist — merged / closed / branch-deleted, whether via
-// Orca or (the leaky case) directly on GitHub. Without this, every finished branch's prompt/title/
-// followUps lingered forever. Safe by construction: only prune a repo that polled cleanly this cycle
-// (a transient fetch failure would otherwise read as "no branches" and wipe live enrichment), and
-// keep very recent keys — a just-created draft's enrichment lands before its worktree shows in `live`.
-const GC_GRACE_MS = 2 * 60_000;
-// The enrichment keys that existed when a poll STARTED. A poll's result reflects the world at that
-// moment, so it may only prune keys already present then — never one written mid-flight (e.g. a draft
-// created, or another action's enrichment landing, after the poll's GitHub calls went out).
-const enrichKeysAtStart = () => new Set(Object.keys(load()));
-function gcEnrichment(allowed: Set<string>) {
-  const fresh = load();
-  let changed = false;
-  for (const r of cfg?.repos ?? []) {
-    const agents = agentsByRepo.get(r.name);
-    const prs = prsByRepo.get(r.name);
-    const merged = mergedByRepo.get(r.name);
-    // Judge a branch "gone" only against a CLEAN sample of every stream. A stream not yet polled, or
-    // whose last poll failed, means we can't tell — skip the whole repo rather than prune blindly.
-    // Because the streams poll on different cadences, this reads each one's LAST GOOD value (not just
-    // what the poll that triggered GC fetched), so an agents-only poll can't drop a retained PR.
-    if (!agents?.ok || !prs?.ok) continue;
-    if (r.hasRemote && !merged?.ok) continue;
-    const alive = new Set<string>([
-      ...agents.v.map((a) => a.branch),
-      ...prs.v.map((p) => p.branch),
-      ...(merged?.v ?? []).map((m) => m.branch),
-    ]);
-    for (const key of Object.keys(fresh)) {
-      if (!allowed.has(key)) continue; // written after this poll began — it can't have seen the branch
-      const sep = key.indexOf("::");
-      if (sep < 0 || key.slice(0, sep) !== r.name) continue; // key belongs to a different (or unconfigured) repo
-      const branch = key.slice(sep + 2);
-      if (alive.has(branch)) continue;
-      const created = fresh[key]!.createdAt;
-      if (created && Date.now() - Date.parse(created) < GC_GRACE_MS) continue; // too new to have appeared in `live` yet
-      delete fresh[key];
-      changed = true;
-    }
-  }
-  if (changed) { enrichMap = fresh; localStorage.setItem(KEY, JSON.stringify(enrichMap)); }
-}
+// No enrichment GC. It existed to bound a 5MB localStorage bucket; the bridge's SQLite store keeps
+// history on purpose (a merged branch's conversation is exactly what a future chain would reference),
+// and the server ARCHIVES a workstream on merge/close/discard so it drops out of the live view
+// without being destroyed. Rows are assembled from live PRs + worktrees, so an enrichment entry with
+// no branch behind it renders nothing.
+// ponytail: branches deleted outside Orca leave a live workstream row that nothing archives. It costs
+// a few bytes and shows up nowhere; one UPDATE sweeps them if that ever matters.
 
 // ---- active PR following ----
 // A "followed" card is on autopilot: each poll, if its PR has a blocker (conflict / failing CI /

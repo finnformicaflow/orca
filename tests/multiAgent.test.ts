@@ -180,7 +180,7 @@ describe("cross-provider continuation", () => {
     }];
     await store.refresh();
     await store.refresh();
-    const saved = JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"];
+    const saved = apiFake.enrichmentData.get("r::feat") as any;
     expect(saved.agentProvider).toBe("claude");
     expect(saved.sessionId).toBe("c-1");
     expect(saved.transcript).toEqual([{
@@ -191,11 +191,11 @@ describe("cross-provider continuation", () => {
   });
 
   test("old transcript turns without structured outcomes still load", async () => {
-    localStorage.setItem("orca.enrichment", JSON.stringify({ "r::feat": { transcript: prior } }));
+    apiFake.enrichmentData.set("r::feat", { transcript: prior });
     apiFake.agentsData = [{ branch: "feat", worktreePath: "/wt/feat", agentStatus: "idle" }];
     await store.refresh();
     expect(store.useWorkstreams).toBeDefined();
-    expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"].transcript).toEqual(prior);
+    expect(apiFake.enrichmentData.get("r::feat")?.transcript).toEqual(prior);
   });
 
   test("promotion passes the active native session, task, and latest outcome to the PR writer", async () => {
@@ -264,7 +264,7 @@ describe("cross-provider continuation", () => {
 
   test("pinning the card's agent routes every action through it, handing off from the last-run provider", async () => {
     store.setCardProvider(row, "codex"); // persisted per branch, read by providerFor
-    expect(JSON.parse(localStorage.getItem("orca.enrichment") ?? "{}")["r::feat"].preferredProvider).toBe("codex");
+    expect(apiFake.enrichmentData.get("r::feat")?.preferredProvider).toBe("codex");
     // Fix CI (not just Follow up) now honours the pin — it used to hard-default to the last-run provider.
     await store.fixCi({ ...row, preferredProvider: "codex" });
     const launch = apiFake.agentLaunches.at(-1)!;
