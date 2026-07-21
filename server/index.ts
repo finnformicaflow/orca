@@ -68,7 +68,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
-  // Pasted/dropped images: save each to a temp dir and hand back absolute paths the agent can Read.
+  // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
   // Handled before the JSON body parse below — this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
     const dir = `${tmpdir()}/orca-attachments`;
