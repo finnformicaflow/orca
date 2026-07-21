@@ -10,6 +10,7 @@ import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
+import * as db from "./db";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
@@ -184,6 +185,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: `Can't merge — PR ${why}`, status }, 409);
     }
     await gh.mergePr(repo.repoPath, body.pr);
+    if (body.branch) db.archive(repo.name, body.branch); // finished, not forgotten — the chat history stays
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });
   }
@@ -197,6 +199,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     }
     if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
+    if (body.branch) db.archive(repo.name, body.branch);
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/preview") {
@@ -268,6 +271,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     preview.stop(body.worktreePath);
     await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     if (body.deleteBranch && body.branch) await git.deleteBranch(repo.repoPath, body.branch); // never for a PR branch
+    if (body.deleteBranch && body.branch) db.archive(repo.name, body.branch);
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
@@ -283,6 +287,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       preview.stop(w.worktreePath, true); // merged branch reaped → drop its preview DB too
       await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
       await git.deleteBranch(repo.repoPath, w.branch);
+      db.archive(repo.name, w.branch); // reaped from disk; its conversation is kept
     }
     wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
@@ -333,6 +338,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/merge-local") {
     await git.mergeLocal(repo.repoPath, repo.baseBranch, body.branch);
+    if (body.branch) db.archive(repo.name, body.branch);
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });
   }
@@ -341,7 +347,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.runAgent(body.worktreePath, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
@@ -354,11 +360,18 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
+  }
+  if (req.method === "GET" && p === "/api/turns") {
+    // The durable conversation for a branch — written server-side at run start/exit, so it survives
+    // a bridge restart, a closed tab, and follow-ups that land faster than the client polls.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    return json(db.turns(repo.name, branch));
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");
