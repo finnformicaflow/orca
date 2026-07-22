@@ -102,13 +102,15 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
 // with failing CI and a lane with none doesn't show the item at all.
 export type BulkAction =
   | "testLocally" | "promoteReady" | "promoteDraft" | "markReady"
-  | "resolveConflicts" | "fixCi" | "addressReview" | "slack" | "autoMerge" | "merge";
+  | "resolveConflicts" | "fixCi" | "addressReview" | "slackNotify" | "slackBump" | "autoMerge" | "merge";
 
 export type BulkRow = PrMenuRow & {
   hasRemote?: boolean;
   reviewStatus?: ReviewStatus;
   autoMergeEnabled?: boolean;
   agentStatus?: "idle" | "running" | "done" | "error";
+  slackNotifiedAt?: string;
+  slackLastBumpedAt?: string;
 };
 
 export const BULK_LABELS: Record<BulkAction, string> = {
@@ -119,16 +121,21 @@ export const BULK_LABELS: Record<BulkAction, string> = {
   resolveConflicts: "Resolve conflicts",
   fixCi: "Fix CI",
   addressReview: "Address review",
-  slack: "Slack",
+  slackNotify: "Send message",
+  slackBump: "Send bump",
   autoMerge: "Auto-merge",
   merge: "Merge",
 };
 
+/** The two Slack verbs sit behind a "Slack" submenu — they're one concern, and a lane usually needs
+ *  both (some PRs never announced, others announced and now stale). */
+export const BULK_SLACK: BulkAction[] = ["slackNotify", "slackBump"];
+
 const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
   LOCAL: ["testLocally", "promoteDraft", "promoteReady", "resolveConflicts"],
   DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview"],
-  IN_REVIEW: ["slack", "autoMerge", "resolveConflicts", "fixCi", "addressReview"],
-  MERGEABLE: ["merge", "slack", "resolveConflicts", "fixCi"],
+  IN_REVIEW: ["slackNotify", "slackBump", "autoMerge", "resolveConflicts", "fixCi", "addressReview"],
+  MERGEABLE: ["merge", "slackNotify", "slackBump", "resolveConflicts", "fixCi"],
   DONE: [], // nothing left to do
 };
 
@@ -136,7 +143,10 @@ const conflicting = (row: BulkRow) => row.mergeable === "CONFLICTING" || row.mer
 // Never stack a second agent on a branch that's already running one (the run lease would reject it).
 const idle = (row: BulkRow) => row.agentStatus !== "running";
 
-const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow) => boolean> = {
+/** Clock + staleness policy for the time-dependent gates (currently the Slack bump). */
+export type BulkContext = { nowMs: number; staleHours: number };
+
+const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow, ctx: BulkContext) => boolean> = {
   testLocally: () => true, // adopts a worktree if the branch lacks one, same as the card button
   promoteDraft: (row) => !row.prNumber && Boolean(row.hasRemote),
   promoteReady: (row) => !row.prNumber && Boolean(row.hasRemote),
@@ -144,16 +154,20 @@ const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow) => boolean> = {
   resolveConflicts: (row) => conflicting(row) && idle(row),
   fixCi: (row) => row.ciStatus === "failing" && idle(row),
   addressReview: (row) => Boolean(row.prNumber) && row.reviewStatus === "changes_requested" && idle(row),
-  slack: (row) => Boolean(row.prNumber),
+  // Announce the PRs nobody has been told about; bump only the ones already announced AND gone quiet
+  // for staleHours — so the two counts partition the lane into "needs telling" vs "needs chasing"
+  // and neither re-pings a PR that was just posted.
+  slackNotify: (row) => Boolean(row.prNumber) && !row.slackNotifiedAt,
+  slackBump: (row, ctx) => Boolean(row.prNumber) && shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, ctx.nowMs, ctx.staleHours),
   autoMerge: (row) => Boolean(row.prNumber) && !row.isDraft && !row.autoMergeEnabled,
   merge: (row) => !row.isDraft && !conflicting(row) && row.ciStatus !== "failing",
 };
 
 /** The lane's bulk menu: each offered action with the cards it would actually run on. Actions with
  *  no eligible card are dropped, so the menu only ever shows work that exists. */
-export function bulkActions<R extends BulkRow>(lane: string, rows: R[]): { action: BulkAction; rows: R[] }[] {
+export function bulkActions<R extends BulkRow>(lane: string, rows: R[], ctx: BulkContext): { action: BulkAction; rows: R[] }[] {
   return (BULK_LANE_ACTIONS[lane] ?? [])
-    .map((action) => ({ action, rows: rows.filter(BULK_ELIGIBLE[action]) }))
+    .map((action) => ({ action, rows: rows.filter((row) => BULK_ELIGIBLE[action](row, ctx)) }))
     .filter((group) => group.rows.length > 0);
 }
 

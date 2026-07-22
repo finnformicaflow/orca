@@ -4,17 +4,17 @@ import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   addressReview, autoMerge, baseBranch, cliCommand, createWorkstream, fixCi, markReady, merge, promote, providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
-  summary as fetchSummary, testLocally, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  staleHours, summary as fetchSummary, testLocally, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
-import { BULK_LABELS, bulkActions, type BulkAction } from "../workstream";
+import { BULK_LABELS, BULK_SLACK, bulkActions, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
 import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
@@ -101,7 +101,8 @@ const BULK_RUN: Record<BulkAction, (row: Row) => Promise<unknown>> = {
   resolveConflicts,
   fixCi,
   addressReview: (row) => addressReview(row),
-  slack: (row) => sendSlack(row, "notify"),
+  slackNotify: (row) => sendSlack(row, "notify"),
+  slackBump: (row) => sendSlack(row, "bump"),
   autoMerge,
   merge,
 };
@@ -112,8 +113,9 @@ const BULK_RUN: Record<BulkAction, (row: Row) => Promise<unknown>> = {
 function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
   const [busy, setBusy] = useState<BulkAction | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const groups = bulkActions(lane, cards);
+  const groups = bulkActions(lane, cards, { nowMs: Date.now(), staleHours: staleHours() });
   if (groups.length === 0) return null;
+  const slack = groups.filter((g) => BULK_SLACK.includes(g.action));
 
   const run = async (action: BulkAction, rows: Row[]) => {
     const label = BULK_LABELS[action];
@@ -129,6 +131,12 @@ function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
     setErr(failed.length ? `${label} failed on ${failed.join(", ")}` : null);
   };
 
+  const item = ({ action, rows }: { action: BulkAction; rows: Row[] }) => (
+    <DropdownMenuItem key={action} disabled={Boolean(busy)} onSelect={() => void run(action, rows)} className="normal-case">
+      {BULK_LABELS[action]} <span className="text-muted-foreground ml-auto pl-2">{rows.length}</span>
+    </DropdownMenuItem>
+  );
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -142,10 +150,17 @@ function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {groups.map(({ action, rows }) => (
-          <DropdownMenuItem key={action} disabled={Boolean(busy)} onSelect={() => void run(action, rows)} className="normal-case">
-            {BULK_LABELS[action]} <span className="text-muted-foreground ml-auto pl-2">{rows.length}</span>
-          </DropdownMenuItem>
+        {/* The Slack verbs collapse into one submenu, rendered where the first of them falls in the
+            lane's order; everything else is a flat item. */}
+        {groups.map((group) => (
+          !BULK_SLACK.includes(group.action) ? item(group)
+            : group !== slack[0] ? null
+            : (
+              <DropdownMenuSub key="slack">
+                <DropdownMenuSubTrigger className="normal-case">Slack</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>{slack.map(item)}</DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )
         ))}
       </DropdownMenuContent>
     </DropdownMenu>

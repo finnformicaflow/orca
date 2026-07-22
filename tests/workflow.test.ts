@@ -732,8 +732,9 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
 // carries exactly the cards that could take it individually — so a bulk run never touches a card the
 // per-card menu would have refused (and an action with no eligible card isn't offered at all).
 describe("A2 swimlane bulk actions (bulkActions)", () => {
+  const NOW = Date.parse("2025-01-02T00:00:00Z");
   const names = (lane: string, rows: Parameters<typeof bulkActions>[1]) =>
-    bulkActions(lane, rows).map((g) => `${g.action}:${g.rows.length}`);
+    bulkActions(lane, rows, { nowMs: NOW, staleHours: 24 }).map((g) => `${g.action}:${g.rows.length}`);
 
   test("Local offers test/promote, and Resolve conflicts only when a branch conflicts with base", () => {
     const rows = [{ hasRemote: true }, { hasRemote: true, mergeClean: "conflict" as const }];
@@ -751,17 +752,28 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
       { prNumber: 2, mergeable: "CONFLICTING" as const },
       { prNumber: 3, autoMergeEnabled: true, reviewStatus: "changes_requested" as const },
     ];
-    expect(names("IN_REVIEW", rows)).toEqual(["slack:3", "autoMerge:2", "resolveConflicts:1", "fixCi:1", "addressReview:1"]);
+    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:3", "autoMerge:2", "resolveConflicts:1", "fixCi:1", "addressReview:1"]);
+  });
+
+  // The two Slack counts partition the lane: announce what nobody's been told about, bump what's
+  // been announced and has since gone quiet for staleHours. Neither re-pings a just-posted PR.
+  test("Slack splits into Send message (never announced) and Send bump (announced + stale)", () => {
+    const rows = [
+      { prNumber: 1 },                                                                 // never announced
+      { prNumber: 2, slackNotifiedAt: "2025-01-01T00:00:00Z" },                        // announced 24h ago → due
+      { prNumber: 3, slackNotifiedAt: "2025-01-01T00:00:00Z", slackLastBumpedAt: "2025-01-01T23:00:00Z" }, // bumped 1h ago
+    ];
+    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:1", "slackBump:1", "autoMerge:3"]);
   });
 
   test("a running agent is skipped by the agent actions (its run lease would reject a second launch)", () => {
     const rows = [{ prNumber: 1, ciStatus: "failing" as const, agentStatus: "running" as const }];
-    expect(names("IN_REVIEW", rows)).toEqual(["slack:1", "autoMerge:1"]);
+    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:1", "autoMerge:1"]);
   });
 
   test("Mergeable merges the cards that can merge; Done offers nothing", () => {
     const rows = [{ prNumber: 1 }, { prNumber: 2, ciStatus: "failing" as const }];
-    expect(names("MERGEABLE", rows)).toEqual(["merge:1", "slack:2", "fixCi:1"]);
+    expect(names("MERGEABLE", rows)).toEqual(["merge:1", "slackNotify:2", "fixCi:1"]);
     expect(names("DONE", rows)).toEqual([]);
   });
 });

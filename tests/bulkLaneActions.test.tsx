@@ -51,18 +51,23 @@ const items = () => [...document.body.querySelectorAll<HTMLElement>('[role="menu
 const item = (text: string) => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim().startsWith(text))!;
 
 describe("swimlane bulk actions", () => {
-  test("In Review offers Slack/Auto-merge for every PR but Fix CI only for the failing one, and Slack posts to all", async () => {
+  test("In Review groups Slack into a submenu split by what each PR needs, and Fix CI only for the failing one", async () => {
     apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8", ciStatus: "failing" })];
+    // #8 was announced two days ago and never bumped → it needs a bump, #7 has never been announced.
+    localStorage.setItem("orca.enrichment", JSON.stringify({ "r::feat-y": { slackNotifiedAt: "2020-01-01T00:00:00Z" } }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "orca.enrichment" })); // the store caches enrichment in memory
     await mount();
     await pointerdown(laneMenu("In Review")!);
-    expect(items()).toEqual(["Slack 2", "Auto-merge 2", "Fix CI 1"]); // counts: eligible cards per action
+    expect(items()).toEqual(["Slack", "Auto-merge 2", "Fix CI 1"]); // counts: eligible cards per action
 
-    await click(item("Slack"));
-    expect(confirmed).toEqual(["Slack on 2 cards in in review?"]);
-    expect(apiFake.slackSends).toEqual([
-      { repo: "r", text: "<https://x/7|#7 feat>" },
-      { repo: "r", text: "<https://x/8|#8 feat y>" },
-    ]);
+    const slack = item("Slack");
+    await pointerdown(slack);
+    await click(slack);
+    expect(items()).toEqual(["Slack", "Auto-merge 2", "Fix CI 1", "Send message 1", "Send bump 1"]);
+
+    await click(item("Send message"));
+    expect(confirmed).toEqual(["Send message on 1 card in in review?"]);
+    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://x/7|#7 feat>" }]); // only the un-announced PR
   });
 
   test("Mergeable's Merge runs the per-card merge on every approved PR; Done has no menu", async () => {
