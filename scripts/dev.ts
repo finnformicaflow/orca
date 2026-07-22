@@ -10,12 +10,23 @@ const children = [
 // Reap children on exit — otherwise every restart orphans the bridge + Vite (killing this launcher
 // doesn't cascade), they pile up over days and squat ports (8788→8789, 5173→5176…). We also pkill
 // the Vite by path because `bunx` spawns node as a grandchild that a plain kill() would miss.
-const shutdown = () => {
+let shuttingDown = false;
+const shutdown = (code = 0) => {
+  if (shuttingDown) return; // a signal and a child-exit can race; only tear down once
+  shuttingDown = true;
   for (const c of children) { try { c.kill(); } catch { /* already gone */ } }
   try { Bun.spawnSync(["pkill", "-f", "orca/node_modules/.bin/vite"]); } catch { /* none running */ }
-  process.exit(0);
+  process.exit(code);
 };
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, shutdown);
 
-await new Promise(() => {}); // keep the launcher alive
+// If EITHER child exits — a crash, an external kill, or a port reclaim by another checkout's bridge —
+// tear the whole launcher down and exit, instead of `await new Promise(() => {})`-ing forever as an
+// orphan that spins on a dead event loop (the 14-day zombie that burned CPU with no children left).
+// `bun --watch` restarts the server in-process on file edits, so this fires only when the watcher
+// PROCESS itself dies, not on a normal hot-restart. `bun run dev` then simply ends; restart it.
+await Promise.race(children.map((c) => c.exited));
+console.error("orca dev: a child (bridge or vite) exited — shutting down. Re-run `bun run dev`.");
+shutdown(1);
+
 export {};
