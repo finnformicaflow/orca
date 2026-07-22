@@ -36,13 +36,19 @@ export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; });
 
+const MIGRATED_KEY = "orca.enrichment.migrated";
+
 /** Hand this browser's pre-DB enrichment to the bridge, once. Transcripts come across as real turns
- *  (see db.importEnrichment), so history predating the DB isn't lost. The local copy is dropped only
- *  after the server confirms, and the import is idempotent — a second browser with overlapping keys
- *  can't overwrite what the DB already owns. */
+ *  (see db.importEnrichment), so history predating the DB isn't lost. Idempotent — a second browser
+ *  with overlapping keys can't overwrite what the DB already owns.
+ *
+ *  The old `orca.enrichment` blob is KEPT (frozen) rather than deleted, and a separate flag records
+ *  that migration ran. This is the rollback net: reverting to pre-DB code finds that blob exactly
+ *  where it left it and keeps working. It never grows again (writes go to the DB now), so it doesn't
+ *  reintroduce the quota pressure that motivated the move. */
 export async function migrateLocalEnrichment(): Promise<void> {
   const raw = localStorage.getItem(KEY);
-  if (!raw) return;
+  if (!raw || localStorage.getItem(MIGRATED_KEY)) return; // nothing to do, or already migrated
   try {
     const parsed: unknown = JSON.parse(raw);
     const entries = Object.entries(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, Record<string, unknown>> : {})
@@ -51,9 +57,10 @@ export async function migrateLocalEnrichment(): Promise<void> {
         return sep < 0 ? [] : [{ repo: key.slice(0, sep), branch: key.slice(sep + 2), fields }];
       });
     if (entries.length) await api.importEnrichment(entries);
-    localStorage.removeItem(KEY);
+    localStorage.setItem(MIGRATED_KEY, now()); // mark done; leave orca.enrichment as a frozen backup
   } catch (e) {
-    // Leave the blob in place so a later load can retry — dropping it would lose the only copy.
+    // Leave the blob AND the unset flag in place so a later load retries — losing the only copy of
+    // pre-DB enrichment (before the DB has it) is the one outcome to avoid.
     console.error("orca: enrichment migration failed", e);
   }
 }

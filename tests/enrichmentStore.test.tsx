@@ -83,7 +83,17 @@ test("a browser's pre-DB localStorage is handed to the bridge once, transcripts 
   // stripping it would break a card that's mid-flight at upgrade time. Also surfaced as a turn.
   expect((stored("feat") as { transcript?: unknown[] }).transcript).toHaveLength(1);
   expect(apiFake.turnsData.get("r::feat")).toHaveLength(1); // and shows in the Chat tab
-  expect(localStorage.getItem(KEY)).toBeNull(); // dropped only after the server confirmed
+  // The blob is KEPT as a frozen rollback backup (not deleted), with a flag marking migration done.
+  expect(localStorage.getItem(KEY)).not.toBeNull();
+  expect(localStorage.getItem("orca.enrichment.migrated")).not.toBeNull();
+});
+
+test("migration runs once — a second load doesn't re-import", async () => {
+  localStorage.setItem(KEY, JSON.stringify({ "r::feat": { prompt: "task" } }));
+  await store.migrateLocalEnrichment();
+  apiFake.enrichmentData.delete("r::feat"); // pretend the DB forgot; a re-run must NOT refill it
+  await store.migrateLocalEnrichment();
+  expect(apiFake.enrichmentData.has("r::feat")).toBe(false); // the flag short-circuited the re-run
 });
 
 test("a card stuck on a dead session survives migration — the guard still starts fresh", async () => {
