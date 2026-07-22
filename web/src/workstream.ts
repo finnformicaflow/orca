@@ -323,11 +323,11 @@ export function prDescriptionPrompt(input: { template?: string | null; diff: str
   ].join("\n");
 }
 
-/** Point the agent at pasted/dropped image files (absolute paths) for extra visual context. */
-export function withAttachments(prompt: string, imagePaths: string[]): string {
-  if (!imagePaths.length) return prompt;
-  const list = imagePaths.map((p) => `- ${p}`).join("\n");
-  return `${prompt}\n\nAttached images (Read these files for visual context):\n${list}`;
+/** Point the agent at pasted/dropped files of any type (absolute paths) for extra context. */
+export function withAttachments(prompt: string, paths: string[]): string {
+  if (!paths.length) return prompt;
+  const list = paths.map((p) => `- ${p}`).join("\n");
+  return `${prompt}\n\nAttached files (Read these for extra context):\n${list}`;
 }
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */

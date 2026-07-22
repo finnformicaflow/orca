@@ -116,7 +116,7 @@ describe("chatbox toolbar stays within its available width", () => {
 
   test("attach remains immediately beside send, including when cancel is present", () => {
     const c = mount(<ChatComposer onSubmit={async () => {}} onCancel={() => {}} />);
-    const attach = c.querySelector<HTMLButtonElement>('button[title="Attach images"]')!;
+    const attach = c.querySelector<HTMLButtonElement>('button[title="Attach files"]')!;
     const send = c.querySelector<HTMLButtonElement>('button[title^="Send"]')!;
     expect(attach.parentElement).toBe(send.parentElement);
     expect(attach.nextElementSibling).toBe(send);

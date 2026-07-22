@@ -50,9 +50,9 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(launch).toContain("## Outcome");
   expect(launch.indexOf("do it")).toBeLessThan(launch.indexOf("Inspect the repository instructions"));
   expect(followUpPrompt("tweak the copy")).toContain("Do NOT open a pull request");
-  // pasted-image paths are appended for the agent to Read; no images = prompt unchanged
+  // attachment paths (any file type) are appended for the agent to Read; none = prompt unchanged
   expect(withAttachments("go", [])).toBe("go");
-  expect(withAttachments("go", ["/tmp/a.png"])).toContain("/tmp/a.png");
+  expect(withAttachments("go", ["/tmp/a.png", "/tmp/spec.docx"])).toContain("/tmp/spec.docx");
   // attach command drops you into a session continuing the headless run: exact id → --resume it;
   // unknown id → --continue the most recent conversation in that dir (never a bare, fresh `claude`).
   expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123 --permission-mode auto`);
