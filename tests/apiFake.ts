@@ -143,8 +143,9 @@ mock.module("@/api", () => ({
       for (const e of entries) {
         const k = `${e.repo}::${e.branch}`;
         if (apiFake.enrichmentData.has(k)) continue;
-        const { transcript, ...rest } = e.fields ?? {};
-        apiFake.enrichmentData.set(k, rest);
+        // Keep transcript in the blob (guard + handoff read it) AND surface it as turns (Chat tab).
+        apiFake.enrichmentData.set(k, { ...e.fields });
+        const transcript = (e.fields ?? {}).transcript;
         if (Array.isArray(transcript)) apiFake.turnsData.set(k, transcript);
         imported++;
       }

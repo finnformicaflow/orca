@@ -79,8 +79,33 @@ test("a browser's pre-DB localStorage is handed to the bridge once, transcripts 
   await store.migrateLocalEnrichment();
 
   expect(stored("feat")).toMatchObject({ prompt: "the original task", title: "Original" });
-  expect(apiFake.turnsData.get("r::feat")).toHaveLength(1); // history predating the DB is kept
+  // Transcript stays in the blob too — the resume guard and cross-provider handoff read it, so
+  // stripping it would break a card that's mid-flight at upgrade time. Also surfaced as a turn.
+  expect((stored("feat") as { transcript?: unknown[] }).transcript).toHaveLength(1);
+  expect(apiFake.turnsData.get("r::feat")).toHaveLength(1); // and shows in the Chat tab
   expect(localStorage.getItem(KEY)).toBeNull(); // dropped only after the server confirmed
+});
+
+test("a card stuck on a dead session survives migration — the guard still starts fresh", async () => {
+  // The upgrade worry made concrete: a card mid-flight on a session the provider can't find. Its
+  // failed transcript must survive the localStorage→DB migration, or the guard goes blind and the
+  // next follow-up resumes the dead session and errors — the exact regression to avoid.
+  const dead = "23c3e70d-dead";
+  localStorage.setItem(KEY, JSON.stringify({
+    "r::feat": {
+      prompt: "task", agentProvider: "claude", sessionId: dead,
+      transcript: [{ id: "t1", provider: "claude", sessionId: dead, prompt: "go", response: "No conversation found with session ID: 23c3e70d-dead", failed: true }],
+    },
+  }));
+  await store.migrateLocalEnrichment();
+  await store.refresh(); // hydrate the mirror from the "DB"
+
+  apiFake.worktrees.set("feat", { branch: "feat", worktreePath: "/wt/feat" });
+  await store.followUp({ repo: "r", hasRemote: false, branch: "feat", title: "t", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", agentProvider: "claude", sessionId: dead } as store.Row, "retry", [], { provider: "claude" });
+
+  const launch = apiFake.agentLaunches.at(-1)!;
+  expect(launch.resume).toBeUndefined();     // NOT resuming the dead session that survived migration
+  expect(launch.handoffFrom).toBe("claude"); // fresh, seeded from the migrated transcript
 });
 
 test("migration keeps the local blob if the handover fails, so the only copy isn't lost", async () => {

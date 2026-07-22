@@ -147,11 +147,15 @@ export function importEnrichment(entries: { repo: string; branch: string; fields
       const id = workstreamId(e.repo, e.branch);
       const row = db().query("SELECT data FROM workstream WHERE id = ?").get(id) as { data: string };
       if (row.data !== "{}") continue; // already owned by the DB — leave it alone
-      const { transcript, ...rest } = (e.fields ?? {}) as Fields & { transcript?: AgentTurn[] };
-      db().query("UPDATE workstream SET data = ? WHERE id = ?").run(JSON.stringify(rest), id);
-      // The old browser-side transcript becomes real turns rather than being dropped — this is the
-      // one chance to keep history that predates the DB (bounded at 25 turns by the old .slice).
-      for (const t of Array.isArray(transcript) ? transcript : []) {
+      const fields = (e.fields ?? {}) as Fields & { transcript?: AgentTurn[] };
+      // Keep `transcript` IN the blob, exactly as persistAgentEnrichment keeps writing it going
+      // forward. The store's resume guard and cross-provider handoff both read enrich.transcript, so
+      // stripping it on migration would blind them for any card mid-flight at upgrade time — a card
+      // stuck on a dead session would resume it and error, a mid-handoff card would lose its context.
+      db().query("UPDATE workstream SET data = ? WHERE id = ?").run(JSON.stringify(fields), id);
+      // AND copy it into the turn table so the Chat tab shows history that predates the DB. Redundant
+      // with the blob, matching the steady state (server writes turns; the client mirrors transcript).
+      for (const t of Array.isArray(fields.transcript) ? fields.transcript : []) {
         if (!t?.id) continue;
         adoptTurn(id, t);
       }
