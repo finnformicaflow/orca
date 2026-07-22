@@ -5,7 +5,6 @@ import {
   cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
-import { navigate } from "@/lib/route";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -72,11 +71,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     if (!row.prUrl) return;
     try { await navigator.clipboard.writeText(row.prUrl); } catch { window.prompt("Copy the PR link:", row.prUrl); }
   };
-  // Open the hand-driven browser terminal in this workstream's detail view. The Terminal tab ensures
-  // the tmux session on mount (adopting a worktree if the branch lacks one), so this just routes there.
-  const openTerminal = () => navigate(
-    row.prNumber ? `/${row.repo}/prs/${row.prNumber}/terminal` : `/${row.repo}/local/${encodeURIComponent(row.branch)}/terminal`,
-  );
   const prActions = prMenuActions(row);
   const mergeConfirm = isPr
     ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
@@ -155,7 +149,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={() => openTerminal()}>Open terminal</DropdownMenuItem>
                 <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
                 <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
               </DropdownMenuSubContent>

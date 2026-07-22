@@ -9,7 +9,7 @@ import {
 } from "../store";
 import { BULK_LABELS, BULK_SLACK, bulkActions, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
+import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,7 +17,6 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
-import { TerminalDialog } from "@/components/Terminal";
 import { agentLabel, type AgentProvider } from "../../../shared/agent";
 
 const LANES: { lane: Lane; title: string }[] = [
@@ -370,10 +369,6 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [busy, setBusy] = useState(false);
   const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
 
-  // The hand-driven terminal opens in a modal on the board (no navigating to the detail page). Both
-  // the "live session" badge and the button beside Test locally drive this one dialog.
-  const [terminalOpen, setTerminalOpen] = useState(false);
-
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
     : isLocal ? `/${row.repo}/local/${encodeURIComponent(row.branch)}`
@@ -464,27 +459,14 @@ export function WorkstreamCard({ row }: { row: Row }) {
               hasWork={hasWork}
               onBusy={setBusy}
               compact
-              leading={
-                <>
-                  <PreviewControl row={row} compact />
-                  <Button size="icon" variant="outline" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
-                    <SquareTerminal className="size-3.5" />
-                  </Button>
-                </>
-              }
+              leading={<PreviewControl row={row} compact />}
             />
           ) : (
             <>
-              <div className="flex items-start gap-2">
-                <div className="min-w-0 flex-1"><PreviewControl row={row} /></div>
-                <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
-                  <SquareTerminal className="size-3.5" />
-                </Button>
-              </div>
+              <PreviewControl row={row} />
               <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
             </>
           )}
-          <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />
         </div>
       )}
     </div>
