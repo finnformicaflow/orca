@@ -96,6 +96,67 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   return actions;
 }
 
+// Lane-level bulk actions: the same per-card verbs, fired across every card in a swimlane. Which
+// verbs a lane offers is fixed (they mirror what that lane's cards can do); WHICH cards each one
+// runs on is state-gated exactly like the per-card menu, so a bulk "Fix CI" only touches the cards
+// with failing CI and a lane with none doesn't show the item at all.
+export type BulkAction =
+  | "testLocally" | "promoteReady" | "promoteDraft" | "markReady"
+  | "resolveConflicts" | "fixCi" | "addressReview" | "slack" | "autoMerge" | "merge";
+
+export type BulkRow = PrMenuRow & {
+  hasRemote?: boolean;
+  reviewStatus?: ReviewStatus;
+  autoMergeEnabled?: boolean;
+  agentStatus?: "idle" | "running" | "done" | "error";
+};
+
+export const BULK_LABELS: Record<BulkAction, string> = {
+  testLocally: "Test locally",
+  promoteDraft: "Draft PR",
+  promoteReady: "Ready for review",
+  markReady: "Ready for review",
+  resolveConflicts: "Resolve conflicts",
+  fixCi: "Fix CI",
+  addressReview: "Address review",
+  slack: "Slack",
+  autoMerge: "Auto-merge",
+  merge: "Merge",
+};
+
+const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
+  LOCAL: ["testLocally", "promoteDraft", "promoteReady", "resolveConflicts"],
+  DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview"],
+  IN_REVIEW: ["slack", "autoMerge", "resolveConflicts", "fixCi", "addressReview"],
+  MERGEABLE: ["merge", "slack", "resolveConflicts", "fixCi"],
+  DONE: [], // nothing left to do
+};
+
+const conflicting = (row: BulkRow) => row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+// Never stack a second agent on a branch that's already running one (the run lease would reject it).
+const idle = (row: BulkRow) => row.agentStatus !== "running";
+
+const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow) => boolean> = {
+  testLocally: () => true, // adopts a worktree if the branch lacks one, same as the card button
+  promoteDraft: (row) => !row.prNumber && Boolean(row.hasRemote),
+  promoteReady: (row) => !row.prNumber && Boolean(row.hasRemote),
+  markReady: (row) => Boolean(row.prNumber) && Boolean(row.isDraft),
+  resolveConflicts: (row) => conflicting(row) && idle(row),
+  fixCi: (row) => row.ciStatus === "failing" && idle(row),
+  addressReview: (row) => Boolean(row.prNumber) && row.reviewStatus === "changes_requested" && idle(row),
+  slack: (row) => Boolean(row.prNumber),
+  autoMerge: (row) => Boolean(row.prNumber) && !row.isDraft && !row.autoMergeEnabled,
+  merge: (row) => !row.isDraft && !conflicting(row) && row.ciStatus !== "failing",
+};
+
+/** The lane's bulk menu: each offered action with the cards it would actually run on. Actions with
+ *  no eligible card are dropped, so the menu only ever shows work that exists. */
+export function bulkActions<R extends BulkRow>(lane: string, rows: R[]): { action: BulkAction; rows: R[] }[] {
+  return (BULK_LANE_ACTIONS[lane] ?? [])
+    .map((action) => ({ action, rows: rows.filter(BULK_ELIGIBLE[action]) }))
+    .filter((group) => group.rows.length > 0);
+}
+
 /** Pre-PR state: a workstream is READY once its branch has commits. */
 export function draftState(commitCount: number): Extract<WorkstreamState, "DRAFTING" | "READY"> {
   return commitCount > 0 ? "READY" : "DRAFTING";

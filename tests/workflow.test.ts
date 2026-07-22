@@ -11,7 +11,7 @@ import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
+  addressReviewPrompt, attachCommand, bulkActions, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
   DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -725,6 +725,44 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
 
   test("no prUrl → no Copy link (nothing to copy)", () => {
     expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge", "addressReview"]);
+  });
+});
+
+// A2 swimlane bulk actions: each lane offers the verbs its cards support, and every offered action
+// carries exactly the cards that could take it individually — so a bulk run never touches a card the
+// per-card menu would have refused (and an action with no eligible card isn't offered at all).
+describe("A2 swimlane bulk actions (bulkActions)", () => {
+  const names = (lane: string, rows: Parameters<typeof bulkActions>[1]) =>
+    bulkActions(lane, rows).map((g) => `${g.action}:${g.rows.length}`);
+
+  test("Local offers test/promote, and Resolve conflicts only when a branch conflicts with base", () => {
+    const rows = [{ hasRemote: true }, { hasRemote: true, mergeClean: "conflict" as const }];
+    expect(names("LOCAL", rows)).toEqual(["testLocally:2", "promoteDraft:2", "promoteReady:2", "resolveConflicts:1"]);
+    expect(names("LOCAL", [{ hasRemote: false }])).toEqual(["testLocally:1"]); // no remote → no PR to open
+  });
+
+  test("Draft offers Ready for review for draft PRs only", () => {
+    expect(names("DRAFT", [{ prNumber: 1, isDraft: true }, { prNumber: 2 }])).toEqual(["markReady:1"]);
+  });
+
+  test("In Review offers Slack + Auto-merge, and the fix actions only where the condition is live", () => {
+    const rows = [
+      { prNumber: 1, ciStatus: "failing" as const },
+      { prNumber: 2, mergeable: "CONFLICTING" as const },
+      { prNumber: 3, autoMergeEnabled: true, reviewStatus: "changes_requested" as const },
+    ];
+    expect(names("IN_REVIEW", rows)).toEqual(["slack:3", "autoMerge:2", "resolveConflicts:1", "fixCi:1", "addressReview:1"]);
+  });
+
+  test("a running agent is skipped by the agent actions (its run lease would reject a second launch)", () => {
+    const rows = [{ prNumber: 1, ciStatus: "failing" as const, agentStatus: "running" as const }];
+    expect(names("IN_REVIEW", rows)).toEqual(["slack:1", "autoMerge:1"]);
+  });
+
+  test("Mergeable merges the cards that can merge; Done offers nothing", () => {
+    const rows = [{ prNumber: 1 }, { prNumber: 2, ciStatus: "failing" as const }];
+    expect(names("MERGEABLE", rows)).toEqual(["merge:1", "slack:2", "fixCi:1"]);
+    expect(names("DONE", rows)).toEqual([]);
   });
 });
 
