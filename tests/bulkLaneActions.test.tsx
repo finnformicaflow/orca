@@ -53,9 +53,10 @@ const item = (text: string) => [...document.body.querySelectorAll<HTMLElement>('
 describe("swimlane bulk actions", () => {
   test("In Review groups Slack into a submenu split by what each PR needs, and Fix CI only for the failing one", async () => {
     apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8", ciStatus: "failing" })];
-    // #8 was announced two days ago and never bumped → it needs a bump, #7 has never been announced.
-    localStorage.setItem("orca.enrichment", JSON.stringify({ "r::feat-y": { slackNotifiedAt: "2020-01-01T00:00:00Z" } }));
-    window.dispatchEvent(new StorageEvent("storage", { key: "orca.enrichment" })); // the store caches enrichment in memory
+    // #8 was announced long ago and never bumped → it needs a bump, #7 has never been announced.
+    // Seed through the bridge store (enrichment lives in the DB since #50, not localStorage); mount()
+    // runs store.refresh(), which hydrates the mirror from it.
+    apiFake.enrichmentData.set("r::feat-y", { slackNotifiedAt: "2020-01-01T00:00:00Z" });
     await mount();
     await pointerdown(laneMenu("In Review")!);
     expect(items()).toEqual(["Slack", "Auto-merge 2", "Fix CI 1"]); // counts: eligible cards per action

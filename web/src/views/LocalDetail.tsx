@@ -8,7 +8,6 @@ import { AgentBadge } from "./Board";
 import { DiffView, Markdown } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
-import { TerminalPanel } from "@/components/Terminal";
 import { ChatPanel } from "./Chat";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -62,7 +61,6 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="chat">Chat</TabsTrigger>
           <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
-          <TabsTrigger value="terminal">Terminal</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
 
@@ -103,10 +101,6 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           {!wt ? <p className="text-muted-foreground text-sm">No worktree checked out.</p>
             : diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p>
             : <DiffView text={diff} />}
-        </TabsContent>
-
-        <TabsContent value="terminal" className="pt-3">
-          {sub === "terminal" && <TerminalPanel row={row} />}
         </TabsContent>
 
         <TabsContent value="preview">
