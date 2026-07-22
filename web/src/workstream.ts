@@ -96,6 +96,81 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   return actions;
 }
 
+// Lane-level bulk actions: the same per-card verbs, fired across every card in a swimlane. Which
+// verbs a lane offers is fixed (they mirror what that lane's cards can do); WHICH cards each one
+// runs on is state-gated exactly like the per-card menu, so a bulk "Fix CI" only touches the cards
+// with failing CI and a lane with none doesn't show the item at all.
+export type BulkAction =
+  | "testLocally" | "promoteReady" | "promoteDraft" | "markReady"
+  | "resolveConflicts" | "fixCi" | "addressReview" | "slackNotify" | "slackBump" | "autoMerge" | "merge";
+
+export type BulkRow = PrMenuRow & {
+  hasRemote?: boolean;
+  reviewStatus?: ReviewStatus;
+  autoMergeEnabled?: boolean;
+  agentStatus?: "idle" | "running" | "done" | "error";
+  slackNotifiedAt?: string;
+  slackLastBumpedAt?: string;
+};
+
+export const BULK_LABELS: Record<BulkAction, string> = {
+  testLocally: "Test locally",
+  promoteDraft: "Draft PR",
+  promoteReady: "Ready for review",
+  markReady: "Ready for review",
+  resolveConflicts: "Resolve conflicts",
+  fixCi: "Fix CI",
+  addressReview: "Address review",
+  slackNotify: "Send message",
+  slackBump: "Send bump",
+  autoMerge: "Auto-merge",
+  merge: "Merge",
+};
+
+/** The two Slack verbs sit behind a "Slack" submenu — they're one concern, and a lane usually needs
+ *  both (some PRs never announced, others announced and now stale). */
+export const BULK_SLACK: BulkAction[] = ["slackNotify", "slackBump"];
+
+const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
+  LOCAL: ["testLocally", "promoteDraft", "promoteReady", "resolveConflicts"],
+  DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview"],
+  IN_REVIEW: ["slackNotify", "slackBump", "autoMerge", "resolveConflicts", "fixCi", "addressReview"],
+  MERGEABLE: ["merge", "slackNotify", "slackBump", "resolveConflicts", "fixCi"],
+  DONE: [], // nothing left to do
+};
+
+const conflicting = (row: BulkRow) => row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+// Never stack a second agent on a branch that's already running one (the run lease would reject it).
+const idle = (row: BulkRow) => row.agentStatus !== "running";
+
+/** Clock + staleness policy for the time-dependent gates (currently the Slack bump). */
+export type BulkContext = { nowMs: number; staleHours: number };
+
+const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow, ctx: BulkContext) => boolean> = {
+  testLocally: () => true, // adopts a worktree if the branch lacks one, same as the card button
+  promoteDraft: (row) => !row.prNumber && Boolean(row.hasRemote),
+  promoteReady: (row) => !row.prNumber && Boolean(row.hasRemote),
+  markReady: (row) => Boolean(row.prNumber) && Boolean(row.isDraft),
+  resolveConflicts: (row) => conflicting(row) && idle(row),
+  fixCi: (row) => row.ciStatus === "failing" && idle(row),
+  addressReview: (row) => Boolean(row.prNumber) && row.reviewStatus === "changes_requested" && idle(row),
+  // Announce the PRs nobody has been told about; bump only the ones already announced AND gone quiet
+  // for staleHours — so the two counts partition the lane into "needs telling" vs "needs chasing"
+  // and neither re-pings a PR that was just posted.
+  slackNotify: (row) => Boolean(row.prNumber) && !row.slackNotifiedAt,
+  slackBump: (row, ctx) => Boolean(row.prNumber) && shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, ctx.nowMs, ctx.staleHours),
+  autoMerge: (row) => Boolean(row.prNumber) && !row.isDraft && !row.autoMergeEnabled,
+  merge: (row) => !row.isDraft && !conflicting(row) && row.ciStatus !== "failing",
+};
+
+/** The lane's bulk menu: each offered action with the cards it would actually run on. Actions with
+ *  no eligible card are dropped, so the menu only ever shows work that exists. */
+export function bulkActions<R extends BulkRow>(lane: string, rows: R[], ctx: BulkContext): { action: BulkAction; rows: R[] }[] {
+  return (BULK_LANE_ACTIONS[lane] ?? [])
+    .map((action) => ({ action, rows: rows.filter((row) => BULK_ELIGIBLE[action](row, ctx)) }))
+    .filter((group) => group.rows.length > 0);
+}
+
 /** Pre-PR state: a workstream is READY once its branch has commits. */
 export function draftState(commitCount: number): Extract<WorkstreamState, "DRAFTING" | "READY"> {
   return commitCount > 0 ? "READY" : "DRAFTING";

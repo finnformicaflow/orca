@@ -3,16 +3,18 @@ import { useAtom, useAtomValue } from "jotai";
 import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  baseBranch, cliCommand, createWorkstream, providerFor, rerunAgent, setCardProvider, summary as fetchSummary, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  addressReview, autoMerge, baseBranch, cliCommand, createWorkstream, fixCi, markReady, merge, promote, providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
+  staleHours, summary as fetchSummary, testLocally, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
+import { BULK_LABELS, BULK_SLACK, bulkActions, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, Play, SquareTerminal, X } from "lucide-react";
+import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
@@ -45,6 +47,7 @@ export function Board() {
             <h3 className="text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs font-semibold tracking-wide uppercase">
               {title} <span className="opacity-60">{cards.length}</span>
               {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
+              <LaneActions lane={lane} cards={cards} />
             </h3>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
               {/* Pin the new-draft box to the top of the (scrolling) Local column so it stays reachable
@@ -85,6 +88,82 @@ function CopyDone({ cards }: { cards: Row[] }) {
     <button type="button" onClick={copy} title="Copy completed work (respects the repo filter)" className="hover:text-foreground ml-auto inline-flex items-center gap-1 normal-case">
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
     </button>
+  );
+}
+
+// Every bulk verb is literally the per-card action, applied to each eligible card — no bulk-specific
+// server path, so a lane action behaves exactly like clicking through the cards one by one.
+const BULK_RUN: Record<BulkAction, (row: Row) => Promise<unknown>> = {
+  testLocally,
+  promoteDraft: (row) => promote(row, { draft: true }),
+  promoteReady: (row) => promote(row, { draft: false }),
+  markReady,
+  resolveConflicts,
+  fixCi,
+  addressReview: (row) => addressReview(row),
+  slackNotify: (row) => sendSlack(row, "notify"),
+  slackBump: (row) => sendSlack(row, "bump"),
+  autoMerge,
+  merge,
+};
+
+// The swimlane's ⋯ menu: run one action across every card in the lane that can take it. The menu is
+// state-gated (workstream.bulkActions), so it only lists work that actually exists and each item
+// says how many cards it will hit.
+function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
+  const [busy, setBusy] = useState<BulkAction | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const groups = bulkActions(lane, cards, { nowMs: Date.now(), staleHours: staleHours() });
+  if (groups.length === 0) return null;
+  const slack = groups.filter((g) => BULK_SLACK.includes(g.action));
+
+  const run = async (action: BulkAction, rows: Row[]) => {
+    const label = BULK_LABELS[action];
+    if (!window.confirm(`${label} on ${rows.length} card${rows.length === 1 ? "" : "s"} in ${lane.replace("_", " ").toLowerCase()}?`)) return;
+    setBusy(action); setErr(null);
+    // Sequential on purpose: each action shells out to git/gh (and may adopt a worktree or launch an
+    // agent), so firing a whole lane at once would race on adoption and hammer the API.
+    const failed: string[] = [];
+    for (const row of rows) {
+      try { await BULK_RUN[action](row); } catch { failed.push(row.branch); }
+    }
+    setBusy(null);
+    setErr(failed.length ? `${label} failed on ${failed.join(", ")}` : null);
+  };
+
+  const item = ({ action, rows }: { action: BulkAction; rows: Row[] }) => (
+    <DropdownMenuItem key={action} disabled={Boolean(busy)} onSelect={() => void run(action, rows)} className="normal-case">
+      {BULK_LABELS[action]} <span className="text-muted-foreground ml-auto pl-2">{rows.length}</span>
+    </DropdownMenuItem>
+  );
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title={err ?? "Bulk actions for this lane"}
+          aria-label="Bulk actions"
+          className={`ml-auto ${err ? "text-destructive" : "hover:text-foreground"}`}
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-3.5" />}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {/* The Slack verbs collapse into one submenu, rendered where the first of them falls in the
+            lane's order; everything else is a flat item. */}
+        {groups.map((group) => (
+          !BULK_SLACK.includes(group.action) ? item(group)
+            : group !== slack[0] ? null
+            : (
+              <DropdownMenuSub key="slack">
+                <DropdownMenuSubTrigger className="normal-case">Slack</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>{slack.map(item)}</DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
