@@ -692,6 +692,9 @@ export async function followUp(
 
 /** Continue natively when possible; otherwise create a target-provider session with portable history. */
 const CONTEXT_RESET_PCT = 80;
+// A resumed session the provider can't find — claude "No conversation found…", codex "no rollout
+// found…", cursor "session not found". These mean the id points at nothing, so resuming it loops.
+const SESSION_MISSING = /no conversation found|no rollout found|session (?:id )?[^\n]*not found|unable to (?:find|resume)/i;
 async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, ledger: { action?: string; evidenceChars?: number } = {}) {
   const current = enrichOf(row.repo, row.branch);
   const from = current.agentProvider ?? row.agentProvider;
@@ -703,7 +706,16 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
   // Codex and Cursor report token usage but not their context-window occupancy.
   // Reset only on observable bounded history, never a fabricated percentage.
   const portableReset = provider !== "claude" && (nativeTurns.length >= 12 || repeatedFailures);
-  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull && !portableReset;
+  // A resume that reports the session doesn't exist can only keep failing: the id was never a real
+  // session (e.g. the first run died before creating it), so every follow-up resuming it re-fails
+  // with "No conversation found …" and bricks the card. Detect that SPECIFIC failure on the latest
+  // native turn and start fresh, seeded from the transcript + worktree, instead. A plain task failure
+  // must still resume (that's what portableReset's 3-strike rule is for) — only a missing session
+  // forces the reset. Text match because a turn carries no structured error kind; if a CLI reworded
+  // the message the fallback is merely today's behaviour, never something worse.
+  const lastNative = nativeTurns.at(-1);
+  const sessionMissing = Boolean(lastNative?.failed) && SESSION_MISSING.test(lastNative?.response ?? "");
+  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull && !portableReset && !sessionMissing;
   const receipt = await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,

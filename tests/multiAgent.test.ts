@@ -259,6 +259,36 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
+  test("a session the provider reports missing is not resumed — it starts fresh", async () => {
+    // The stuck-card loop: the first run died before claude created the session, so its id was never
+    // real. Every follow-up then resumed it and re-failed with "No conversation found …". A latest
+    // native turn carrying that session-missing error must force a fresh start, seeded from the transcript.
+    const deadSession = "23c3e70d-dead";
+    const failedOnly: AgentTurn[] = [
+      { id: "t1", provider: "claude", sessionId: deadSession, prompt: "- gather children", response: "error: unknown option '- gather'", failed: true },
+      { id: "t2", provider: "claude", sessionId: deadSession, prompt: "retry", response: "No conversation found with session ID: 23c3e70d-dead", failed: true },
+    ];
+    await store.followUp({ ...row, sessionId: deadSession, transcript: failedOnly }, "try again", [], { provider: "claude" });
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.provider).toBe("claude");
+    expect(launch.resume).toBeUndefined();          // NOT resuming the missing session
+    expect(launch.handoffFrom).toBe("claude");      // fresh claude session, seeded from the transcript
+    expect(launch.history).toEqual(failedOnly);
+  });
+
+  test("a plain task failure (session still exists) is resumed, not reset", async () => {
+    // Guard must be precise: a run that failed for a normal reason — the session is still there —
+    // must resume, or every failed follow-up would needlessly drop native continuity.
+    const liveSession = "live-1";
+    const taskFailed: AgentTurn[] = [
+      { id: "t1", provider: "claude", sessionId: liveSession, prompt: "build it", response: "command exited 1: tests failed", failed: true },
+    ];
+    await store.followUp({ ...row, sessionId: liveSession, transcript: taskFailed }, "continue", [], { provider: "claude" });
+    const launch = apiFake.agentLaunches.at(-1)!;
+    expect(launch.resume).toBe(liveSession);
+    expect(launch.history).toBeUndefined();
+  });
+
   test("switching provider hands the portable transcript to a fresh session", async () => {
     await store.followUp(row, "take over", [], { provider: "codex" });
     const launch = apiFake.agentLaunches.at(-1)!;
