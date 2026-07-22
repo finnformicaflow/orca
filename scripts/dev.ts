@@ -18,7 +18,9 @@ const shutdown = (code = 0) => {
   try { Bun.spawnSync(["pkill", "-f", "orca/node_modules/.bin/vite"]); } catch { /* none running */ }
   process.exit(code);
 };
-for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, shutdown);
+// A signal handler is called with the SIGNAL NAME, not a number — passing it straight to `shutdown`
+// made `process.exit("SIGINT")` throw. Wrap so a Ctrl-C / SIGTERM always exits 0.
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => shutdown(0));
 
 // If EITHER child exits — a crash, an external kill, or a port reclaim by another checkout's bridge —
 // tear the whole launcher down and exit, instead of `await new Promise(() => {})`-ing forever as an
@@ -26,7 +28,11 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, shutdown);
 // `bun --watch` restarts the server in-process on file edits, so this fires only when the watcher
 // PROCESS itself dies, not on a normal hot-restart. `bun run dev` then simply ends; restart it.
 await Promise.race(children.map((c) => c.exited));
-console.error("orca dev: a child (bridge or vite) exited — shutting down. Re-run `bun run dev`.");
-shutdown(1);
+// A Ctrl-C also kills the children, so guard: don't print the scary line (or exit non-zero) when a
+// signal already began the teardown — only a genuine unexpected child exit reaches this.
+if (!shuttingDown) {
+  console.error("orca dev: a child (bridge or vite) exited — shutting down. Re-run `bun run dev`.");
+  shutdown(1);
+}
 
 export {};
