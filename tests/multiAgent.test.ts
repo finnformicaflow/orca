@@ -35,21 +35,36 @@ describe("provider adapters", () => {
   });
 
   test("builds native fresh/resume commands for Claude, Codex, and Cursor", () => {
+    // The prompt is the trailing positional after `--` in every form (see the leading-dash case below).
     expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
-      "claude", "-p", "go", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "json",
+      "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "json", "--", "go",
     ]);
     expect(agentCommand("codex", "/wt/x", "go")).toEqual([
-      "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "go",
+      "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "--", "go",
     ]);
     expect(agentCommand("codex", "/wt/x", "go", "x-1")).toEqual([
-      "codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "x-1", "go",
+      "codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "x-1", "--", "go",
     ]);
     expect(agentCommand("cursor", "/wt/x", "go")).toEqual([
-      "cursor-agent", "-p", "go", "--output-format", "json", "--force", "--trust",
+      "cursor-agent", "-p", "--output-format", "json", "--force", "--trust", "--", "go",
     ]);
     expect(agentCommand("cursor", "/wt/x", "go", "a-1")).toEqual([
-      "cursor-agent", "-p", "go", "--resume", "a-1", "--output-format", "json", "--force", "--trust",
+      "cursor-agent", "-p", "--resume", "a-1", "--output-format", "json", "--force", "--trust", "--", "go",
     ]);
+  });
+
+  test("a prompt that starts with '-' (a Markdown bullet) stays the prompt, never a CLI option", () => {
+    // The bug: a user follow-up beginning with `- ` was parsed by every CLI as an unknown option and
+    // the run died before the agent saw it (claude: `error: unknown option '- gather…'`). The `--`
+    // end-of-options marker keeps it a positional. Each provider must put the dash-prompt AFTER `--`.
+    const dash = "- gather children across all views";
+    for (const provider of ["claude", "codex", "cursor"] as const) {
+      const argv = agentCommand(provider, "/wt/x", dash);
+      const sep = argv.indexOf("--");
+      expect(sep).toBeGreaterThan(-1); // an end-of-options marker is present
+      expect(argv.slice(sep + 1)).toEqual([dash]); // the prompt is the sole positional after it
+      expect(argv.indexOf(dash)).toBe(argv.length - 1); // and appears nowhere a parser would read it as a flag
+    }
   });
 
   test("recognizes new and resumed Cursor runs for recovered status and stopping", () => {

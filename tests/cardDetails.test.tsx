@@ -145,4 +145,17 @@ describe("swimlane card details", () => {
     await mount({ ...base, lane: "DONE", mergedAt: new Date().toISOString() });
     expect(container!.textContent).not.toContain("+5");
   });
+
+  test("an errored card shows the error text on the card, not only on hover", async () => {
+    // The Error badge alone surfaced the reason only via a title tooltip — a failed run looked like a
+    // bare red badge. The message now renders on the card body.
+    await mount({ ...base, lane: "LOCAL", agentStatus: "error", agentError: "error: unknown option '- gather children'" });
+    expect(container!.textContent).toContain("unknown option '- gather children'");
+  });
+
+  test("a healthy card shows no error text", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, lane: "LOCAL", agentStatus: "done", agentError: undefined });
+    expect(container!.textContent).not.toContain("error:");
+  });
 });

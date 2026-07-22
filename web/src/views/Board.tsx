@@ -349,6 +349,15 @@ export function WorkstreamCard({ row }: { row: Row }) {
         </div>
       )}
 
+      {/* The run's error text, on the card itself — the Error badge alone only surfaced it on hover,
+          so a failed run (e.g. a CLI arg error) looked like a bare red badge with no way to see why.
+          Clamped like the prompt above; the full message is on hover. */}
+      {!isDone && row.agentStatus === "error" && row.agentError && (
+        <p className="text-destructive line-clamp-2 text-xs break-words whitespace-pre-wrap" title={row.agentError}>
+          {row.agentError}
+        </p>
+      )}
+
       {/* Detail: file changes + the card's agent picker, justified to opposite ends. All lanes but
           Done. (The worktree/branch name is dropped as visual noise — copy it from the top-right menu.) */}
       {!isDone && !dense && (

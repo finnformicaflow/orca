@@ -189,16 +189,21 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 }
 
 /** Provider-specific argv. Kept pure so tests pin the native resume contracts. */
+// The prompt is passed as a positional AFTER a `--` end-of-options marker in every form. Follow-up
+// and launch prompts are user-authored and often start with `-` (a Markdown bullet). Without `--`,
+// all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
+// agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
+// and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
 export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string): string[] {
   if (provider === "codex") {
     return resume
-      ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, prompt]
-      : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, prompt];
+      ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, "--", prompt]
+      : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "--", prompt];
   }
   if (provider === "cursor") {
-    return ["cursor-agent", "-p", prompt, ...(resume ? ["--resume", resume] : []), "--output-format", "json", "--force", "--trust"];
+    return ["cursor-agent", "-p", ...(resume ? ["--resume", resume] : []), "--output-format", "json", "--force", "--trust", "--", prompt];
   }
-  return ["claude", "-p", prompt, "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json"];
+  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json", "--", prompt];
 }
 
 export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
