@@ -1,34 +1,33 @@
 // Local-agent status, open PRs, and merged history poll as three independent streams (store.ts).
-// The invariant that most easily breaks under a split: GC must judge a branch against the MERGED view
-// of all streams' latest values, not just the one stream that happened to poll — else a fast
-// agents-only refresh drops a branch that only exists as an open PR. Driven against the real store.
+// Each keeps its own {ok} and `live` is the merge of the three streams' LATEST GOOD values, so one
+// stream's transient failure never reads as "those branches are gone" and never drops what another
+// stream retained. Driven against the real store.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-
-const KEY = "orca.enrichment";
-const read = () => JSON.parse(localStorage.getItem(KEY) ?? "{}");
 
 beforeAll(() => store.configReady); // config repo is "r"
 beforeEach(() => { localStorage.clear(); apiFake.reset(); });
 afterEach(() => apiFake.reset());
 
-test("keeps enrichment for a branch that exists only as an open PR (not as a worktree)", async () => {
+test("a branch that exists only as an open PR still lands on the board", async () => {
   apiFake.prsData = [{ branch: "haspr", number: 7, title: "Has PR", url: "u", isDraft: false }]; // agents stream is empty
-  localStorage.setItem(KEY, JSON.stringify({ "r::haspr": { prompt: "keep, still open" } }));
+  apiFake.enrichmentData.set("r::haspr", { prompt: "still open" });
 
   await store.refresh();
 
-  // GC saw an empty agents slice but the retained PR slice still lists haspr → kept, not pruned.
-  expect(read()["r::haspr"]).toBeDefined();
+  expect(store.enrichmentFor("r", "haspr").prompt).toBe("still open");
 });
 
-test("prunes a branch once it's absent from every stream's latest view", async () => {
-  localStorage.setItem(KEY, JSON.stringify({ "r::orphan": { prompt: "no worktree, no PR" } }));
+test("a failed PR poll doesn't drop the PRs the last good poll retained", async () => {
+  apiFake.prsData = [{ branch: "haspr", number: 7, title: "Has PR", url: "u", isDraft: false }];
+  await store.refresh();
 
-  await store.refresh(); // agents [], prs [], merged []
+  apiFake.prsError = "network blip";
+  await store.refresh(); // agents + merged settle cleanly, PRs fail
 
-  expect(read()["r::orphan"]).toBeUndefined();
+  // `live` still carries the retained PR slice, so the board doesn't blink the row out of existence.
+  expect(store.enrichmentFor("r", "haspr")).toBeDefined();
 });
 
 test("agents and PR streams poll independently of merged history", async () => {

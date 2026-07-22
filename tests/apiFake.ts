@@ -52,6 +52,17 @@ export const apiFake = {
   reviewEvidenceError: null as string | null,
   ciEvidenceData: [] as CiFailureEvidence[],
   ciEvidenceError: null as string | null,
+  // The bridge's durable enrichment + chat history (server/db.ts), keyed `repo::branch`. Tests seed
+  // and assert against this instead of localStorage — it stands in for the DB, not for a cache.
+  enrichmentData: new Map<string, Record<string, unknown>>(),
+  turnsData: new Map<string, unknown[]>(),
+  // When set, importEnrichment rejects — the migration must then KEEP the browser's blob, since it
+  // is the only copy of that history.
+  importError: null as null | string,
+  // When true, patchEnrichment blocks until releaseEnrichmentWrites() — lets a test land a poll
+  // BETWEEN an optimistic mirror write and its server round-trip.
+  holdEnrichmentWrites: false,
+  releaseEnrichmentWrites: null as null | (() => void),
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
@@ -63,7 +74,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -107,6 +118,40 @@ mock.module("@/api", () => ({
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
     },
+    enrichment: async (repo: string) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of apiFake.enrichmentData) {
+        const sep = k.indexOf("::");
+        if (k.slice(0, sep) === repo) out[k.slice(sep + 2)] = v;
+      }
+      return out;
+    },
+    patchEnrichment: async (repo: string, branch: string, fields: Record<string, unknown>) => {
+      if (apiFake.holdEnrichmentWrites) {
+        await new Promise<void>((resolve) => { apiFake.releaseEnrichmentWrites = () => { apiFake.holdEnrichmentWrites = false; resolve(); }; });
+      }
+      const k = `${repo}::${branch}`;
+      const current = { ...(apiFake.enrichmentData.get(k) ?? {}) };
+      // null is the wire encoding for "delete this key" (JSON.stringify drops undefined).
+      for (const [f, v] of Object.entries(fields)) { if (v === null) delete current[f]; else current[f] = v; }
+      apiFake.enrichmentData.set(k, current);
+      return { ok: true as const };
+    },
+    importEnrichment: async (entries: { repo: string; branch: string; fields: Record<string, unknown> }[]) => {
+      if (apiFake.importError) throw new Error(apiFake.importError);
+      let imported = 0;
+      for (const e of entries) {
+        const k = `${e.repo}::${e.branch}`;
+        if (apiFake.enrichmentData.has(k)) continue;
+        // Keep transcript in the blob (guard + handoff read it) AND surface it as turns (Chat tab).
+        apiFake.enrichmentData.set(k, { ...e.fields });
+        const transcript = (e.fields ?? {}).transcript;
+        if (Array.isArray(transcript)) apiFake.turnsData.set(k, transcript);
+        imported++;
+      }
+      return { imported };
+    },
+    turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
     handoff: async (_repo: string, branch: string, content: string) => {
       apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
     },

@@ -9,6 +9,7 @@ import { DiffView, Markdown } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { TerminalPanel } from "@/components/Terminal";
+import { ChatPanel } from "./Chat";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -59,6 +60,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="chat">Chat</TabsTrigger>
           <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
           <TabsTrigger value="terminal">Terminal</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
@@ -91,6 +93,10 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
               </ul>
             ) : <p className="text-muted-foreground text-sm">No commits yet.</p>}
           </Section>
+        </TabsContent>
+
+        <TabsContent value="chat" className="pt-3">
+          <ChatPanel row={row} />
         </TabsContent>
 
         <TabsContent value="files" className="space-y-3 pt-3">

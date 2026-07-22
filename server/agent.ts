@@ -6,7 +6,15 @@ import { retryTitle } from "./title";
 import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
+import * as db from "./db";
 import { tmpdir } from "os";
+
+/** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
+ *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped. */
+function recordTurn(options: LaunchOptions, write: () => void): void {
+  if (!options.repo || !options.branch) return;
+  try { write(); } catch (e) { console.error("orca: chat history write failed", e); }
+}
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
 // cost, turns, and wall-clock. Surfaced on the card so a session shows what ran. (contextPct is the
@@ -45,6 +53,7 @@ export type LaunchOptions = {
   history?: AgentTurn[];
   handoffFrom?: AgentProvider;
   timeoutMs?: number;
+  repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
@@ -224,6 +233,11 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
   lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
+  // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
+  // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
+  recordTurn(options, () => db.startTurn({
+    repo: options.repo!, branch: options.branch!, runId, provider, prompt, sessionId, startedAt,
+  }));
   void (async () => {
     const [out, err] = await Promise.all([
       provider === "codex" ? readCodexOutput(key, proc) : new Response(proc.stdout).text(),
@@ -231,7 +245,10 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     ]);
     const code = await proc.exited;
     if (timeout) clearTimeout(timeout);
-    if (runs.get(key)?.proc !== proc) return; // superseded (re-run) or stopped — don't clobber
+    // A superseded (re-run) or stopped run must not clobber the live `runs` entry — but its output is
+    // still real work that happened, so it's parsed and its turn is still completed in the DB. This
+    // is exactly the history the old in-memory map lost when a fast follow-up overwrote its key.
+    const superseded = runs.get(key)?.proc !== proc;
     let result: string | undefined, isError = false, meta: RunMeta | undefined, resolvedSessionId = sessionId;
     if (provider === "codex") {
       const parsed = parseCodexOutput(out);
@@ -257,8 +274,15 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
-    lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
     const ok = code === 0 && !isError;
+    const error = ok ? undefined : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    recordTurn(options, () => db.finishTurn(runId, {
+      status: ok ? "done" : "error",
+      // A failed run still has something worth keeping — the error is the turn's outcome.
+      response: result ?? error, structured, sessionId: resolvedSessionId, finishedAt,
+    }));
+    if (superseded) return;
+    lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
     ledger.record({
       kind: "run", provider, action: options.action, mode: runMode(options),
       status: ok ? "done" : "error", durationMs: meta?.durationMs ?? finishedAt - startedAt,
@@ -269,7 +293,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     });
     runs.set(key, ok
       ? { status: "done", ...common }
-      : { status: "error", ...common, error: (err.trim() || result || `exit ${code}`).slice(0, 300) });
+      : { status: "error", ...common, error });
   })();
   return { status: "running", provider, runId, sessionId };
 }

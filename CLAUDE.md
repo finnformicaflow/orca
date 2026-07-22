@@ -43,22 +43,49 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   a live shell — is never network-reachable.
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
   start a dev server. The bridge does *only* what the browser
-  physically can't, plus proxies GitHub so tokens never touch the browser. It is not a
-  "backend" in the app sense — no DB, no business state.
-- **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) is the one on-disk exception —
-  and it is NOT app state.** It holds run **leases** (`server/lease.ts`: pid/runId/provider/
+  physically can't, plus proxies GitHub so tokens never touch the browser. It is still not a
+  "backend" in the app sense — no service layer, no ORM, no job queue. It owns exactly one piece
+  of business state (the chat history, below) because that data exists nowhere else.
+- **The chat history (`server/db.ts`, SQLite via `bun:sqlite`) IS app state — a deliberate reversal
+  of the original "no DB" rule.** (History: enrichment lived wholly in `localStorage` and turns were
+  recorded by the *browser*, from a poll — so a bridge restart, a closed tab, or a follow-up landing
+  inside the 8s poll window destroyed the agent's response permanently. The turn is now written where
+  the data already is: inserted at `launch()` with `status='running'`, completed in the exit handler.)
+  Two tables: `workstream` (surrogate integer id; `(repo, branch)` is a *mutable pointer*, unique only
+  while live, so renames and reused branch names don't collide) and `turn` (keyed by `run_id`, so a
+  fast follow-up can't clobber its predecessor the way the worktree-path-keyed `runs` map did).
+  **Nothing is deleted — finished workstreams are ARCHIVED**, because the conversations most worth
+  chaining from later are exactly the ones whose branches got merged and reaped. Granularity is
+  prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
+  stream — that's far larger, mostly tool output, and the provider already keeps it; `turn.raw_ref`
+  points back at it. Migrations are `PRAGMA user_version` + a numbered step, nothing more. A history
+  write must never break the run that produced it (`recordTurn` swallows and logs).
+- **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) holds both.** The DB lives here too
+  (mode `0600` — it holds prompts and responses in plaintext) alongside the *advisory* operational
+  files. It holds run **leases** (`server/lease.ts`: pid/runId/provider/
   branch/expiry, so a restarted bridge rejects overlapping agent runs and reclaims dead/expired
   ones) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
-  `/api/diagnostics` — never prompts, responses, logs, or secrets). Both are **advisory**: if a
-  file is missing or unreadable, degrade (reclaim the lease, drop the record) — never refuse a
-  legitimate run. Kept OUT of every worktree so they can't leak into a diff or PR body. Leases
-  persist across shutdown by design (the bridge leaves agents running; the lease is how the
-  restart sees them). Live system + git + gh + localStorage remain the only sources of truth.
-- **Source of truth is the LIVE system, not localStorage.** Draft column is driven by
+  `/api/diagnostics` — never prompts, responses, logs, or secrets; it is NOT a transcript backup).
+  The lease and ledger stay **advisory**: if a file is missing or unreadable, degrade (reclaim the
+  lease, drop the record) — never refuse a legitimate run. The DB is not advisory — losing it loses
+  chat history (git/gh/worktrees still hold the code, so nothing unrecoverable is at stake). The whole
+  dir is kept OUT of every worktree so none of it can leak into a diff or PR body. Leases persist
+  across shutdown by design (the bridge leaves agents running; the lease is how the restart sees
+  them). For everything except the chat history, live system + git + gh remain the sources of truth.
+- **Source of truth for lanes is the LIVE system.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
-  (`gh pr list --author @me`). `localStorage` only **enriches** that live data with what
-  git/gh can't recover — prompt, title, provider/session pointer, portable transcript, Slack timestamps — keyed by branch (`web/src/store.ts`).
-  PRs/worktrees with no enrichment still render (backwards compat, incl. PRs not made by Orca).
+  (`gh pr list --author @me`). **Enrichment** only decorates that live data with what
+  git/gh can't recover — prompt, title, provider/session pointer, transcript, Slack timestamps — keyed
+  by repo+branch. It lives in the DB (`GET/POST /api/enrichment`); `web/src/store.ts` keeps a
+  synchronous in-memory **mirror** so reads stay sync during render, writes go through the server, and
+  the agents poll re-hydrates. Writes still in flight are re-applied over a hydration
+  (`pendingWrites`) — a poll that started before a write returns data predating it, and silently
+  reverting `followSig` would re-fire a follower's action every poll. Rows are assembled from live
+  PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
+  enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
+  bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
+  only per-browser UI state (theme, density, composer drafts); a one-shot `migrateLocalEnrichment`
+  hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
   no MCP (via `server/slack-api.ts`'s `postMessage`, reused by `/api/slack`). No OAuth app. A failed
@@ -126,8 +153,15 @@ dragging an almost-full native context into another turn.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
-them. Routing: `/` = board, `/{repo}/prs/:n[/files|/checks|/preview]` = PR detail,
-`/{repo}/local/:branch[/files|/preview]` = local-session detail.
+them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/checks|/preview]` = PR detail,
+`/{repo}/local/:branch[/chat|/files|/preview]` = local-session detail.
+
+**Chat tab** (`web/src/views/Chat.tsx`): the branch's whole conversation, read from `GET /api/turns`.
+Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board action
+uses, and tmux stays the interactive lane. It closes the gap where turns were recorded but rendered
+nowhere, so the detail view showed only the latest run's prompt and final blob. A turn written at
+launch but not yet finished renders as in-progress (that's how an interrupted run stays visible);
+a turn with a parsed outcome renders its sections rather than the raw markdown blob.
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 

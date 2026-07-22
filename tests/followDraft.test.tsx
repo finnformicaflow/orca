@@ -9,18 +9,17 @@ import * as store from "@/store";
 import type { Row } from "@/store";
 import { stepHistory } from "@/components/ChatComposer";
 
-const KEY = "orca.enrichment";
 const row: Row = {
   repo: "branch-demo", hasRemote: true, branch: "feat", title: "Feat", prompt: "orig task",
   lane: "IN_REVIEW", worktreePath: "/wt/feat", prNumber: 7, prUrl: "https://x/7",
 };
-const enrich = () => JSON.parse(localStorage.getItem(KEY)!)["branch-demo::feat"];
+const enrich = () => apiFake.enrichmentData.get("branch-demo::feat") as any;
 
 beforeEach(() => localStorage.clear());
 afterEach(() => apiFake.reset());
 
 test("followUp records the sent prompt even when the launch fails, and appends a history", async () => {
-  localStorage.setItem(KEY, JSON.stringify({ "branch-demo::feat": { prompt: "orig task" } }));
+  apiFake.enrichmentData.set("branch-demo::feat", { prompt: "orig task" });
   apiFake.claudeError = "launch boom"; // send fails after it's recorded
 
   await store.followUp(row, "first ask").catch(() => {});
@@ -31,10 +30,16 @@ test("followUp records the sent prompt even when the launch fails, and appends a
   expect(enrich().prompt).toBe("orig task"); // merged, not clobbered
 });
 
-test("merge clears the branch's enrichment (Done cards render from gh data, not enrichment)", async () => {
-  localStorage.setItem(KEY, JSON.stringify({ "branch-demo::feat": { prompt: "orig task", followUps: ["x"] } }));
+test("merge drops the branch from the live board but KEEPS its history", async () => {
+  apiFake.enrichmentData.set("branch-demo::feat", { prompt: "orig task", followUps: ["x"] });
+
   await store.merge(row).catch(() => {});
-  expect(JSON.parse(localStorage.getItem(KEY)!)["branch-demo::feat"]).toBeUndefined();
+
+  // Done cards render from gh data, so the row leaves the mirror...
+  expect(store.enrichmentFor("branch-demo", "feat")).toEqual({});
+  // ...but the bridge archives rather than deletes: a merged branch's conversation is exactly what a
+  // future chat-chain would want to reference.
+  expect(enrich()).toMatchObject({ prompt: "orig task" });
 });
 
 test("stepHistory walks oldest↕newest and falls off the newest end to an empty box", () => {
