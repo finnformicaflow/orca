@@ -20,7 +20,7 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/branch-demo`,
       worktreeRoot: `${DEV}/branch-demo/.worktrees`,
       baseBranch: "master",
-      slackChannel: "#v3-engineering",
+      slackChannel: "#engineering",
       previewLabel: "preview",
       // Labels the Promote-to-PR menu offers as toggles; `preview` starts checked.
       prLabels: [{ name: "preview", default: true }],
@@ -97,7 +97,7 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/orca`,
       worktreeRoot: `${DEV}/orca/.worktrees`,
       baseBranch: "main",
-      slackChannel: "#v3-engineering",
+      slackChannel: "#engineering",
       previewServices: [
         { name: "web", command: "cd web && bunx --bun vite --port {port}", open: true },
       ],
