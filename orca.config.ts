@@ -90,7 +90,11 @@ const config: OrcaConfig = {
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)
-      linkToWorktree: ["backend/node_modules", "frontend/node_modules"],
+      // shared/node_modules too: backend imports @shared/* as TS source (tsconfig path → ../shared/src),
+      // so shared's OWN runtime deps (platejs, @platejs/*) must resolve from shared/node_modules — a
+      // missing clone here is a MODULE_NOT_FOUND at backend start. Needs `npm install` in the main
+      // repo's shared/ so there's a tree to clone (mirrors the backend/frontend assumption).
+      linkToWorktree: ["backend/node_modules", "frontend/node_modules", "shared/node_modules"],
     },
     {
       name: "orca",
