@@ -1,7 +1,6 @@
-// The Chat tab (views/Chat.tsx) renders the branch's durable conversation from GET /api/turns.
-// Before it, turns were recorded and never displayed anywhere: the detail view showed only the
-// LATEST run's prompt and final blob, so every earlier exchange in a branch was invisible. Rendered
-// into a real DOM against the fake api.
+// ChatPanel (views/Chat.tsx) renders the branch's durable conversation from GET /api/turns as a
+// terminal-style log — the content of the card's terminal modal. Rendered into a real DOM against
+// the fake api.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -45,7 +44,7 @@ test("renders every turn in the branch, not just the most recent", async () => {
 
   await mount(base);
 
-  // The whole point of the tab: the earlier exchange is still on screen.
+  // The whole point: the earlier exchange is still on screen.
   expect(text()).toContain("add the cache");
   expect(text()).toContain("Added it.");
   expect(text()).toContain("now add a test");
@@ -53,7 +52,7 @@ test("renders every turn in the branch, not just the most recent", async () => {
   expect(text()).toContain("Codex"); // each turn is attributed to the provider that ran it
 });
 
-test("shows a structured outcome as its sections rather than the raw blob", async () => {
+test("shows a structured outcome as labelled sections", async () => {
   apiFake.turnsData.set("r::feat", [{
     id: "run-1", provider: "claude", prompt: "ship it", response: "## Outcome\nShipped.", finishedAt: 2,
     structured: { outcome: "Shipped.", verification: ["bun run check"], decisions: [], remaining: ["docs"], commits: ["abc123 ship"] },
@@ -75,7 +74,7 @@ test("an unfinished turn shows as in-progress instead of vanishing", async () =>
   await mount({ ...base, agentStatus: "running" });
 
   expect(text()).toContain("long job");
-  expect(text()).toContain("Working…");
+  expect(text()).toContain("working…");
 });
 
 test("a failed turn is kept and surfaced, not dropped", async () => {
@@ -92,7 +91,7 @@ test("a failed turn is kept and surfaced, not dropped", async () => {
 
 test("an empty conversation says so rather than rendering a blank panel", async () => {
   await mount(base);
-  expect(text()).toContain("No turns yet");
+  expect(text()).toContain("No history yet");
 });
 
 test("the composer sends a follow-up through the normal launch path", async () => {

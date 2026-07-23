@@ -10,7 +10,6 @@ import { navigate, type PrTab } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
-import { ChatPanel } from "./Chat";
 import { ActionButton } from "@/components/ActionButton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -84,7 +83,6 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="chat">Chat</TabsTrigger>
           <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
           <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
@@ -105,10 +103,6 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               ))}
             </div>
           )}
-        </TabsContent>
-
-        <TabsContent value="chat" className="pt-3">
-          <ChatPanel row={row} />
         </TabsContent>
 
         <TabsContent value="files" className="space-y-3 pt-3">

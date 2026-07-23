@@ -14,9 +14,9 @@ connective tissue between "managing agents" and "managing PRs."**
 status badge (running/done/error). Headless one-shot is the mechanism for the AUTOMATED board actions
 (create, Fix CI, Resolve conflicts, Address review, Follow up, Slack, PR description) — they need the
 structured outcome / portable transcript / run ledger, so **board automation is never routed through
-tmux**. Alongside it there is now a deliberate **interactive tmux lane** (see below) — a live browser
-terminal you drive by hand. Both operate on the SAME worktree, so git stays the source of truth and
-they coexist. For a quick jump to a real terminal, "Copy CLI" still gives the provider-native resume
+tmux**. The card's **terminal** is now a conversation modal (the durable turns + a composer, see
+below), not a live shell; a live tmux lane existed once and its backend is left dormant. For a quick
+jump to a real terminal, "Copy CLI" still gives the provider-native resume
 command to jump into an interactive session. When you
 switch a card's agent (e.g. one model is maxed out), Copy CLI instead seeds a NEW interactive session
 of the pinned provider with the portable transcript (written to a handoff file under the state dir,
@@ -102,33 +102,16 @@ its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). T
 rows tagged by repo (each row carries `repo`; actions use `row.repo`). Enrichment is keyed
 `repo::branch`. The New-draft box has a repo **dropdown**; cards show a repo tag.
 
-## Interactive terminal (the hand-driven lane)
+## tmux backend (dormant)
 
-A live browser terminal, backed by **tmux**, for driving an agent by hand — the deliberate exception
-to "hosts no chat UI and does not stream". It COEXISTS with headless one-shot (which stays the
-mechanism for every automated board action); both share the worktree, git is the source of truth.
-
-- **One tmux session per worktree**, namespaced `orca/<repo>/<branch-slug>` so it can't collide with
-  the user's own sessions. Pure naming lives in `shared/tmux.ts` (`sessionName`); the launch-vs-attach
-  *command* reuses `attachCommand` (`shared/agent.ts`) — so a terminal resumes EXACTLY like Copy CLI
-  (native resume, or a seeded cross-provider handoff file).
-- **`server/tmux.ts`** — thin wrappers over the real `tmux` binary (no node-pty / native module, per
-  the Bun-only rule): `ensureSession` (idempotent — re-open just re-attaches), `sessionExists`,
-  `sendKeys`, `capturePane`, `resize`, `killSession`, `listSessions`. tmux **outlives the bridge** by
-  design, so `listSessions` re-surfaces live terminals after a restart (dovetails with `lease.ts`);
-  `/api/agents` tags each worktree `tmux: true/false` for the card's live-session badge. If `tmux`
-  isn't installed the lane degrades (endpoint 501, no badge) rather than crashing.
-- **`server/terminal.ts` + `/api/terminal/ws`** — the WebSocket glue: on connect send the current
-  screen (`capture-pane -pe`), then stream raw ANSI via `tmux pipe-pane` → FIFO → `cat` → ws (binary
-  frames); client keystrokes → `send-keys -l`, resize → `resize-window`. Reconnects on drop.
-- **Frontend:** an xterm.js component (`web/src/components/Terminal.tsx`, all assets bundled — no CDN)
-  in a "Terminal" tab of the local/PR detail view.
-- **Two entry points:** "Open terminal" (card Agent menu + the Terminal tab, `ensureSession` first so
-  it works for a PR/worktree with no session yet); and "Start interactive session" in New-draft (the
-  ⌨ toggle) — cuts the worktree, starts the agent in tmux seeded with the typed prompt as its first
-  message, and drops you into the terminal. Closing the tab leaves it running.
-- **Lifecycle:** killed on Discard/Close (and when a merged branch is reaped); left running on normal
-  shutdown — persistence is the whole point.
+There was once a live xterm.js browser terminal backed by **tmux** — a real interactive shell over a
+WebSocket. The UI for it was removed (the "terminal" is now the conversation modal above), but the
+server side is left in place, dormant, in case a live-shell lane is wanted again: `shared/tmux.ts`
+(`sessionName`), `server/tmux.ts` (thin `tmux` binary wrappers), `server/terminal.ts` +
+`/api/terminal/ws` (the `pipe-pane` → FIFO → ws glue), `store.openTerminal` + `api.ensureTerminal`
+(`/api/terminal/ensure`), and the `tmux: true/false` tag on `/api/agents`. Nothing in the UI calls
+any of it now — treat it as unwired until something re-adds an entry point (or delete it if it stays
+unused). The xterm.js dependency was dropped from the bundle when the frontend went.
 
 ## The one board & model
 
@@ -153,15 +136,19 @@ dragging an almost-full native context into another turn.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
-them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/checks|/preview]` = PR detail,
-`/{repo}/local/:branch[/chat|/files|/preview]` = local-session detail.
+them. Routing: `/` = board, `/{repo}/prs/:n[/files|/checks|/preview]` = PR detail,
+`/{repo}/local/:branch[/files|/preview]` = local-session detail.
 
-**Chat tab** (`web/src/views/Chat.tsx`): the branch's whole conversation, read from `GET /api/turns`.
-Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board action
-uses, and tmux stays the interactive lane. It closes the gap where turns were recorded but rendered
-nowhere, so the detail view showed only the latest run's prompt and final blob. A turn written at
-launch but not yet finished renders as in-progress (that's how an interrupted run stays visible);
-a turn with a parsed outcome renders its sections rather than the raw markdown blob.
+**Terminal (the conversation)** — `web/src/components/Terminal.tsx`'s `TerminalDialog` is a modal
+opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Chat.tsx`): the branch's
+whole conversation from `GET /api/turns` as a **terminal-style log** (dark monospace, each instruction
+shown as `❯ …` with the agent's output below), plus the follow-up `ChatComposer` to send the next
+message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
+involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
+board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. (History: this
+was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
+tab was removed.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 

@@ -1,50 +1,71 @@
-// The conversation with a branch's agent, read from the bridge's durable store (GET /api/turns).
+// The conversation with a branch's agent, rendered as a terminal-style log: the durable turns from
+// the bridge's store (GET /api/turns) shown in a dark monospace window, with the follow-up composer
+// below to send the next message. It is NOT a live shell — it renders the turns Orca already records,
+// styled like a terminal. Opened from the card's terminal button (see TerminalDialog); the old
+// detail-page Chat tab is gone.
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
-// action uses, and tmux remains the interactive lane. What this adds is the missing half: until now
-// the turns were recorded and never rendered anywhere, so the detail view showed only the LATEST
-// run's prompt and final blob, and every earlier exchange was invisible.
+// action uses.
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
 import type { AgentTurn } from "../../../shared/agent";
 import { api } from "../api";
 import { followUp, type Row } from "../store";
 import { agentLabel } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
-import { Markdown } from "./PrDetail";
 
-/** A completed turn's response is the raw final message. When the agent honoured the outcome
- *  contract we already have it parsed, so show the sections instead of re-rendering the markdown
- *  blob — it's the same information without the headings the contract asked for. */
-function Outcome({ turn }: { turn: AgentTurn }) {
+/** A completed turn's agent output. Structured outcomes render as labelled sections; anything else is
+ *  the raw final message as monospace text. Terminal palette, so it reads on the dark window. */
+function Output({ turn }: { turn: AgentTurn }) {
+  if (turn.failed) return <pre className="whitespace-pre-wrap break-words text-red-400">{turn.response || "exited without output"}</pre>;
   const s = turn.structured;
-  if (!s) return <Markdown>{turn.response || "_No final response._"}</Markdown>;
+  if (!s) return <pre className="whitespace-pre-wrap break-words text-neutral-300">{turn.response || "(no output)"}</pre>;
   return (
-    <div className="space-y-2">
-      {s.outcome && <Markdown>{s.outcome}</Markdown>}
-      {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-600 dark:text-amber-400" />}
-      {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} />}
-      {s.verification.length > 0 && <Facet title="Verification" items={s.verification} />}
-      {s.commits.length > 0 && <Facet title="Commits" items={s.commits} mono />}
+    <div className="space-y-1.5 text-neutral-300">
+      {s.outcome && <p className="whitespace-pre-wrap break-words">{s.outcome}</p>}
+      {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-400" />}
+      {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} tone="text-neutral-400" />}
+      {s.verification.length > 0 && <Facet title="Verification" items={s.verification} tone="text-neutral-400" />}
+      {s.commits.length > 0 && <Facet title="Commits" items={s.commits} tone="text-sky-400" />}
     </div>
   );
 }
 
-const Facet = ({ title, items, tone, mono }: { title: string; items: string[]; tone?: string; mono?: boolean }) => (
+const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: string }) => (
   <div>
-    <h4 className={`text-[10px] font-semibold tracking-widest uppercase ${tone ?? "text-muted-foreground"}`}>{title}</h4>
-    <ul className={`mt-0.5 space-y-0.5 text-sm ${mono ? "font-mono text-xs" : ""}`}>
-      {items.map((v, i) => <li key={i} className="flex gap-1.5"><span className="text-muted-foreground">·</span><span className="min-w-0 break-words">{v}</span></li>)}
+    <div className={`text-[10px] tracking-widest uppercase ${tone}`}>{title}</div>
+    <ul className="space-y-0.5">
+      {items.map((v, i) => <li key={i} className="break-words">· {v}</li>)}
     </ul>
   </div>
 );
+
+/** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
+function Turn({ turn }: { turn: AgentTurn }) {
+  const pending = !turn.finishedAt;
+  return (
+    <div className="mb-3">
+      <div className="flex gap-2 text-emerald-400">
+        <span className="shrink-0 select-none">❯</span>
+        <span className="min-w-0 whitespace-pre-wrap break-words">{turn.prompt}</span>
+      </div>
+      <div className="mt-1 pl-4">
+        <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
+          {agentLabel(turn.provider)}{turn.failed ? " · failed" : ""}
+        </div>
+        {/* A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as
+            an unfinished exchange rather than vanishing. */}
+        {pending ? <span className="text-neutral-500">▋ working…</span> : <Output turn={turn} />}
+      </div>
+    </div>
+  );
+}
 
 export function ChatPanel({ row }: { row: Row }) {
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const running = row.agentStatus === "running";
 
-  // Refetch while a run is in flight so its turn flips from in-progress to its outcome in place.
+  // Refetch while a run is in flight so its turn flips from "working…" to its output in place.
   useEffect(() => {
     let live = true;
     const load = () => void api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
@@ -54,19 +75,17 @@ export function ChatPanel({ row }: { row: Row }) {
     return () => { live = false; clearInterval(t); };
   }, [row.repo, row.branch, running]);
 
-  // Follow the tail as turns arrive, the way a chat log should.
+  // Follow the tail as turns arrive, the way a terminal scrolls.
   useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [turns?.length, running]);
 
   return (
-    <div className="space-y-4">
-      {turns === null ? <p className="text-muted-foreground text-sm">Loading conversation…</p>
-        : turns.length === 0 ? <p className="text-muted-foreground text-sm">No turns yet for <code>{row.branch}</code>.</p>
-        : (
-          <ol className="space-y-5">
-            {turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
-          </ol>
-        )}
-      <div ref={bottom} />
+    <div className="flex h-full flex-col gap-3">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200">
+        {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
+          : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
+          : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
+        <div ref={bottom} />
+      </div>
       <ChatComposer
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${agentLabel(row.agentProvider ?? "claude")}…`}
@@ -77,30 +96,5 @@ export function ChatPanel({ row }: { row: Row }) {
         }}
       />
     </div>
-  );
-}
-
-function Turn({ turn }: { turn: AgentTurn }) {
-  const pending = !turn.finishedAt;
-  return (
-    <li className="space-y-2">
-      <div className="bg-muted/60 ml-auto w-fit max-w-[85%] rounded-md px-3 py-2">
-        <p className="text-sm whitespace-pre-wrap">{turn.prompt}</p>
-      </div>
-      <div className="space-y-1">
-        <div className="text-muted-foreground flex items-center gap-2 text-[10px] font-semibold tracking-widest uppercase">
-          {agentLabel(turn.provider)}
-          {turn.failed && <span className="text-destructive">failed</span>}
-          {pending && <Loader2 className="size-3 animate-spin" />}
-        </div>
-        {pending
-          // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible
-          // as an unfinished exchange rather than vanishing the way it used to.
-          ? <p className="text-muted-foreground text-sm italic">Working…</p>
-          : <div className={turn.failed ? "text-destructive text-sm whitespace-pre-wrap" : ""}>
-              {turn.failed ? turn.response : <Outcome turn={turn} />}
-            </div>}
-      </div>
-    </li>
   );
 }
