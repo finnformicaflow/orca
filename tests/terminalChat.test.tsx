@@ -46,6 +46,12 @@ describe("card terminal (conversation modal)", () => {
 
     const dialog = container!.querySelector("dialog")!;
     expect(dialog.open).toBe(false); // closed until opened — ChatPanel isn't mounted yet
+    // The <dialog> must carry NO display utility, or an author `display` rule overrides the UA
+    // `dialog:not([open]){display:none}` and the closed dialog renders inline in the swimlane,
+    // wrecking the card layout. Layout lives on an inner wrapper instead.
+    for (const cls of ["flex", "grid", "block", "inline-flex", "inline-block", "table"]) {
+      expect(dialog.classList.contains(cls)).toBe(false);
+    }
 
     const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "Open terminal")!;
     expect(button).toBeTruthy();
