@@ -43,7 +43,10 @@ psql_admin() { psql -X -v ON_ERROR_STOP=1 -h "${HOST}" -p "${PORT}" -U "${SU}" -
 drop_sql() {
   cat <<SQL
 DO \$\$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '$1') THEN
+  -- datconnlimit = -2 marks an INVALID database (a CREATE ... WITH TEMPLATE interrupted mid-copy):
+  -- it can only be DROPped, and ALTER on it raises a FATAL that kills the whole session — which is
+  -- exactly the DB a re-run needs to clear. Skip the ALTER for those; the DROP below still reaps them.
+  IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '$1' AND datconnlimit <> -2) THEN
     EXECUTE format('ALTER DATABASE %I ALLOW_CONNECTIONS false', '$1');
   END IF;
 END \$\$;
