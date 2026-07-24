@@ -142,6 +142,22 @@ export async function start(key: string, cwd: string, services: PreviewService[]
   persist();
 }
 
+// A dev server whose port still isn't answering after this long is wedged, not slow: `nest --watch`
+// (the backend dev script) does NOT exit on a boot failure — it stays alive waiting for a file change
+// — so "process alive" never clears on its own, and the card would spin on "Starting…" forever. Well
+// above a cold boot (worktree npm-install self-heal + nest/vite compile) so a healthy slow start is
+// never false-flagged. ponytail: a constant; make it configurable if a repo ever legitimately needs longer.
+export const BOOT_TIMEOUT_MS = 180_000;
+
+/** Whether a service counts as running/ready. A service that's alive but hasn't bound its port within
+ *  BOOT_TIMEOUT_MS is treated as NOT running, so the client's existing crash path (reap + surface log +
+ *  Retry) fires instead of an infinite spinner. Pure, so the timeout is testable without spawning. */
+export function svcHealth(alive: boolean, up: boolean, startedAt: number, now: number): { running: boolean; ready: boolean } {
+  const wedged = alive && !up && now - startedAt > BOOT_TIMEOUT_MS;
+  const running = alive && !wedged;
+  return { running, ready: running && up };
+}
+
 async function portReady(port: number): Promise<boolean> {
   try {
     // 2s (not 700ms): under boot load a healthy dev server can be slow to answer the first request,
@@ -164,9 +180,9 @@ export async function status(key: string): Promise<SvcStatus[]> {
     // Every service binds a port, so readiness = the port actually responds — for the backend too,
     // not just "the process is alive". The link/iframe therefore waits for the full stack (~10s for
     // the backend) instead of appearing the instant the frontend is up. Adopted svcs have no proc
-    // handle, so their liveness IS the port responding.
-    const running = s.proc ? !s.exited : up;
-    const ready = running && up;
+    // handle, so their liveness IS the port responding. A service alive but not up past BOOT_TIMEOUT_MS
+    // is wedged (crash-looping under --watch) → svcHealth reports it not-running so the client reaps it.
+    const { running, ready } = svcHealth(s.proc ? !s.exited : up, up, s.startedAt, Date.now());
     return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
