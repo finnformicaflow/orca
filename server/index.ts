@@ -381,11 +381,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     // prompt (adopted / opened outside Orca — the "broken title" case), summarise its title + body.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    // Name from the best signal available: the original task prompt, else a PR's title+body (adopted
+    // PRs), else the branch's own commit subjects (a local card with work but no Orca prompt), and
+    // finally the branch name — so a local card can always be named rather than erroring.
     let context = String(body.prompt ?? "").trim();
     if (!context && body.pr) {
       const d = await gh.prDetail(repo.repoPath, body.pr).catch(() => null);
       if (d) context = `${d.title}\n\n${d.body}`.trim();
     }
+    if (!context && body.worktreePath) {
+      const s = await git.changeSummary(body.worktreePath, repo.baseBranch).catch(() => null);
+      if (s?.commits.length) context = s.commits.map((c) => c.subject).join("\n");
+    }
+    if (!context && body.branch) context = String(body.branch).replace(/[-_/]+/g, " ").trim(); // last resort
     if (!context) return json({ error: "no context to name from" }, 400);
     return json({ title: (await agent.summarize(provider, context)) ?? titleFromPrompt(context) });
   }

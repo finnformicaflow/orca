@@ -517,7 +517,7 @@ export function setCardProvider(row: Row, provider: AgentProvider) {
 /** Ask the pinned provider to name this card (2–5 words) from its prompt, or — for a PR opened outside
  *  Orca — its title + body. Used by the Rename dialog's "Suggest" button; the name stays editable. */
 export const suggestTitle = (row: Row): Promise<string> =>
-  api.suggestTitle(row.repo, { provider: providerFor(row), prompt: row.prompt || undefined, pr: row.prNumber }).then((r) => r.title);
+  api.suggestTitle(row.repo, { provider: providerFor(row), prompt: row.prompt || undefined, pr: row.prNumber, branch: row.branch, worktreePath: row.worktreePath }).then((r) => r.title);
 
 /** Rename a card. For a PR the card's title comes from GitHub, so this edits the PR title there; the
  *  name is always recorded in enrichment too (shown for pre-PR locals). refresh() pulls the fresh PR

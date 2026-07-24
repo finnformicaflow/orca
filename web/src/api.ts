@@ -49,7 +49,7 @@ export const api = {
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
   // Rename a card: for a PR this edits the GitHub title (the card's title source); always records it in
   // enrichment. suggestTitle asks the provider to name it from the prompt (or the PR body for adopted PRs).
-  suggestTitle: (repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number }): Promise<{ title: string }> =>
+  suggestTitle: (repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number; branch?: string; worktreePath?: string }): Promise<{ title: string }> =>
     post("/api/suggest-title", { repo, ...b }),
   rename: (repo: string, b: { branch: string; title: string; pr?: number }): Promise<{ ok: true }> =>
     post("/api/rename", { repo, ...b }),

@@ -22,6 +22,14 @@ test("Suggest asks the pinned provider to name the card from its prompt (or PR n
   expect(apiFake.suggestTitleCalls[0]).toMatchObject({ provider: "codex", prompt: "add a cache layer", pr: 42 });
 });
 
+test("a promptless local card sends its branch + worktree so the server can still name it", async () => {
+  // The "no context to name from" bug: an adopted local with no Orca prompt and no PR. Suggest must
+  // still pass the branch + worktree path, from which the server names it (commit subjects / branch).
+  await store.suggestTitle(row({ prompt: "", worktreePath: "/wt/feat" }));
+
+  expect(apiFake.suggestTitleCalls[0]).toMatchObject({ branch: "feat", worktreePath: "/wt/feat" });
+});
+
 test("renaming a PR edits the GitHub PR title and records it in enrichment", async () => {
   await store.rename(row({ prNumber: 42 }), "Excel-like Cell Selection");
 

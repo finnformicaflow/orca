@@ -48,7 +48,7 @@ export const apiFake = {
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
   // Rename flow: title AI-suggest returns this; rename() calls are captured for assertions.
   suggestTitleReply: "Suggested Name",
-  suggestTitleCalls: [] as { provider: AgentProvider; prompt?: string; pr?: number }[],
+  suggestTitleCalls: [] as { provider: AgentProvider; prompt?: string; pr?: number; branch?: string; worktreePath?: string }[],
   renames: [] as { branch: string; title: string; pr?: number }[],
   titleProviders: [] as AgentProvider[],
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
@@ -130,7 +130,7 @@ mock.module("@/api", () => ({
       }
       return out;
     },
-    suggestTitle: async (_repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number }) => {
+    suggestTitle: async (_repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number; branch?: string; worktreePath?: string }) => {
       apiFake.suggestTitleCalls.push(b); return { title: apiFake.suggestTitleReply };
     },
     rename: async (_repo: string, b: { branch: string; title: string; pr?: number }) => {
