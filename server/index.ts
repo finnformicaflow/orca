@@ -376,6 +376,26 @@ async function api(req: Request, url: URL): Promise<Response> {
     db.patchEnrichment(repo.name, body.branch, body.fields ?? {});
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/suggest-title") {
+    // AI-name a card for the rename flow. Prefer the original task prompt; for a PR with no Orca
+    // prompt (adopted / opened outside Orca — the "broken title" case), summarise its title + body.
+    const provider = body.provider ?? "claude";
+    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    let context = String(body.prompt ?? "").trim();
+    if (!context && body.pr) {
+      const d = await gh.prDetail(repo.repoPath, body.pr).catch(() => null);
+      if (d) context = `${d.title}\n\n${d.body}`.trim();
+    }
+    if (!context) return json({ error: "no context to name from" }, 400);
+    return json({ title: (await agent.summarize(provider, context)) ?? titleFromPrompt(context) });
+  }
+  if (req.method === "POST" && p === "/api/rename") {
+    const title = String(body.title ?? "").trim();
+    if (!body.branch || !title) return json({ error: "branch and title required" }, 400);
+    if (body.pr) await gh.editTitle(repo.repoPath, body.pr, title); // PR title is the card title; make it stick on GitHub
+    db.patchEnrichment(repo.name, body.branch, { title }); // record it locally too (shown for pre-PR locals)
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/enrichment/import") {
     // One-shot adoption of a browser's pre-DB localStorage, transcripts included. Idempotent: it
     // only fills workstreams the DB doesn't already own.

@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from "react";
-import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  cliCommand, disableAutoMerge, merge, promote, providerFor, resolveConflicts, sendSlack, setCardProvider, staleHours, toggleFollow, useAgentProviders, useRepos, type Row,
+  cliCommand, disableAutoMerge, merge, promote, providerFor, rename, resolveConflicts, sendSlack, setCardProvider, staleHours, suggestTitle, toggleFollow, useAgentProviders, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -30,6 +30,7 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
+  const [renaming, setRenaming] = useState(false);
   // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
   // upload + claude) runs for a few seconds. Show a spinner on the Follow up button meanwhile, so the
   // work isn't invisible.
@@ -122,6 +123,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
                 Merge{unreviewed ? " (unreviewed)" : ""}
               </DropdownMenuItem>
             )}
+            {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
+            <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
 
             {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
             {isPr && (
@@ -186,6 +189,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         </DropdownMenu>
       </div>
       {err && <p className="text-destructive text-xs break-words">{err}</p>}
+      <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />
       {composing && (
         <FollowUpComposer
           row={row}
@@ -196,6 +200,72 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         />
       )}
     </div>
+  );
+}
+
+// Rename a card. The name field is editable but "Suggest" fills it with an AI-generated title — the
+// primary path when an auto-title came out broken. Saving edits the GitHub PR title for a PR (its title
+// IS the card's) and always records it in enrichment. Native <dialog> for the backdrop/ESC/focus-trap.
+function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const [title, setTitle] = useState(row.title);
+  const [busy, setBusy] = useState<null | "suggest" | "save">(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) { setTitle(row.title); setErr(null); d.showModal(); } // seed with the current title each open
+    else if (!open && d.open) d.close();
+  }, [open, row.title]);
+
+  const suggest = async () => {
+    setBusy("suggest"); setErr(null);
+    try { setTitle(await suggestTitle(row)); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(null); }
+  };
+  const save = async () => {
+    const next = title.trim();
+    if (!next) return;
+    setBusy("save"); setErr(null);
+    try { await rename(row, next); onClose(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onCancel={onClose}
+      onClick={(e) => { if (e.target === ref.current) onClose(); }} // backdrop click → close
+      className="bg-card text-foreground m-auto w-[28rem] max-w-[90vw] rounded-lg border p-0 shadow-lg backdrop:bg-black/50"
+    >
+      <form className="flex flex-col gap-3 p-4" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <div className="text-sm font-medium">Rename {row.prNumber ? `PR #${row.prNumber}` : "card"}</div>
+        <input
+          autoFocus
+          aria-label="Card title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Card title"
+          className="bg-background focus-visible:ring-ring w-full rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
+        />
+        {row.prNumber ? <p className="text-muted-foreground text-xs">Updates the GitHub PR title.</p> : null}
+        {err && <p className="text-destructive text-xs break-words">{err}</p>}
+        <div className="flex items-center justify-between gap-2">
+          <Button type="button" size="sm" variant="soft" disabled={Boolean(busy)} onClick={suggest} title="Let the agent name it">
+            {busy === "suggest" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-3.5" />} Suggest
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" size="sm" disabled={Boolean(busy) || !title.trim()}>
+              {busy === "save" && <Loader2 className="size-4 animate-spin" />} Save
+            </Button>
+          </div>
+        </div>
+      </form>
+    </dialog>
   );
 }
 

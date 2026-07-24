@@ -46,6 +46,10 @@ export const apiFake = {
   handoffs: [] as { branch: string; content: string }[],
   slackSends: [] as { repo: string; text: string }[],
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
+  // Rename flow: title AI-suggest returns this; rename() calls are captured for assertions.
+  suggestTitleReply: "Suggested Name",
+  suggestTitleCalls: [] as { provider: AgentProvider; prompt?: string; pr?: number }[],
+  renames: [] as { branch: string; title: string; pr?: number }[],
   titleProviders: [] as AgentProvider[],
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
@@ -74,7 +78,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -125,6 +129,12 @@ mock.module("@/api", () => ({
         if (k.slice(0, sep) === repo) out[k.slice(sep + 2)] = v;
       }
       return out;
+    },
+    suggestTitle: async (_repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number }) => {
+      apiFake.suggestTitleCalls.push(b); return { title: apiFake.suggestTitleReply };
+    },
+    rename: async (_repo: string, b: { branch: string; title: string; pr?: number }) => {
+      apiFake.renames.push(b); return { ok: true as const };
     },
     patchEnrichment: async (repo: string, branch: string, fields: Record<string, unknown>) => {
       if (apiFake.holdEnrichmentWrites) {
