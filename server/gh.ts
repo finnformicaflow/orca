@@ -386,6 +386,10 @@ export const closePr = (cwd: string, pr: number) => gh(cwd, "pr", "close", Strin
 export const addLabel = (cwd: string, pr: number, label: string) =>
   gh(cwd, "pr", "edit", String(pr), "--add-label", label);
 
+/** Rename a PR — the GitHub title is the card's title for a PR row, so this is how a rename sticks. */
+export const editTitle = (cwd: string, pr: number, title: string) =>
+  gh(cwd, "pr", "edit", String(pr), "--title", title);
+
 /** Mark a draft PR ready for review. */
 export const markReady = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr));
 

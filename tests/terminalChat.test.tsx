@@ -44,7 +44,8 @@ describe("card terminal (conversation modal)", () => {
     ]);
     await mount(<WorkstreamCard row={row} />);
 
-    const dialog = container!.querySelector("dialog")!;
+    // The card has more than one <dialog> now (terminal + rename) — pick the terminal one by its header.
+    const dialog = [...container!.querySelectorAll("dialog")].find((d) => /Terminal/.test(d.textContent ?? ""))!;
     expect(dialog.open).toBe(false); // closed until opened — ChatPanel isn't mounted yet
     // The <dialog> must carry NO display utility, or an author `display` rule overrides the UA
     // `dialog:not([open]){display:none}` and the closed dialog renders inline in the swimlane,
