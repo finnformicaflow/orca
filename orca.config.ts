@@ -11,6 +11,7 @@ if (!DEV) throw new Error("ORCA_DEV_ROOT is not set — point it at the base dir
 // any branch without the app carrying the script. Absolute path resolved from this config's own
 // location, so it's laptop-portable. See scripts/preview-db.sh.
 const previewDb = join(import.meta.dir, "scripts/preview-db.sh");
+const previewDeps = join(import.meta.dir, "scripts/preview-deps.sh"); // reinstall a worktree's node_modules iff drifted from its lockfile (stale CoW clone)
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {
@@ -73,15 +74,16 @@ const config: OrcaConfig = {
         // but the worktree's own .env + scripts/migrate-local.sh, so previews work on ANY branch.
         // Note: the clone briefly disconnects branch_demo (WITH TEMPLATE needs it free of sessions);
         // your dev backend's pool reconnects.
-        { name: "backend", command: `export DB_NAME={db} && cd backend && { [ -f node_modules/@cspotcode/source-map-support/package.json ] || { find -E node_modules -type d -regex '.*/\\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null; npm install --no-audit --no-fund; }; } && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash '${previewDb}' create {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash '${previewDb}' create {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash '${previewDb}' create {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com "$org" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }`, onStop: `cd backend && bash '${previewDb}' drop {db}` },
+        { name: "backend", command: `export DB_NAME={db} && cd backend && bash '${previewDeps}' . && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash '${previewDb}' create {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash '${previewDb}' create {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash '${previewDb}' create {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com "$org" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }`, onStop: `cd backend && bash '${previewDb}' drop {db}` },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
         // would short-circuit the `&&` chain and stop the frontend from ever starting. VITE_BACKEND_URL
         // pins this frontend to its own backend port (not the default :3000).
-        // Same self-heal as the backend: the frontend's client-generation runs @hey-api/openapi-ts;
-        // if the source tree was missing it at clone time, repair. Cheap resolve check → repair only if broken.
-        { name: "frontend", command: "cd frontend && { [ -f node_modules/@hey-api/openapi-ts/package.json ] || npm install --no-audit --no-fund; } && { [ -f .env ] || cp .env.template .env; } && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh", open: true },
+        // Same self-heal as the backend (preview-deps.sh): reinstall only when the CoW-cloned tree has
+        // drifted from the lockfile — so a dep the branch added (incl. the client-gen @hey-api/openapi-ts)
+        // is present, without a full install on every start.
+        { name: "frontend", command: `cd frontend && bash '${previewDeps}' . && { [ -f .env ] || cp .env.template .env; } && VITE_BACKEND_URL=http://localhost:{svc:backend} FRONTEND_PORT={port} bash scripts/dev-local-test.sh`, open: true },
       ],
       // Gitignored config a fresh worktree checkout lacks — without it the backend boots with no
       // provider/AWS keys. Copied on create + checkout. (The per-preview DB scripts now live in the

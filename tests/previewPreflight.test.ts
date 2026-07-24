@@ -4,6 +4,7 @@
 // a self-heal guard for this; this test runs the ACTUAL guard (pulled from orca.config, so it can't
 // drift) against a scratch node_modules and asserts it restores the bit — and is a no-op when healthy.
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile, mkdir, symlink, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,10 +23,12 @@ function nestGuard(): string {
   return m[0];
 }
 
-/** The `find node_modules … -exec rm -rf {} +` staging-dir sweep out of the real command. */
+/** The `find node_modules … -exec rm -rf {} +` staging-dir sweep out of the real dep self-heal — it
+ *  now lives in the Orca-hosted preview-deps.sh (referenced by the backend command), not inline. */
 function stagingSweep(): string {
-  const m = backendCmd().match(/find -E node_modules[^&]*rm -rf \{\} \+/);
-  if (!m) throw new Error("staging-dir sweep not found in branch-demo backend command");
+  const src = readFileSync(join(import.meta.dir, "../scripts/preview-deps.sh"), "utf8");
+  const m = src.match(/find -E node_modules[^\n]*rm -rf \{\} \+/);
+  if (!m) throw new Error("staging-dir sweep not found in preview-deps.sh");
   return m[0];
 }
 
