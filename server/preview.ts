@@ -31,7 +31,7 @@ export function previewDbName(key: string): string {
 
 // Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
 // only know their port, and reap them via killPort. Owned svcs (started this run) have both.
-type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string };
+type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string; everUp: boolean };
 export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
@@ -72,7 +72,7 @@ export async function reattach(): Promise<void> {
       // adopting it would make this card serve someone else's code ("none of my changes"). If it's
       // foreign, leave it alone (its own key will re-adopt it) rather than adopt or kill it.
       const cwd = listenerCwd(s.port);
-      if (cwd && cwd.startsWith(key)) live.push({ ...s, exited: false });
+      if (cwd && cwd.startsWith(key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
     }
     if (live.length) previews.set(key, live);
   }
@@ -134,7 +134,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
     const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
     const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
-    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop };
+    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false };
     void proc.exited.then(() => { svc.exited = true; });
     return svc;
   });
@@ -142,18 +142,20 @@ export async function start(key: string, cwd: string, services: PreviewService[]
   persist();
 }
 
-// A dev server whose port still isn't answering after this long is wedged, not slow: `nest --watch`
-// (the backend dev script) does NOT exit on a boot failure — it stays alive waiting for a file change
-// — so "process alive" never clears on its own, and the card would spin on "Starting…" forever. Well
-// above a cold boot (worktree npm-install self-heal + nest/vite compile) so a healthy slow start is
-// never false-flagged. ponytail: a constant; make it configurable if a repo ever legitimately needs longer.
+// A dev server whose port NEVER answered within this long is wedged, not slow: `nest --watch` (the
+// backend dev script) does NOT exit on a boot failure — it stays alive waiting for a file change — so
+// "process alive" never clears on its own, and the card would spin on "Starting…" forever. Well above a
+// cold boot (worktree npm-install self-heal + nest/vite compile) so a healthy slow start is never
+// false-flagged. ponytail: a constant; make it configurable if a repo ever legitimately needs longer.
 export const BOOT_TIMEOUT_MS = 180_000;
 
-/** Whether a service counts as running/ready. A service that's alive but hasn't bound its port within
- *  BOOT_TIMEOUT_MS is treated as NOT running, so the client's existing crash path (reap + surface log +
- *  Retry) fires instead of an infinite spinner. Pure, so the timeout is testable without spawning. */
-export function svcHealth(alive: boolean, up: boolean, startedAt: number, now: number): { running: boolean; ready: boolean } {
-  const wedged = alive && !up && now - startedAt > BOOT_TIMEOUT_MS;
+/** Whether a service counts as running/ready. The boot timeout applies ONLY before a service has ever
+ *  bound its port (`everUp`): a fresh backend that never comes up is wedged and reaped. Once it HAS been
+ *  up, a failed probe is a transient blip (e.g. the event loop blocked on a long request) — it stays
+ *  running (only an actual process exit, via `alive`, marks it down), so a busy live server is never
+ *  reaped, which would drop its per-preview DB. Pure, so both cases are testable without spawning. */
+export function svcHealth(alive: boolean, up: boolean, everUp: boolean, startedAt: number, now: number): { running: boolean; ready: boolean } {
+  const wedged = alive && !up && !everUp && now - startedAt > BOOT_TIMEOUT_MS;
   const running = alive && !wedged;
   return { running, ready: running && up };
 }
@@ -180,9 +182,11 @@ export async function status(key: string): Promise<SvcStatus[]> {
     // Every service binds a port, so readiness = the port actually responds — for the backend too,
     // not just "the process is alive". The link/iframe therefore waits for the full stack (~10s for
     // the backend) instead of appearing the instant the frontend is up. Adopted svcs have no proc
-    // handle, so their liveness IS the port responding. A service alive but not up past BOOT_TIMEOUT_MS
-    // is wedged (crash-looping under --watch) → svcHealth reports it not-running so the client reaps it.
-    const { running, ready } = svcHealth(s.proc ? !s.exited : up, up, s.startedAt, Date.now());
+    // handle, so their liveness IS the port responding. A service that NEVER binds its port past
+    // BOOT_TIMEOUT_MS is wedged (crash-looping under --watch) → svcHealth reports it not-running so the
+    // client reaps it; a service that HAS been up is never reaped on a probe blip (see everUp).
+    if (up) s.everUp = true;
+    const { running, ready } = svcHealth(s.proc ? !s.exited : up, up, s.everUp, s.startedAt, Date.now());
     return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
