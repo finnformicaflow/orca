@@ -19,6 +19,9 @@ export type AgentTurn = {
   failed?: boolean;
   startedAt?: number;
   finishedAt?: number;
+  // Live activity trail for a still-running turn (in-memory, server-decorated onto /api/turns) — the
+  // agent's recent steps, so the chat modal shows what it's doing instead of a bare "working…".
+  progress?: string[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

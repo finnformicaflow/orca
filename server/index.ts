@@ -414,7 +414,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     // a bridge restart, a closed tab, and follow-ups that land faster than the client polls.
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
-    return json(db.turns(repo.name, branch));
+    const turns = db.turns(repo.name, branch);
+    // Decorate the in-flight turn with the agent's live activity (in-memory, keyed by run_id) so the
+    // chat modal shows what it's doing. Absent for finished turns and non-claude providers — the
+    // durable turn already carries their outcome.
+    for (const t of turns) {
+      if (!t.finishedAt) t.progress = agent.runProgress(t.id);
+    }
+    return json(turns);
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");

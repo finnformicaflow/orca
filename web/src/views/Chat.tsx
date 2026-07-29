@@ -54,7 +54,14 @@ function Turn({ turn }: { turn: AgentTurn }) {
         </div>
         {/* A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as
             an unfinished exchange rather than vanishing. */}
-        {pending ? <span className="text-neutral-500">▋ working…</span> : <Output turn={turn} />}
+        {pending ? (
+          <div className="text-neutral-500">
+            {/* Live activity while the run is in flight (claude) — its recent steps, so the modal
+                shows what's happening instead of just "working…". Absent turns just show the cursor. */}
+            {turn.progress?.map((line, i) => <div key={i} className="break-words">{line}</div>)}
+            <span>▋ working…</span>
+          </div>
+        ) : <Output turn={turn} />}
       </div>
     </div>
   );
