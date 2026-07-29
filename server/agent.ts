@@ -144,6 +144,104 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
   return raw;
 }
 
+// Live, human-readable activity for a running claude turn — the latest few steps, surfaced in the
+// chat modal so an in-flight run shows what it's doing instead of a bare "working…". Keyed by runId
+// (not worktree) so a fast follow-up doesn't inherit its predecessor's trail. In-memory + bounded:
+// it's ephemeral progress, not history — the durable turn (DB) carries the outcome once it finishes.
+const progressByRun = new Map<string, string[]>();
+const MAX_PROGRESS = 12;
+
+/** The live activity trail for a run, or undefined if none is captured (not claude / already done). */
+export function runProgress(runId: string): string[] | undefined {
+  const trail = progressByRun.get(runId);
+  return trail?.length ? trail : undefined;
+}
+
+function toolActivity(name: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const file = typeof i.file_path === "string" ? i.file_path.split("/").pop() : undefined;
+  const oneLine = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n);
+  switch (name) {
+    case "Read": return file ? `Reading ${file}` : "Reading a file";
+    case "Edit": case "MultiEdit": case "Write": case "NotebookEdit": return file ? `Editing ${file}` : "Editing a file";
+    case "Bash": return typeof i.command === "string" ? `Running: ${oneLine(i.command, 120)}` : "Running a command";
+    case "Grep": return typeof i.pattern === "string" ? `Searching for ${oneLine(i.pattern, 60)}` : "Searching";
+    case "Glob": return "Finding files";
+    case "Task": return "Delegating to a subagent";
+    case "WebFetch": case "WebSearch": return "Searching the web";
+    default: return `Using ${name}`;
+  }
+}
+
+/** The activity line(s) one claude stream-json event contributes — its assistant text and/or the
+ *  tools it invokes — for the live trail. Non-assistant events (tool results, init, result) add
+ *  nothing. Pure, so a test pins the event→line mapping without a running CLI. */
+export function claudeActivityLines(event: unknown): string[] {
+  const e = event as { type?: string; message?: { content?: unknown } };
+  if (e?.type !== "assistant" || !Array.isArray(e.message?.content)) return [];
+  const lines: string[] = [];
+  for (const block of e.message.content as Array<Record<string, unknown>>) {
+    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      lines.push(block.text.replace(/\s+/g, " ").trim().slice(0, 200));
+    } else if (block?.type === "tool_use" && typeof block.name === "string") {
+      lines.push(toolActivity(block.name, block.input));
+    }
+  }
+  return lines;
+}
+
+/** Read claude's `--output-format stream-json` JSONL without waiting for exit, appending each step to
+ *  the run's bounded activity trail so `/api/turns` can show it live. Returns the full raw stream for
+ *  parseClaudeStreamOutput to extract the final outcome at exit. */
+async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<string> {
+  const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  const trail: string[] = [];
+  progressByRun.set(runId, trail);
+  let raw = "";
+  let pending = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    raw += value;
+    pending += value;
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let event: unknown;
+      try { event = JSON.parse(line); } catch { continue; }
+      for (const l of claudeActivityLines(event)) {
+        trail.push(l);
+        if (trail.length > MAX_PROGRESS) trail.shift();
+      }
+    }
+  }
+  return raw;
+}
+
+/** Extract claude's final outcome from the stream. The last `type:"result"` event is the same object
+ *  the old `--output-format json` emitted (result text, is_error, usage/cost/modelUsage), so
+ *  parseRunMeta is unchanged; a missing result event (crash) falls back to a bare parse. Pure. */
+export function parseClaudeStreamOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta?: RunMeta } {
+  let resultEvent: Record<string, unknown> | undefined;
+  let sessionId: string | undefined;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as Record<string, unknown>;
+      if (typeof e.session_id === "string") sessionId = e.session_id;
+      if (e.type === "result") resultEvent = e;
+    } catch { /* tolerate non-JSON diagnostic lines */ }
+  }
+  if (!resultEvent) {
+    try {
+      const j = JSON.parse(raw.trim());
+      return { sessionId, result: j.result, isError: Boolean(j.is_error), meta: parseRunMeta(j) };
+    } catch { return { sessionId, isError: false }; }
+  }
+  return { sessionId, result: resultEvent.result as string | undefined, isError: Boolean(resultEvent.is_error), meta: parseRunMeta(resultEvent) };
+}
+
 /** Parse Codex's `exec --json` JSONL stream into the session id, final response, and card metadata. */
 export function parseCodexOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta: RunMeta } {
   let sessionId: string | undefined;
@@ -212,7 +310,11 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   if (provider === "cursor") {
     return ["cursor-agent", "-p", ...(resume ? ["--resume", resume] : []), "--output-format", "json", "--force", "--trust", "--", prompt];
   }
-  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "json", "--", prompt];
+  // stream-json (not json) so the run's steps arrive AS THEY HAPPEN — read incrementally in
+  // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
+  // stream-json under -p. The final `result` event is the same object the old `json` form emitted,
+  // so parseClaudeStreamOutput extracts the identical outcome/meta at exit.
+  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
@@ -240,7 +342,9 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   }));
   void (async () => {
     const [out, err] = await Promise.all([
-      provider === "codex" ? readCodexOutput(key, proc) : new Response(proc.stdout).text(),
+      provider === "codex" ? readCodexOutput(key, proc)
+        : provider === "claude" ? readClaudeStream(runId, proc)
+        : new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
     ]);
     const code = await proc.exited;
@@ -263,13 +367,13 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       meta = parsed.meta;
       resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
     } else {
-      try {
-        const j = JSON.parse(out.trim());
-        result = j.result;
-        isError = Boolean(j.is_error);
-        meta = parseRunMeta(j);
-      } catch { /* non-JSON output (e.g. crash) */ }
+      const parsed = parseClaudeStreamOutput(out);
+      result = parsed.result;
+      isError = parsed.isError;
+      meta = parsed.meta;
+      resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
     }
+    progressByRun.delete(runId); // run finished — the durable turn carries the outcome now
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;

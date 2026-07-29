@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, isHeadlessAgentProcess, oneShotCommand, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
+import { agentCommand, claudeActivityLines, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
 import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -37,7 +37,7 @@ describe("provider adapters", () => {
   test("builds native fresh/resume commands for Claude, Codex, and Cursor", () => {
     // The prompt is the trailing positional after `--` in every form (see the leading-dash case below).
     expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
-      "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "json", "--", "go",
+      "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
     ]);
     expect(agentCommand("codex", "/wt/x", "go")).toEqual([
       "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "--", "go",
@@ -117,6 +117,30 @@ describe("provider adapters", () => {
       meta: { model: "Cursor", numTurns: 1, durationMs: 1943, inputTokens: 12, outputTokens: 3, cacheReadTokens: 5, cacheCreationTokens: 7 },
     });
     expect(parseCursorOutput("not json").isError).toBe(false); // non-JSON crash → exit code decides
+  });
+
+  test("parses Claude's stream-json final result event (same shape the old json form emitted)", () => {
+    const parsed = parseClaudeStreamOutput([
+      JSON.stringify({ type: "system", subtype: "init", session_id: "c-1" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "On it" }] } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Finished the work", session_id: "c-1", total_cost_usd: 0.02, num_turns: 3 }),
+    ].join("\n"));
+    expect(parsed.result).toBe("Finished the work");
+    expect(parsed.isError).toBe(false);
+    expect(parsed.sessionId).toBe("c-1");
+    expect(parsed.meta).toMatchObject({ costUsd: 0.02, numTurns: 3 });
+    // A crash with no result event still yields a usable (non-throwing) outcome.
+    expect(parseClaudeStreamOutput("boom, not json").isError).toBe(false);
+  });
+
+  test("maps claude stream events to a live activity trail", () => {
+    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "text", text: "resolve the\n conflicts" }] } })).toEqual(["resolve the conflicts"]);
+    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/wt/x/src/foo.ts" } }] } })).toEqual(["Reading foo.ts"]);
+    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/foo.ts" } }] } })).toEqual(["Editing foo.ts"]);
+    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "git add -A" } }] } })).toEqual(["Running: git add -A"]);
+    // Tool results and non-assistant events add nothing to the trail.
+    expect(claudeActivityLines({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } })).toEqual([]);
+    expect(claudeActivityLines({ type: "result", result: "done" })).toEqual([]);
   });
 
   test("portable handoff includes prior instructions/outcomes and the new request", () => {
