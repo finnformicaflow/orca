@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
@@ -18,6 +18,17 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
+  // The header is pinned; publish its live height as --stick so anything else that sticks (the
+  // per-file diff headers) parks just below it instead of sliding underneath.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeaderH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [Boolean(row)]);
 
   useEffect(() => {
     if (!wt) { setSummary(null); return; }
@@ -40,27 +51,28 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   return (
-    <div className="space-y-4">
-      <Back to={back} />
-      <div className="space-y-2">
-        <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
-        <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-          {row.title}
-          <AgentBadge row={row} hasWork={hasWork} />
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          <code>{branch}</code> → <code>{baseBranch(repo)}</code>
-          {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
-        </p>
-        <WorkstreamActions row={row} hasWork={hasWork} />
-      </div>
-
+    <div style={{ "--stick": `${headerH}px` } as React.CSSProperties}>
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
-        </TabsList>
+        {/* Back / title / actions / tabs stay reachable while a long diff scrolls under them.
+            Full-bleed opaque backdrop (negative margins) so nothing peeks past the page padding. */}
+        <div ref={headerRef} className="bg-background sticky top-0 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6">
+          <Back to={back} />
+          <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            {row.title}
+            <AgentBadge row={row} hasWork={hasWork} />
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            <code>{branch}</code> → <code>{baseBranch(repo)}</code>
+            {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
+          </p>
+          <WorkstreamActions row={row} hasWork={hasWork} />
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
+            <TabsTrigger value="preview">Preview</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {row.prompt && <Section title="Prompt"><p className="text-sm whitespace-pre-wrap">{row.prompt}</p></Section>}

@@ -182,9 +182,14 @@ export function DiffView({ text }: { text: string }) {
         const lines = f.hunks.flatMap((h) => h.lines);
         const adds = lines.filter((l) => l.type === "add").length;
         const dels = lines.filter((l) => l.type === "del").length;
+        // The file header sticks while its diff scrolls, so you always see which file you're
+        // reading. It pins to Radix's header wrapper (`>h3` — the trigger itself can't move inside
+        // it), just below the page's own sticky header (--stick, 0 if nothing is pinned). No
+        // `overflow-hidden` on the item: a clipping ancestor kills sticky — the content's
+        // overflow-x-auto box rounds the bottom corners instead.
         return (
-          <AccordionItem key={i} value={`f${i}`} className="overflow-hidden rounded-md border last:border-b">
-            <AccordionTrigger className="bg-muted/50 px-3 py-2 font-mono text-xs hover:no-underline">
+          <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)]">
+            <AccordionTrigger className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
               <span className="flex flex-1 items-center gap-2 overflow-hidden">
                 <span className="truncate">{f.path}</span>
                 <span className="ml-auto shrink-0">
@@ -193,7 +198,7 @@ export function DiffView({ text }: { text: string }) {
               </span>
             </AccordionTrigger>
             <AccordionContent className="p-0">
-              <div className="overflow-x-auto border-t font-mono text-xs">
+              <div className="overflow-x-auto rounded-b-md border-t font-mono text-xs">
                 {f.hunks.map((h, j) => (
                   <div key={j}>
                     <div className="bg-muted/30 px-3 py-0.5 text-cyan-700 dark:text-cyan-400">{h.header}</div>

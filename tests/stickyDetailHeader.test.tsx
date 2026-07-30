@@ -1,0 +1,74 @@
+// E2E for the sticky worktree-detail header: a long diff scrolls the page, so "Back to board", the
+// title and the tab bar must stay pinned instead of scrolling away — and each file's accordion
+// header must stay visible (just below that page header) while you read its hunks. We render the
+// real LocalDetail on the Files tab and assert the sticky wrappers + the --stick offset that keeps
+// the file header from sliding under the page header. See LocalDetail.tsx and DiffView (PrDetail.tsx).
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { apiFake } from "./apiFake";
+import * as store from "@/store";
+import { LocalDetail } from "@/views/LocalDetail";
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeAll(() => store.configReady); // cfg (repo "r") populated before the first render
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+const DIFF = `diff --git a/web/src/App.tsx b/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -1,2 +1,2 @@
+-const a = 1;
++const a = 2;
+`;
+
+let root: Root | undefined;
+let container: HTMLElement | undefined;
+async function mount() {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => {
+    root = createRoot(container!);
+    root.render(<LocalDetail repo="r" branch="sticky-1" sub="files" />);
+    await flush(); await flush(); await flush();
+  });
+}
+
+afterEach(() => {
+  act(() => root?.unmount());
+  container?.remove();
+  root = container = undefined;
+  apiFake.reset();
+});
+
+describe("sticky worktree-detail header", () => {
+  test("back/title/tabs are pinned, and each file's diff header sticks below them", async () => {
+    apiFake.worktrees.set("sticky-1", { branch: "sticky-1", worktreePath: "/wt/sticky-1" });
+    apiFake.diffText = DIFF;
+    await store.refresh();
+    await mount();
+
+    // Back button, title and the tab bar all live inside ONE sticky, opaque, full-bleed wrapper.
+    const back = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Back to board"));
+    expect(back).toBeDefined();
+    const sticky = back!.closest(".sticky");
+    expect(sticky).not.toBeNull();
+    expect(sticky!.className).toMatch(/\btop-0\b/);
+    expect(sticky!.className).toMatch(/\bbg-background\b/);
+    expect(sticky!.className).toMatch(/-mx-4/); // covers the page padding, so nothing peeks past it
+    expect(sticky!.textContent).toContain("sticky-1");
+    expect(sticky!.querySelector('[role="tablist"]')).not.toBeNull();
+    // The pinned header publishes its height so the diff headers can park below it.
+    expect(container!.querySelector<HTMLElement>("[style*='--stick']")).not.toBeNull();
+
+    // The file's accordion header sticks (on Radix's h3 wrapper — the trigger can't move inside it)
+    // at that offset, and no clipping ancestor kills it.
+    const trigger = container!.querySelector<HTMLElement>("[data-slot=accordion-trigger]");
+    expect(trigger?.textContent).toContain("web/src/App.tsx");
+    const item = trigger!.closest("[data-slot=accordion-item]")!;
+    expect(item.className).toContain("[&>h3]:sticky");
+    expect(item.className).toContain("var(--stick");
+    expect(item.className).not.toContain("overflow-hidden");
+  });
+});
