@@ -5,7 +5,7 @@ import { api } from "../api";
 import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
 import { AgentBadge } from "./Board";
-import { DiffView, Markdown } from "./PrDetail";
+import { DiffView, Markdown, STICKY_HEADER, useStickyHeader } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
+  const header = useStickyHeader(Boolean(row));
 
   useEffect(() => {
     if (!wt) { setSummary(null); return; }
@@ -40,27 +41,26 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   return (
-    <div className="space-y-4">
-      <Back to={back} />
-      <div className="space-y-2">
-        <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
-        <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-          {row.title}
-          <AgentBadge row={row} hasWork={hasWork} />
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          <code>{branch}</code> → <code>{baseBranch(repo)}</code>
-          {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
-        </p>
-        <WorkstreamActions row={row} hasWork={hasWork} />
-      </div>
-
+    <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
-        </TabsList>
+        <div ref={header.ref} className={STICKY_HEADER}>
+          <Back to={back} />
+          <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            {row.title}
+            <AgentBadge row={row} hasWork={hasWork} />
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            <code>{branch}</code> → <code>{baseBranch(repo)}</code>
+            {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
+          </p>
+          <WorkstreamActions row={row} hasWork={hasWork} />
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
+            <TabsTrigger value="preview">Preview</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {row.prompt && <Section title="Prompt"><p className="text-sm whitespace-pre-wrap">{row.prompt}</p></Section>}

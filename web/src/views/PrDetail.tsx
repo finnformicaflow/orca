@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
@@ -16,11 +16,33 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+/** Both detail pages pin their header — back / title / actions / tabs stay reachable while a long
+ *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
+ *  padding. Shared so the PR page and the local-session page can't drift apart. */
+export const STICKY_HEADER = "bg-background sticky top-0 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6";
+
+/** Ref for that header plus the wrapper style publishing its LIVE height as --stick, so the diff's
+ *  own sticky file headers park below it instead of sliding underneath. `ready` flips once the page
+ *  has data (both pages return a placeholder before that, with no header to measure). */
+export function useStickyHeader(ready: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
+  return { ref, style: { "--stick": `${height}px` } as React.CSSProperties };
+}
+
 export function PrDetail({ repo, number, sub }: { repo: string; number: number; sub: PrTab }) {
   const [pr, setPr] = useState<PrDetailData | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
+  const header = useStickyHeader(Boolean(pr));
 
   useEffect(() => {
     setPr(null);
@@ -47,46 +69,45 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   };
 
   return (
-    <div className="space-y-4">
-      <Back to={back} />
-      <div className="space-y-2">
-        <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-          <span className="text-muted-foreground">#{pr.number}</span>
-          {pr.title}
-          <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
-            View on GitHub <ExternalLink className="size-3.5" />
-          </a>
-          {pr.previewUrl && (
-            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
-              PR preview <ExternalLink className="size-3.5" />
-            </a>
-          )}
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files
-        </p>
-        <div className="flex flex-wrap gap-1">
-          <Badge variant="outline">{pr.state}</Badge>
-          {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
-          {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
-          {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
-          {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-          {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-          {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
-          {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
-        </div>
-        {liveRow ? <WorkstreamActions row={liveRow} />
-          : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
-          : null}
-      </div>
-
+    <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
-          <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
-        </TabsList>
+        <div ref={header.ref} className={STICKY_HEADER}>
+          <Back to={back} />
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            <span className="text-muted-foreground">#{pr.number}</span>
+            {pr.title}
+            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
+              View on GitHub <ExternalLink className="size-3.5" />
+            </a>
+            {pr.previewUrl && (
+              <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
+                PR preview <ExternalLink className="size-3.5" />
+              </a>
+            )}
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files
+          </p>
+          <div className="flex flex-wrap gap-1">
+            <Badge variant="outline">{pr.state}</Badge>
+            {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
+            {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
+            {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
+            {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
+            {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
+            {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+            {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+          </div>
+          {liveRow ? <WorkstreamActions row={liveRow} />
+            : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
+            : null}
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
+            <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
+            <TabsTrigger value="preview">Preview</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
@@ -173,6 +194,16 @@ function parseDiff(text: string): FileDiff[] {
   return files;
 }
 
+/** Collapsing a file you've scrolled deep into deletes all that height from *above* the viewport, so
+ *  the page lurches upward and lands past the files below. Pin the clicked header to the screen
+ *  position it was already at: measure it, let the toggle lay out, then take the difference back out
+ *  of the scroll. Also keeps expanding from jumping. */
+export function keepInPlace(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const before = el.getBoundingClientRect().top;
+  requestAnimationFrame(() => window.scrollBy(0, el.getBoundingClientRect().top - before));
+}
+
 export function DiffView({ text }: { text: string }) {
   const files = parseDiff(text);
   if (files.length === 0) return <p className="text-muted-foreground text-sm">No diff.</p>;
@@ -182,9 +213,15 @@ export function DiffView({ text }: { text: string }) {
         const lines = f.hunks.flatMap((h) => h.lines);
         const adds = lines.filter((l) => l.type === "add").length;
         const dels = lines.filter((l) => l.type === "del").length;
+        // The file header sticks while its diff scrolls, so you always see which file you're
+        // reading. It pins to Radix's header wrapper (`>h3` — the trigger itself can't move inside
+        // it), just below the page's own sticky header (--stick, 0 if nothing is pinned). No
+        // `overflow-hidden` on the item: a clipping ancestor kills sticky — the content's
+        // overflow-x-auto box rounds the bottom corners instead. The header is also a scroll-state
+        // container, so styles.css can square its radius off while it's stuck (no peek-through).
         return (
-          <AccordionItem key={i} value={`f${i}`} className="overflow-hidden rounded-md border last:border-b">
-            <AccordionTrigger className="bg-muted/50 px-3 py-2 font-mono text-xs hover:no-underline">
+          <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)] [&>h3]:[container-type:scroll-state]">
+            <AccordionTrigger onClick={keepInPlace} className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
               <span className="flex flex-1 items-center gap-2 overflow-hidden">
                 <span className="truncate">{f.path}</span>
                 <span className="ml-auto shrink-0">
@@ -193,7 +230,7 @@ export function DiffView({ text }: { text: string }) {
               </span>
             </AccordionTrigger>
             <AccordionContent className="p-0">
-              <div className="overflow-x-auto border-t font-mono text-xs">
+              <div className="overflow-x-auto rounded-b-md border-t font-mono text-xs">
                 {f.hunks.map((h, j) => (
                   <div key={j}>
                     <div className="bg-muted/30 px-3 py-0.5 text-cyan-700 dark:text-cyan-400">{h.header}</div>

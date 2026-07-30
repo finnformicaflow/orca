@@ -16,6 +16,10 @@ export const apiFake = {
   calls: [] as string[],
   // Diffstat served by api.summary (the card polls it) — tests set this before mounting a card.
   summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
+  // Unified diff served by api.localDiff / api.prDiff (the Files-changed tabs).
+  diffText: "",
+  // PR detail served by api.prDetail (the PR page) — overrides the minimal default below.
+  prDetailData: null as null | Record<string, unknown>,
   // Open PRs served by api.prs (the board's source of truth) — tests set this before mounting.
   prsData: [] as unknown[],
   // When set, api.prs rejects — lets a GC test simulate a transient poll failure (must NOT prune).
@@ -78,7 +82,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -119,6 +123,13 @@ mock.module("@/api", () => ({
     previewStatus: async () => apiFake.previewSvcs,
     previews: async () => { if (apiFake.previewsError) throw new Error(apiFake.previewsError); return apiFake.previewsData; },
     summary: async () => apiFake.summaryData,
+    localDiff: async () => ({ diff: apiFake.diffText }),
+    prDetail: async (_repo: string, n: number) => ({
+      number: n, title: `PR ${n}`, url: `https://example.test/${n}`, head: "sticky-1", base: "main", author: "me",
+      additions: 1, deletions: 0, changedFiles: 1, state: "OPEN", checks: [], reviews: [], comments: [],
+      ...apiFake.prDetailData,
+    }),
+    prDiff: async () => ({ diff: apiFake.diffText }),
     adopt: async (_repo: string, branch: string) => {
       const worktreePath = `/wt/${branch}`; apiFake.worktrees.set(branch, { branch, worktreePath }); return { branch, worktreePath };
     },
