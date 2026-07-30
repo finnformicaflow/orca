@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
@@ -16,11 +16,33 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+/** Both detail pages pin their header — back / title / actions / tabs stay reachable while a long
+ *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
+ *  padding. Shared so the PR page and the local-session page can't drift apart. */
+export const STICKY_HEADER = "bg-background sticky top-0 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6";
+
+/** Ref for that header plus the wrapper style publishing its LIVE height as --stick, so the diff's
+ *  own sticky file headers park below it instead of sliding underneath. `ready` flips once the page
+ *  has data (both pages return a placeholder before that, with no header to measure). */
+export function useStickyHeader(ready: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
+  return { ref, style: { "--stick": `${height}px` } as React.CSSProperties };
+}
+
 export function PrDetail({ repo, number, sub }: { repo: string; number: number; sub: PrTab }) {
   const [pr, setPr] = useState<PrDetailData | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
+  const header = useStickyHeader(Boolean(pr));
 
   useEffect(() => {
     setPr(null);
@@ -47,46 +69,45 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   };
 
   return (
-    <div className="space-y-4">
-      <Back to={back} />
-      <div className="space-y-2">
-        <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-          <span className="text-muted-foreground">#{pr.number}</span>
-          {pr.title}
-          <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
-            View on GitHub <ExternalLink className="size-3.5" />
-          </a>
-          {pr.previewUrl && (
-            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
-              PR preview <ExternalLink className="size-3.5" />
-            </a>
-          )}
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files
-        </p>
-        <div className="flex flex-wrap gap-1">
-          <Badge variant="outline">{pr.state}</Badge>
-          {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
-          {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
-          {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
-          {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-          {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-          {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
-          {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
-        </div>
-        {liveRow ? <WorkstreamActions row={liveRow} />
-          : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
-          : null}
-      </div>
-
+    <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
-          <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
-        </TabsList>
+        <div ref={header.ref} className={STICKY_HEADER}>
+          <Back to={back} />
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            <span className="text-muted-foreground">#{pr.number}</span>
+            {pr.title}
+            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
+              View on GitHub <ExternalLink className="size-3.5" />
+            </a>
+            {pr.previewUrl && (
+              <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
+                PR preview <ExternalLink className="size-3.5" />
+              </a>
+            )}
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files
+          </p>
+          <div className="flex flex-wrap gap-1">
+            <Badge variant="outline">{pr.state}</Badge>
+            {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
+            {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
+            {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
+            {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
+            {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
+            {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+            {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+          </div>
+          {liveRow ? <WorkstreamActions row={liveRow} />
+            : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
+            : null}
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
+            <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
+            <TabsTrigger value="preview">Preview</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
           {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}

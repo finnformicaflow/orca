@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
 import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
 import { AgentBadge } from "./Board";
-import { DiffView, Markdown } from "./PrDetail";
+import { DiffView, Markdown, STICKY_HEADER, useStickyHeader } from "./PrDetail";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
@@ -18,17 +18,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
-  // The header is pinned; publish its live height as --stick so anything else that sticks (the
-  // per-file diff headers) parks just below it instead of sliding underneath.
-  const headerRef = useRef<HTMLDivElement>(null);
-  const [headerH, setHeaderH] = useState(0);
-  useEffect(() => {
-    const el = headerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setHeaderH(el.offsetHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [Boolean(row)]);
+  const header = useStickyHeader(Boolean(row));
 
   useEffect(() => {
     if (!wt) { setSummary(null); return; }
@@ -51,11 +41,9 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   return (
-    <div style={{ "--stick": `${headerH}px` } as React.CSSProperties}>
+    <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
-        {/* Back / title / actions / tabs stay reachable while a long diff scrolls under them.
-            Full-bleed opaque backdrop (negative margins) so nothing peeks past the page padding. */}
-        <div ref={headerRef} className="bg-background sticky top-0 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6">
+        <div ref={header.ref} className={STICKY_HEADER}>
           <Back to={back} />
           <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
           <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">

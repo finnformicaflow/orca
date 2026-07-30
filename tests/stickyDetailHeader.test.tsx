@@ -9,6 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { LocalDetail } from "@/views/LocalDetail";
+import { PrDetail } from "@/views/PrDetail";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,12 +26,12 @@ const DIFF = `diff --git a/web/src/App.tsx b/web/src/App.tsx
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount() {
+async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="sticky-1" sub="files" />) {
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container!);
-    root.render(<LocalDetail repo="r" branch="sticky-1" sub="files" />);
+    root.render(node);
     await flush(); await flush(); await flush();
   });
 }
@@ -98,5 +99,21 @@ describe("sticky worktree-detail header", () => {
     expect(trigger.getAttribute("data-state")).toBe("closed");
     await new Promise((r) => requestAnimationFrame(() => r(null))); // the handler corrects on the next frame
     expect(scrolls).toEqual([[0, -1864]]); // the lost height taken back out of the scroll position
+  });
+
+  // Same page, one lane later: once the branch is promoted the same review happens on the PR route,
+  // so its header has to be pinned too (it wasn't, and the pinning "disappeared" after promotion).
+  test("the PR detail page pins its header the same way", async () => {
+    apiFake.diffText = DIFF;
+    await mount(<PrDetail repo="r" number={66} sub="files" />);
+
+    const back = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Back to board"));
+    const sticky = back!.closest(".sticky");
+    expect(sticky).not.toBeNull();
+    expect(sticky!.className).toMatch(/\btop-0\b/);
+    expect(sticky!.className).toMatch(/\bbg-background\b/);
+    expect(sticky!.textContent).toContain("PR 66");
+    expect(sticky!.querySelector('[role="tablist"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLElement>("[style*='--stick']")).not.toBeNull();
   });
 });
