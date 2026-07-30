@@ -384,6 +384,8 @@ export function prDescriptionPrompt(input: { template?: string | null; diff: str
     "- Describe only code changes. Never include secrets — no credentials, tokens, env vars, or",
     "  internal hostnames.",
     "- Be specific and give a reviewer with no prior context enough information to understand intent.",
+    "- Be concise: at most 3 sentences or 4 bullets per section, and under 400 words overall. Fewer",
+    "  output tokens is also less time spent blocking Promote.",
     "- Base implementation claims on the final diff. Use only checks actually reported as run.",
     "- Never invent an issue, Slack thread, PRD, user request, test result, or link. If context was not",
     "  supplied, omit the claim or say that no link/context was supplied where the section requires it.",

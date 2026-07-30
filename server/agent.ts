@@ -419,7 +419,10 @@ export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: str
 /** Read-only argv for asking the implementation agent's native session to author its PR body. */
 export function prDescriptionCommand(provider: AgentProvider, cwd: string, prompt: string, resume: string): string[] {
   if (provider === "claude") {
-    return ["claude", "-p", prompt, "--resume", resume, "--tools", "", "--disable-slash-commands", "--output-format", "json"];
+    // Pin sonnet like the one-shot fallback: resuming otherwise inherits the implementation model
+    // (opus), and writing a PR body from an already-loaded session doesn't need it — it's ~half the
+    // wall clock of a Promote.
+    return ["claude", "-p", prompt, "--resume", resume, "--model", "sonnet", "--tools", "", "--disable-slash-commands", "--output-format", "json"];
   }
   if (provider === "codex") {
     return ["codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', resume, prompt];

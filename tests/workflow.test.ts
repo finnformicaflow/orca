@@ -234,6 +234,7 @@ test("W3c AI PR description: prompt is built from the diff, template + conventio
   expect(noTemplate).toContain("top of What & Why");
   expect(noTemplate).toContain("Never include secrets");
   expect(noTemplate).toContain("ONLY the description"); // no preamble → body is drop-in for gh
+  expect(noTemplate).toContain("under 400 words"); // bounded output → a shorter blocking Promote
 
   // A template is embedded verbatim so the AI fills the repo's own sections.
   const withTemplate = prDescriptionPrompt({ template: "## Risks\n\n## Rollout", diff, commits });
