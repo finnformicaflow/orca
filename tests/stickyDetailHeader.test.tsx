@@ -77,4 +77,26 @@ describe("sticky worktree-detail header", () => {
     const css = await Bun.file(new URL("../web/src/styles.css", import.meta.url)).text();
     expect(css.replace(/\s+/g, " ")).toContain("@container scroll-state(stuck: top) { [data-slot=\"accordion-trigger\"] { border-radius: 0; }");
   });
+
+  // Collapsing a file you'd scrolled deep into used to delete that height from above the viewport,
+  // lurching the page upward past the files below it. The header must stay put on screen instead.
+  test("collapsing a file keeps its header at the same screen position", async () => {
+    apiFake.worktrees.set("sticky-1", { branch: "sticky-1", worktreePath: "/wt/sticky-1" });
+    apiFake.diffText = DIFF;
+    await store.refresh();
+    await mount();
+
+    const trigger = container!.querySelector<HTMLElement>("[data-slot=accordion-trigger]")!;
+    // happy-dom has no layout engine, so script the two measurements the handler takes: stuck just
+    // below the page header, then (once the diff collapsed) far above the viewport.
+    const tops = [64, -1800];
+    trigger.getBoundingClientRect = () => ({ top: tops.shift() ?? 0 }) as DOMRect;
+    const scrolls: number[][] = [];
+    Object.assign(window, { scrollBy: (x: number, y: number) => scrolls.push([x, y]) });
+
+    await act(async () => { trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    expect(trigger.getAttribute("data-state")).toBe("closed");
+    await new Promise((r) => requestAnimationFrame(() => r(null))); // the handler corrects on the next frame
+    expect(scrolls).toEqual([[0, -1864]]); // the lost height taken back out of the scroll position
+  });
 });

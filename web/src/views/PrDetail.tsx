@@ -173,6 +173,16 @@ function parseDiff(text: string): FileDiff[] {
   return files;
 }
 
+/** Collapsing a file you've scrolled deep into deletes all that height from *above* the viewport, so
+ *  the page lurches upward and lands past the files below. Pin the clicked header to the screen
+ *  position it was already at: measure it, let the toggle lay out, then take the difference back out
+ *  of the scroll. Also keeps expanding from jumping. */
+export function keepInPlace(e: React.MouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const before = el.getBoundingClientRect().top;
+  requestAnimationFrame(() => window.scrollBy(0, el.getBoundingClientRect().top - before));
+}
+
 export function DiffView({ text }: { text: string }) {
   const files = parseDiff(text);
   if (files.length === 0) return <p className="text-muted-foreground text-sm">No diff.</p>;
@@ -190,7 +200,7 @@ export function DiffView({ text }: { text: string }) {
         // container, so styles.css can square its radius off while it's stuck (no peek-through).
         return (
           <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)] [&>h3]:[container-type:scroll-state]">
-            <AccordionTrigger className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
+            <AccordionTrigger onClick={keepInPlace} className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
               <span className="flex flex-1 items-center gap-2 overflow-hidden">
                 <span className="truncate">{f.path}</span>
                 <span className="ml-auto shrink-0">
