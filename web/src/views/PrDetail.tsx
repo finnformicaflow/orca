@@ -186,9 +186,10 @@ export function DiffView({ text }: { text: string }) {
         // reading. It pins to Radix's header wrapper (`>h3` — the trigger itself can't move inside
         // it), just below the page's own sticky header (--stick, 0 if nothing is pinned). No
         // `overflow-hidden` on the item: a clipping ancestor kills sticky — the content's
-        // overflow-x-auto box rounds the bottom corners instead.
+        // overflow-x-auto box rounds the bottom corners instead. The header is also a scroll-state
+        // container, so styles.css can square its radius off while it's stuck (no peek-through).
         return (
-          <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)]">
+          <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)] [&>h3]:[container-type:scroll-state]">
             <AccordionTrigger className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
               <span className="flex flex-1 items-center gap-2 overflow-hidden">
                 <span className="truncate">{f.path}</span>

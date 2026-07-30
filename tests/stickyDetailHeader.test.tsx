@@ -70,5 +70,11 @@ describe("sticky worktree-detail header", () => {
     expect(item.className).toContain("[&>h3]:sticky");
     expect(item.className).toContain("var(--stick");
     expect(item.className).not.toContain("overflow-hidden");
+
+    // While stuck, its rounded top corners would let the code underneath peek through — the header
+    // is a scroll-state container and the stylesheet squares the radius off for exactly that state.
+    expect(item.className).toContain("container-type:scroll-state");
+    const css = await Bun.file(new URL("../web/src/styles.css", import.meta.url)).text();
+    expect(css.replace(/\s+/g, " ")).toContain("@container scroll-state(stuck: top) { [data-slot=\"accordion-trigger\"] { border-radius: 0; }");
   });
 });

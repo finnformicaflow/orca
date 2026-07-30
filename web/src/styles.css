@@ -72,6 +72,17 @@
   --color-ring: var(--ring);
 }
 
+/* A pinned diff file header keeps its rounded top corners, and the code scrolling beneath peeks
+   through them. Square the radius off while it is actually stuck (native scroll-state query, opted
+   in per header with container-type: scroll-state). Browsers without it no-op back to the rounded
+   corners. ponytail: no JS — add an IntersectionObserver sentinel only if a non-Chromium browser
+   has to look right too. */
+@container scroll-state(stuck: top) {
+  [data-slot="accordion-trigger"] {
+    border-radius: 0;
+  }
+}
+
 @layer base {
   * {
     border-color: var(--border);
