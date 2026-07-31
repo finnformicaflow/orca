@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { baseWorktree, changeSummary, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
+import { baseWorktree, changeSummary, copyToWorktree, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
 import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
@@ -580,6 +580,33 @@ test("R3 review-queue: a failed cold fetch surfaces the error (not a silent empt
   await setPrListFixture([{ number: 40, title: "Recovered", headRefName: "feat-r", url: "u40", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex" }, updatedAt: "2026-07-01T10:00:00Z" }]);
   const after = await listReviewPrs(repo3); // no stale placeholder cached, so it retries and recovers
   expect(after.map((p) => p.number)).toEqual([40]);
+});
+
+test("P3 preview self-heal: a missing backend/.env is re-copied, an edited one is left alone", async () => {
+  // The bug: copyToWorktree ran only at worktree create/adopt, so a worktree made before the repo
+  // config listed `backend/.env` had none — and every preview died on "Error: .env not found" while
+  // node_modules self-healed. Preview start now re-copies, with keepExisting so a worktree-local
+  // edit (a different port, a test key) survives.
+  const src = await mkdtemp(join(tmpdir(), "orca-src-"));
+  const wt = await mkdtemp(join(tmpdir(), "orca-wt-"));
+  await mkdir(join(src, "backend"), { recursive: true });
+  await writeFile(join(src, "backend/.env"), "DB=main\n");
+
+  // missing in the worktree → copied in (this is the failing preview, healed)
+  await copyToWorktree(src, wt, ["backend/.env"], { keepExisting: true });
+  expect(await readFile(join(wt, "backend/.env"), "utf8")).toBe("DB=main\n");
+
+  // already present → the worktree's own edit wins, not the main repo's copy
+  await writeFile(join(wt, "backend/.env"), "DB=branch-local\n");
+  await copyToWorktree(src, wt, ["backend/.env"], { keepExisting: true });
+  expect(await readFile(join(wt, "backend/.env"), "utf8")).toBe("DB=branch-local\n");
+
+  // create/adopt still overwrite, so a fresh worktree always starts from the main repo's config
+  await copyToWorktree(src, wt, ["backend/.env"]);
+  expect(await readFile(join(wt, "backend/.env"), "utf8")).toBe("DB=main\n");
+
+  // a path the main repo doesn't have is skipped, never a thrown preview start
+  await copyToWorktree(src, wt, ["backend/.absent"], { keepExisting: true });
 });
 
 test("P1 preview isolation: node_modules is CoW-cloned so worktrees can't perturb each other's deps", async () => {

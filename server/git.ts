@@ -182,9 +182,17 @@ export async function adoptWorktree(
  * checkout only has tracked files, so local secrets/integrations would otherwise be missing and
  * the previewed app boots without its API keys. Best-effort per file (missing ones are skipped).
  */
-export async function copyToWorktree(repoPath: string, worktreePath: string, paths: string[] = []): Promise<void> {
+export async function copyToWorktree(
+  repoPath: string, worktreePath: string, paths: string[] = [],
+  // Preview start re-runs this to self-heal a worktree that never got the file (created before the
+  // config listed it, or it was deleted) — the same way previewDeps self-heals node_modules. There
+  // it must NOT clobber a worktree-local edit, so existing files are left alone.
+  options: { keepExisting?: boolean } = {},
+): Promise<void> {
   await Promise.all(paths.map((rel) =>
-    cp(join(repoPath, rel), join(worktreePath, rel), { recursive: true }).catch(() => {})));
+    cp(join(repoPath, rel), join(worktreePath, rel), {
+      recursive: true, force: !options.keepExisting, errorOnExist: false,
+    }).catch(() => {})));
 }
 
 /**

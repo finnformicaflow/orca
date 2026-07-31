@@ -203,6 +203,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/preview") {
+    // Gitignored config (backend/.env) is only copied at worktree create/adopt, so a worktree made
+    // before the config listed it boots without one and the preview dies on "Error: .env not found".
+    // Re-copy what's missing here, leaving any worktree-local edit intact.
+    await git.copyToWorktree(repo.repoPath, body.worktree, repo.copyToWorktree, { keepExisting: true });
     await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
     return json(await preview.status(body.key));
   }
