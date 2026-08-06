@@ -53,6 +53,23 @@ describe("provider adapters", () => {
     ]);
   });
 
+  test("a repo's agentModel pins the Claude runs only, leaving the one-shots and other providers alone", () => {
+    // Without it, headless runs silently inherit ~/.claude/settings.json's `model` — the same default
+    // your interactive sessions use, which is not necessarily what you want Orca's agents on.
+    const pinned = agentCommand("claude", "/wt/x", "go", undefined, "s-1", "claude-opus-5[1m]");
+    expect(pinned.slice(0, 6)).toEqual(["claude", "-p", "--permission-mode", "bypassPermissions", "--model", "claude-opus-5[1m]"]);
+    expect(pinned.at(-1)).toBe("go"); // still the trailing positional after `--`
+    expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, "opus")).toContain("--resume"); // resumes still pin
+    // Unset → no flag at all, so the CLI default applies (never a hardcoded model).
+    expect(agentCommand("claude", "/wt/x", "go", undefined, "s-1")).not.toContain("--model");
+    // Claude-only: the other providers take their model from their own CLI config.
+    expect(agentCommand("codex", "/wt/x", "go", undefined, undefined, "opus")).not.toContain("--model");
+    expect(agentCommand("cursor", "/wt/x", "go", undefined, undefined, "opus")).not.toContain("--model");
+    // The short blocking one-shots keep their own deliberate pins.
+    expect(oneShotCommand("claude", "/wt/x", "t", "title")).toContain("haiku");
+    expect(prDescriptionCommand("claude", "/wt/x", "b", "c-1")).toContain("sonnet");
+  });
+
   test("a prompt that starts with '-' (a Markdown bullet) stays the prompt, never a CLI option", () => {
     // The bug: a user follow-up beginning with `- ` was parsed by every CLI as an unknown option and
     // the run died before the agent saw it (claude: `error: unknown option '- gather…'`). The `--`

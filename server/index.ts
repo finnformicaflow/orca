@@ -352,6 +352,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
+      model: repo.agentModel,
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
@@ -365,6 +366,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
+      model: repo.agentModel,
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });

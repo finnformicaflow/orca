@@ -55,6 +55,7 @@ export type LaunchOptions = {
   timeoutMs?: number;
   repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
+  model?: string; // repo's `agentModel` — claude only; unset means the CLI's own default
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
 };
@@ -301,7 +302,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string): string[] {
   if (provider === "codex") {
     return resume
       ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, "--", prompt]
@@ -314,7 +315,8 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
   // stream-json under -p. The final `result` event is the same object the old `json` form emitted,
   // so parseClaudeStreamOutput extracts the identical outcome/meta at exit.
-  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
+  // `model` comes from the repo's `agentModel`; unset → the claude CLI's own default.
+  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
@@ -329,7 +331,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const proc = Bun.spawn(
-    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId),
+    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model),
     { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;

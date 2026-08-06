@@ -33,6 +33,14 @@ export type RepoConfig = {
    */
   copyToWorktree?: string[];
   /**
+   * Model for this repo's headless Claude agent runs, e.g. `claude-opus-5[1m]` or a shorthand like
+   * `opus`. Unset → the `claude` CLI's own default (`model` in ~/.claude/settings.json), which is
+   * what your interactive sessions use. Setting it here scopes the choice to Orca's agents.
+   * Claude only: Codex/Cursor pick their model from their own CLI config. Does NOT affect the title
+   * and PR-description one-shots — those pin haiku/sonnet deliberately (they're short, blocking calls).
+   */
+  agentModel?: string;
+  /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
    * `node_modules` is CoW-cloned (APFS clonefile) so each worktree gets an independent, block-shared

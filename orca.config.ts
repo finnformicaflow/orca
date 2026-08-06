@@ -21,6 +21,9 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/branch-demo`,
       worktreeRoot: `${DEV}/branch-demo/.worktrees`,
       baseBranch: "master",
+      // Orca's headless Claude agents run on Opus 5; interactive sessions keep whatever
+      // ~/.claude/settings.json says. Title/PR-description one-shots stay on haiku/sonnet.
+      agentModel: "claude-opus-5[1m]",
       slackChannel: "#engineering",
       previewLabel: "preview",
       // Labels the Promote-to-PR menu offers as toggles; `preview` starts checked.
