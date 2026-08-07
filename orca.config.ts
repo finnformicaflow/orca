@@ -77,7 +77,11 @@ const config: OrcaConfig = {
         // but the worktree's own .env + scripts/migrate-local.sh, so previews work on ANY branch.
         // Note: the clone briefly disconnects branch_demo (WITH TEMPLATE needs it free of sessions);
         // your dev backend's pool reconnects.
-        { name: "backend", command: `export DB_NAME={db} && cd backend && bash '${previewDeps}' . && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash '${previewDb}' create {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash '${previewDb}' create {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash '${previewDb}' create {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com "$org" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }`, onStop: `cd backend && bash '${previewDb}' drop {db}` },
+        // `previewDeps ../shared` FIRST: backend imports @shared/* as TS source, so shared's own
+        // runtime deps (jszip, fast-xml-parser, platejs) must resolve from shared/node_modules —
+        // backend/node_modules is never consulted from shared/src. Without this, a dep added to
+        // shared/package.json is a MODULE_NOT_FOUND at boot until someone reinstalls by hand.
+        { name: "backend", command: `export DB_NAME={db} && cd backend && bash '${previewDeps}' ../shared && bash '${previewDeps}' . && { [ -x node_modules/.bin/nest ] || chmod +x node_modules/@nestjs/cli/bin/nest.js; } && { bash '${previewDb}' create {db} || { echo '[orca] preview DB setup failed — retrying (2/3)'; sleep 3; bash '${previewDb}' create {db}; } || { echo '[orca] retrying (3/3)'; sleep 5; bash '${previewDb}' create {db}; }; } && { ( for i in $(seq 1 90); do curl -s -o /dev/null http://localhost:{port} 2>/dev/null && { for org in demo jeremiah flow electric_vehicle; do bash scripts/invite-user-local.sh test@example.com "$org" Test User; done; break; }; sleep 2; done ) >/dev/null 2>&1 & PORT={port} bash scripts/dev-local-watch.sh; }`, onStop: `cd backend && bash '${previewDb}' drop {db}` },
         // Seed frontend/.env from the tracked template (the canonical local step) so vite dev bakes
         // the same VITE_*_BASE_URL values a normal run has — without it every integration shows as
         // unavailable. Copy only when absent: macOS `cp -n` exits 1 when the file exists, which
