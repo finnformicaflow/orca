@@ -421,11 +421,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
     const turns = db.turns(repo.name, branch);
-    // Decorate the in-flight turn with the agent's live activity (in-memory, keyed by run_id) so the
-    // chat modal shows what it's doing. Absent for finished turns and non-claude providers — the
-    // durable turn already carries their outcome.
+    // Decorate every turn with its recorded steps (the agent's thought process), read from the run's
+    // transcript — so it's there for finished turns too, and survives a bridge restart. The tail is
+    // bounded per turn so opening a long conversation can't ship megabytes; `?steps=` overrides it,
+    // and the per-run SSE stream carries the rest.
+    const tail = Number(url.searchParams.get("steps")) || 40;
     for (const t of turns) {
-      if (!t.finishedAt) t.progress = agent.runProgress(t.id);
+      const steps = agent.runSteps(t.id, tail);
+      if (steps.length) t.steps = steps;
     }
     return json(turns);
   }

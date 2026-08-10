@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, claudeActivityLines, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
+import { agentCommand, claudeSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
 import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -153,14 +153,26 @@ describe("provider adapters", () => {
     expect(parseClaudeStreamOutput("boom, not json").isError).toBe(false);
   });
 
-  test("maps claude stream events to a live activity trail", () => {
-    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "text", text: "resolve the\n conflicts" }] } })).toEqual(["resolve the conflicts"]);
-    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/wt/x/src/foo.ts" } }] } })).toEqual(["Reading foo.ts"]);
-    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "src/foo.ts" } }] } })).toEqual(["Editing foo.ts"]);
-    expect(claudeActivityLines({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "git add -A" } }] } })).toEqual(["Running: git add -A"]);
-    // Tool results and non-assistant events add nothing to the trail.
-    expect(claudeActivityLines({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } })).toEqual([]);
-    expect(claudeActivityLines({ type: "result", result: "done" })).toEqual([]);
+  test("maps claude stream events to structured steps, including thinking and tool results", () => {
+    // Text keeps its newlines now (it's rendered as a paragraph, not squashed into one trail line).
+    const text = claudeSteps({ type: "assistant", message: { content: [{ type: "text", text: "resolve the\n conflicts" }] } });
+    expect(text).toMatchObject([{ kind: "text", text: "resolve the\n conflicts" }]);
+    // Thinking used to be dropped entirely — it's the whole "what was it reasoning about" question.
+    expect(claudeSteps({ type: "assistant", message: { content: [{ type: "thinking", thinking: "the lock is held" }] } }))
+      .toMatchObject([{ kind: "thinking", text: "the lock is held" }]);
+    // A tool call keeps its summary AND the verbatim input for the expandable detail.
+    expect(claudeSteps({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } }))
+      .toMatchObject([{ kind: "tool", name: "Bash", text: "Running: bun test", detail: "bun test" }]);
+    expect(claudeSteps({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/wt/x/src/foo.ts" } }] } }))
+      .toMatchObject([{ kind: "tool", text: "Reading foo.ts", detail: "/wt/x/src/foo.ts" }]);
+    // Tool RESULTS used to add nothing, so the chat showed "Running: bun test" and never the output.
+    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", content: "2 pass 0 fail" }] } }))
+      .toMatchObject([{ kind: "tool", name: "result", output: "2 pass 0 fail", isError: false }]);
+    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", content: [{ type: "text", text: "boom" }], is_error: true }] } }))
+      .toMatchObject([{ kind: "tool", output: "boom", isError: true }]);
+    // Bookkeeping events still contribute nothing.
+    expect(claudeSteps({ type: "result", result: "done" })).toEqual([]);
+    expect(claudeSteps({ type: "system", subtype: "init", session_id: "c-1" })).toEqual([]);
   });
 
   test("portable handoff includes prior instructions/outcomes and the new request", () => {

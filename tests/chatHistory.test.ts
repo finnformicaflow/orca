@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
+import * as transcript from "../server/transcript";
 
 let dir: string;
 let prevStateDir: string | undefined;
@@ -151,4 +152,57 @@ test("a real agent run records its own turn, with no client polling it", async (
     agent.stop(dir);
     await rm(shim, { recursive: true, force: true });
   }
+});
+
+// The agent's THOUGHT PROCESS, not just its conclusion. Before this the steps were a 12-entry
+// in-memory ring of one-line strings, discarded when the process exited — so the chat could never
+// answer "how did it get here", and a bridge restart lost even the live view. Now each step is
+// persisted as it streams, so it outlives the run that produced it.
+test("a run's steps are persisted as they stream and readable after it finishes", async () => {
+  const shim = await mkdtemp(join(tmpdir(), "orca-claude-"));
+  // A realistic stream-json run: thinks, calls a tool, sees the result, answers.
+  const events = [
+    { type: "system", subtype: "init", session_id: "c-1" },
+    { type: "assistant", message: { content: [{ type: "thinking", thinking: "the lease is stale" }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", content: "2 pass 0 fail" }] } },
+    { type: "assistant", message: { content: [{ type: "text", text: "Tests pass." }] } },
+    { type: "result", subtype: "success", is_error: false, result: "## Outcome\nShipped it.", session_id: "c-1" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  await writeFile(join(shim, "claude"), `#!/bin/sh\ncat <<'JSONL'\n${events}\nJSONL\n`);
+  await chmod(join(shim, "claude"), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${shim}:${realPath}`;
+  try {
+    const receipt = agent.runAgent(dir, "fix the tests", { repo: "r", branch: "feat", provider: "claude" });
+    while (agent.status(dir).status === "running") await new Promise((r) => setTimeout(r, 25));
+
+    // Readable AFTER the run — the in-memory trail could not do this.
+    const steps = agent.runSteps(receipt.runId);
+    expect(steps.map((s) => s.kind)).toEqual(["thinking", "tool", "tool", "text"]);
+    expect(steps[0]?.text).toBe("the lease is stale");
+    expect(steps[1]).toMatchObject({ name: "Bash", text: "Running: bun test", detail: "bun test" });
+    expect(steps[2]?.output).toBe("2 pass 0 fail"); // the tool RESULT, which used to be dropped
+    expect(steps[3]?.text).toBe("Tests pass.");
+
+    // And it's on disk under the state dir, not in the worktree — so it can never reach a diff/PR.
+    expect(transcript.transcriptPath(receipt.runId).startsWith(dir)).toBe(true);
+    expect(transcript.read(receipt.runId, 2).map((s) => s.kind)).toEqual(["tool", "text"]); // tail
+
+    // The durable turn still carries the final outcome; steps are the reasoning behind it.
+    expect(db.turns("r", "feat")[0]?.structured?.outcome).toBe("Shipped it.");
+  } finally {
+    process.env.PATH = realPath;
+    agent.stop(dir);
+    await rm(shim, { recursive: true, force: true });
+  }
+});
+
+test("one runaway tool result can't dominate a transcript, and a missing one is not an error", () => {
+  // Bounding is per-field so a `cat` of a lockfile costs a clipped step, never the whole file.
+  const big = transcript.boundStep({ at: 1, kind: "tool", name: "Bash", output: "x".repeat(50_000) });
+  expect(big.output!.length).toBeLessThan(5_000);
+  expect(big.output).toContain("truncated");
+  // Advisory, like the lease and ledger: no transcript degrades to "no steps", never a throw.
+  expect(transcript.read("no-such-run")).toEqual([]);
 });

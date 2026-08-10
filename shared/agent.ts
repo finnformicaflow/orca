@@ -9,6 +9,21 @@ export type AgentOutcome = {
   commits: string[];
 };
 
+/** One step of an agent's run — what it said, thought, or did, as the chat renders it. Persisted per
+ *  run by server/transcript.ts, so the reasoning behind a turn survives the process that produced it.
+ *  `text` is the human-readable line; `detail`/`output` carry the tool's input and result for the
+ *  expandable view (both bounded — see transcript.ts). */
+export type AgentStep = {
+  at: number;
+  kind: "text" | "thinking" | "tool";
+  /** Tool name, when kind is "tool". */
+  name?: string;
+  text?: string;
+  detail?: string;
+  output?: string;
+  isError?: boolean;
+};
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
@@ -19,9 +34,10 @@ export type AgentTurn = {
   failed?: boolean;
   startedAt?: number;
   finishedAt?: number;
-  // Live activity trail for a still-running turn (in-memory, server-decorated onto /api/turns) — the
-  // agent's recent steps, so the chat modal shows what it's doing instead of a bare "working…".
-  progress?: string[];
+  // The agent's recorded steps — its thought process — server-decorated onto /api/turns from the
+  // run's transcript. Present for finished turns too, so the chat can show HOW a turn got there and
+  // not just what it concluded.
+  steps?: AgentStep[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

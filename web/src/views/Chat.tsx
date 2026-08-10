@@ -7,11 +7,62 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useRef, useState } from "react";
-import type { AgentTurn } from "../../../shared/agent";
+import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api } from "../api";
 import { followUp, type Row } from "../store";
 import { agentLabel } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+
+/** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
+ *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
+ *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. */
+function Step({ step }: { step: AgentStep }) {
+  const [open, setOpen] = useState(false);
+  if (step.kind === "text") return <p className="whitespace-pre-wrap break-words text-neutral-300">{step.text}</p>;
+  if (step.kind === "thinking") return <p className="whitespace-pre-wrap break-words italic text-neutral-500">{step.text}</p>;
+  // A bare result (no summary line) belongs to the tool call above it, so it renders as that call's
+  // output rather than its own row.
+  const body = [step.detail, step.output].filter(Boolean).join("\n\n");
+  if (!step.text) {
+    if (!step.output) return null;
+    return (
+      <pre className={`ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l-2 pl-2 text-[11px] ${step.isError ? "border-red-800 text-red-400" : "border-neutral-800 text-neutral-500"}`}>{step.output}</pre>
+    );
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={!body}
+        className={`flex w-full gap-1.5 text-left ${step.isError ? "text-red-400" : "text-sky-400"} ${body ? "hover:text-sky-300" : "cursor-default"}`}
+      >
+        <span className="shrink-0 select-none">{body ? (open ? "⏷" : "⏵") : "·"}</span>
+        <span className="min-w-0 break-words">{step.text}</span>
+      </button>
+      {open && body && (
+        <pre className="ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l-2 border-neutral-800 pl-2 text-[11px] text-neutral-500">{body}</pre>
+      )}
+    </div>
+  );
+}
+
+/** The agent's recorded steps for a turn, collapsed behind a toggle once the turn is done — a
+ *  finished exchange leads with its outcome, and the reasoning is one click away. While the run is
+ *  in flight the steps are always shown: that IS the live view. */
+function Steps({ steps, live }: { steps: AgentStep[]; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (!steps.length) return null;
+  if (live) return <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} />)}</div>;
+  return (
+    <div className="mb-1.5">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="text-[10px] tracking-widest text-neutral-500 uppercase hover:text-neutral-300">
+        {open ? "⏷" : "⏵"} {steps.length} step{steps.length === 1 ? "" : "s"}
+      </button>
+      {open && <div className="mt-1 space-y-1 border-l border-neutral-800 pl-2">{steps.map((s, i) => <Step key={i} step={s} />)}</div>}
+    </div>
+  );
+}
 
 /** A completed turn's agent output. Structured outcomes render as labelled sections; anything else is
  *  the raw final message as monospace text. Terminal palette, so it reads on the dark window. */
@@ -55,13 +106,18 @@ function Turn({ turn }: { turn: AgentTurn }) {
         {/* A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as
             an unfinished exchange rather than vanishing. */}
         {pending ? (
-          <div className="text-neutral-500">
-            {/* Live activity while the run is in flight (claude) — its recent steps, so the modal
-                shows what's happening instead of just "working…". Absent turns just show the cursor. */}
-            {turn.progress?.map((line, i) => <div key={i} className="break-words">{line}</div>)}
+          <div className="space-y-1 text-neutral-500">
+            {/* The run's steps as they land — this is the live view. A turn with none yet (a
+                non-claude provider, or the first seconds) still shows the cursor. */}
+            <Steps steps={turn.steps ?? []} live />
             <span>▋ working…</span>
           </div>
-        ) : <Output turn={turn} />}
+        ) : (
+          <>
+            <Steps steps={turn.steps ?? []} live={false} />
+            <Output turn={turn} />
+          </>
+        )}
       </div>
     </div>
   );

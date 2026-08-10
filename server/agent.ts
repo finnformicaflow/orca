@@ -3,10 +3,11 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentTurn } from "../shared/agent";
+import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as transcript from "./transcript";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
@@ -145,17 +146,11 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
   return raw;
 }
 
-// Live, human-readable activity for a running claude turn — the latest few steps, surfaced in the
-// chat modal so an in-flight run shows what it's doing instead of a bare "working…". Keyed by runId
-// (not worktree) so a fast follow-up doesn't inherit its predecessor's trail. In-memory + bounded:
-// it's ephemeral progress, not history — the durable turn (DB) carries the outcome once it finishes.
-const progressByRun = new Map<string, string[]>();
-const MAX_PROGRESS = 12;
-
-/** The live activity trail for a run, or undefined if none is captured (not claude / already done). */
-export function runProgress(runId: string): string[] | undefined {
-  const trail = progressByRun.get(runId);
-  return trail?.length ? trail : undefined;
+/** A run's recorded steps — the agent's thought process — oldest first, `tail` limiting to the last
+ *  N. Read from the transcript file rather than memory, so it works for a FINISHED run and survives a
+ *  bridge restart (that's the whole point: the chat's history used to die with the process). */
+export function runSteps(runId: string, tail?: number): AgentStep[] {
+  return transcript.read(runId, tail);
 }
 
 function toolActivity(name: string, input: unknown): string {
@@ -174,30 +169,56 @@ function toolActivity(name: string, input: unknown): string {
   }
 }
 
-/** The activity line(s) one claude stream-json event contributes — its assistant text and/or the
- *  tools it invokes — for the live trail. Non-assistant events (tool results, init, result) add
- *  nothing. Pure, so a test pins the event→line mapping without a running CLI. */
-export function claudeActivityLines(event: unknown): string[] {
+/** The step(s) one claude stream-json event contributes. Assistant events carry the model's text,
+ *  its thinking, and the tools it invokes; `user` events carry the tool RESULTS that come back —
+ *  those used to be dropped entirely, which is why the chat could show "Running: bun test" but never
+ *  what the tests said. Everything else (init, result) adds no step. Pure, so a test pins the
+ *  event→step mapping without a running CLI. */
+export function claudeSteps(event: unknown): AgentStep[] {
   const e = event as { type?: string; message?: { content?: unknown } };
-  if (e?.type !== "assistant" || !Array.isArray(e.message?.content)) return [];
-  const lines: string[] = [];
+  if (!Array.isArray(e?.message?.content)) return [];
+  const at = Date.now();
+  const steps: AgentStep[] = [];
   for (const block of e.message.content as Array<Record<string, unknown>>) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-      lines.push(block.text.replace(/\s+/g, " ").trim().slice(0, 200));
-    } else if (block?.type === "tool_use" && typeof block.name === "string") {
-      lines.push(toolActivity(block.name, block.input));
+    if (e.type === "assistant" && block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      steps.push({ at, kind: "text", text: block.text.trim() });
+    } else if (e.type === "assistant" && block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+      steps.push({ at, kind: "thinking", text: block.thinking.trim() });
+    } else if (e.type === "assistant" && block?.type === "tool_use" && typeof block.name === "string") {
+      steps.push({ at, kind: "tool", name: block.name, text: toolActivity(block.name, block.input), detail: toolDetail(block.input) });
+    } else if (e.type === "user" && block?.type === "tool_result") {
+      const out = toolResultText(block.content);
+      if (out) steps.push({ at, kind: "tool", name: "result", output: out, isError: block.is_error === true });
     }
   }
-  return lines;
+  return steps;
 }
 
-/** Read claude's `--output-format stream-json` JSONL without waiting for exit, appending each step to
- *  the run's bounded activity trail so `/api/turns` can show it live. Returns the full raw stream for
- *  parseClaudeStreamOutput to extract the final outcome at exit. */
+/** The tool's own input, verbatim-ish, for the expandable detail line (the full command, the whole
+ *  pattern, the absolute path) — `text` only carries the short summary. */
+function toolDetail(input: unknown): string | undefined {
+  const i = (input ?? {}) as Record<string, unknown>;
+  for (const k of ["command", "pattern", "file_path", "url", "prompt", "query"]) {
+    if (typeof i[k] === "string" && (i[k] as string).trim()) return (i[k] as string).trim();
+  }
+  return undefined;
+}
+
+/** A tool_result's content is either a plain string or an array of typed blocks. */
+function toolResultText(content: unknown): string | undefined {
+  if (typeof content === "string") return content.trim() || undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .map((b) => (b && typeof b === "object" && (b as Record<string, unknown>).type === "text" ? String((b as Record<string, unknown>).text ?? "") : ""))
+    .filter(Boolean).join("\n").trim();
+  return text || undefined;
+}
+
+/** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
+ *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
+ *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
 async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  const trail: string[] = [];
-  progressByRun.set(runId, trail);
   let raw = "";
   let pending = "";
   while (true) {
@@ -211,12 +232,10 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       if (!line.trim()) continue;
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
-      for (const l of claudeActivityLines(event)) {
-        trail.push(l);
-        if (trail.length > MAX_PROGRESS) trail.shift();
-      }
+      transcript.append(runId, claudeSteps(event));
     }
   }
+  transcript.forget(runId);
   return raw;
 }
 
@@ -375,7 +394,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
       meta = parsed.meta;
       resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
     }
-    progressByRun.delete(runId); // run finished — the durable turn carries the outcome now
+    transcript.forget(runId); // run finished — the transcript file stays; it IS the history now
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;
