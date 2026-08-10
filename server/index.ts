@@ -11,6 +11,8 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as bus from "./bus";
+import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
@@ -63,6 +65,10 @@ if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   await waitForPortFree(API_PORT);
 }
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
+// Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
+// the authority on what's genuinely still running (they deliberately survive shutdown).
+const orphaned = db.reconcileRunning(lease.liveRunIds());
+if (orphaned) console.log(`orca: closed ${orphaned} turn(s) left running by a previous bridge`);
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -431,6 +437,41 @@ async function api(req: Request, url: URL): Promise<Response> {
       if (steps.length) t.steps = steps;
     }
     return json(turns);
+  }
+  if (req.method === "GET" && p === "/api/turns/stream") {
+    // The chat's live feed. Server-Sent Events, not a WebSocket: it's one-way, EventSource reconnects
+    // by itself, and it survives a reverse proxy — which matters the day this runs on a remote host.
+    // Steps are pushed as they're recorded (in-process bus, no self-polling); `turn` just tells the
+    // client to refetch /api/turns, which stays the source of truth for a turn's durable outcome.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    let unsubscribe = () => {};
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (event: string, data: unknown) => {
+          try { controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { unsubscribe(); }
+        };
+        send("ready", { branch });
+        // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
+        const keepAlive = setInterval(() => { try { controller.enqueue(": keep-alive\n\n"); } catch { unsubscribe(); } }, 25_000);
+        const off = bus.subscribe((e) => {
+          const owner = db.turnOwner(e.runId);
+          if (owner?.repo !== repo.name || owner.branch !== branch) return;
+          if (e.kind === "step") send("step", { runId: e.runId, steps: e.steps });
+          else send("turn", { runId: e.runId });
+        });
+        unsubscribe = () => {
+          clearInterval(keepAlive);
+          off();
+          try { controller.close(); } catch { /* already closed */ }
+        };
+        req.signal.addEventListener("abort", unsubscribe); // client navigated away / closed the modal
+      },
+      cancel() { unsubscribe(); },
+    });
+    return new Response(stream, {
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+    });
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");

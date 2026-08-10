@@ -19,6 +19,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "fs";
 import { statePath } from "./state";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
+import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error";
 
@@ -209,6 +210,7 @@ export function startTurn(input: {
     `INSERT INTO turn (workstream_id, run_id, provider, status, prompt, session_id, raw_ref, started_at)
      VALUES (?, ?, ?, 'running', ?, ?, ?, ?) ON CONFLICT(run_id) DO NOTHING`,
   ).run(id, input.runId, input.provider, input.prompt, input.sessionId ?? null, input.sessionId ?? null, input.startedAt);
+  bus.publish({ kind: "turn", runId: input.runId }); // an open chat stream refetches
 }
 
 /** Complete the turn started by `startTurn`. The session id is re-supplied because Codex and Cursor
@@ -226,6 +228,31 @@ export function finishTurn(runId: string, input: {
     input.structured ? JSON.stringify(input.structured) : null,
     input.sessionId ?? null, input.sessionId ?? null, input.finishedAt, runId,
   );
+  bus.publish({ kind: "turn", runId }); // the turn's outcome landed — streams refetch it
+}
+
+/** Close out turns left `running` by a process that is no longer alive — a bridge killed mid-run
+ *  writes the turn at launch and never reaches its exit handler, so the turn renders `▋ working…`
+ *  forever. Call at startup with the run ids that still hold a live lease; everything else is an
+ *  orphan. Returns how many were closed. (A long-lived/deployed bridge accretes these fastest, which
+ *  is exactly where a permanently "working" card is most confusing.) */
+export function reconcileRunning(liveRunIds: Set<string>): number {
+  const stuck = db().query("SELECT run_id AS runId FROM turn WHERE status = 'running'").all() as { runId: string }[];
+  const orphans = stuck.filter((t) => !liveRunIds.has(t.runId));
+  for (const { runId } of orphans) {
+    finishTurn(runId, { status: "error", response: "The bridge stopped before this run finished.", finishedAt: Date.now() });
+  }
+  return orphans.length;
+}
+
+/** The (repo, branch) a run's turn belongs to, or undefined if the runId is unknown. Lets the chat's
+ *  SSE stream filter the global bus down to the conversation the client actually asked for. */
+export function turnOwner(runId: string): { repo: string; branch: string } | undefined {
+  const row = db().query(
+    `SELECT w.repo AS repo, w.branch AS branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+     WHERE t.run_id = ?`,
+  ).get(runId) as { repo: string; branch: string | null } | null;
+  return row?.branch ? { repo: row.repo, branch: row.branch } : undefined;
 }
 
 /** Every turn for a branch's live workstream, oldest→newest. */

@@ -12,6 +12,7 @@
 import { appendFileSync, readFileSync, statSync, existsSync } from "fs";
 import type { AgentStep } from "../shared/agent";
 import { statePath } from "./state";
+import * as bus from "./bus";
 
 // Per-step caps keep one runaway tool result (a `cat` of a lockfile, a 10k-line test log) from
 // dominating the file; the file cap bounds a pathological run overall. Both are generous enough that
@@ -41,8 +42,10 @@ export function append(runId: string, steps: AgentStep[]): void {
     const path = transcriptPath(runId);
     let size = sizes.get(runId) ?? (existsSync(path) ? statSync(path).size : 0);
     if (size >= MAX_FILE) return;
-    const payload = `${steps.map((s) => JSON.stringify(boundStep(s))).join("\n")}\n`;
+    const bounded = steps.map(boundStep);
+    const payload = `${bounded.map((s) => JSON.stringify(s)).join("\n")}\n`;
     appendFileSync(path, payload);
+    bus.publish({ kind: "step", runId, steps: bounded }); // push to any open chat stream
     size += Buffer.byteLength(payload);
     if (size >= MAX_FILE) {
       appendFileSync(path, `${JSON.stringify({ at: Date.now(), kind: "text", text: "…(transcript truncated: run exceeded the recorded-step limit)…" } satisfies AgentStep)}\n`);

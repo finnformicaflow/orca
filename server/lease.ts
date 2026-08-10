@@ -67,6 +67,20 @@ export function release(key: string, runId?: string): void {
   try { unlinkSync(path); } catch { /* already gone */ }
 }
 
+/** Run ids that currently hold a live lease. Lets a restart tell a genuinely still-running turn from
+ *  one whose process died with the previous bridge (see db.reconcileRunning). */
+export function liveRunIds(): Set<string> {
+  const found = new Set<string>();
+  let files: string[];
+  try { files = readdirSync(join(stateDir(), "leases")); } catch { return found; }
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
+    if (isLive(lease)) found.add(lease.runId);
+  }
+  return found;
+}
+
 /** Branches that currently hold a live lease — restart recovery that doesn't depend on the branch
  *  name appearing in the process's argv (a Claude follow-up's argv carries only the session id). */
 export function liveBranches(branches: string[]): Set<string> {

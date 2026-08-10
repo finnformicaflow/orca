@@ -66,6 +66,11 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+  /** URL for the chat's SSE feed — a URL, not a fetch, because EventSource opens it itself (and
+   *  reconnects on its own when the bridge restarts). Relative, so Vite's dev proxy forwards it;
+   *  unlike a WS upgrade, the proxy handles SSE fine. */
+  turnsStreamUrl: (repo: string, branch: string): string =>
+    `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
   ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
     post("/api/terminal/ensure", { repo, ...b }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),

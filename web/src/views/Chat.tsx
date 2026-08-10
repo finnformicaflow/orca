@@ -126,17 +126,28 @@ function Turn({ turn }: { turn: AgentTurn }) {
 export function ChatPanel({ row }: { row: Row }) {
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const turnsLoaded = useRef(false); // first `ready` is this stream's own open, not a reconnect
   const running = row.agentStatus === "running";
 
-  // Refetch while a run is in flight so its turn flips from "working…" to its output in place.
+  // The conversation loads once, then the SSE stream keeps it current: steps are appended to the
+  // in-flight turn as the agent records them (that's the live, terminal-like feel), and a `turn`
+  // event triggers one refetch so the durable outcome replaces "working…". (History: this polled
+  // /api/turns every 4s, which both lagged the agent and refetched the whole conversation each time.)
   useEffect(() => {
     let live = true;
     const load = () => void api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
     load();
-    if (!running) return () => { live = false; };
-    const t = setInterval(load, 4000);
-    return () => { live = false; clearInterval(t); };
-  }, [row.repo, row.branch, running]);
+    const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
+    source.addEventListener("turn", load);
+    source.addEventListener("step", (e) => {
+      const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
+      setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+    });
+    // A dropped stream (bridge restart, sleep/wake) reconnects on its own; refetch on recovery so
+    // anything recorded while it was down is picked up rather than silently missing.
+    source.addEventListener("ready", () => { if (turnsLoaded.current) load(); else turnsLoaded.current = true; });
+    return () => { live = false; source.close(); };
+  }, [row.repo, row.branch]);
 
   // Follow the tail as turns arrive, the way a terminal scrolls.
   useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [turns?.length, running]);

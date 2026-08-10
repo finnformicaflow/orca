@@ -10,6 +10,8 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as transcript from "../server/transcript";
+import * as bus from "../server/bus";
+import type { BusEvent } from "../server/bus";
 
 let dir: string;
 let prevStateDir: string | undefined;
@@ -205,4 +207,66 @@ test("one runaway tool result can't dominate a transcript, and a missing one is 
   expect(big.output).toContain("truncated");
   // Advisory, like the lease and ledger: no transcript degrades to "no steps", never a throw.
   expect(transcript.read("no-such-run")).toEqual([]);
+});
+
+// The live feed. Steps are PUSHED as they're recorded (in-process bus → SSE), replacing a 4s poll
+// that both lagged the agent and refetched the whole conversation each tick.
+test("recorded steps are pushed to subscribers, scoped to the branch that owns the run", () => {
+  db.startTurn({ repo: "r", branch: "feat", runId: "run-a", provider: "claude", prompt: "a", startedAt: Date.now() });
+  db.startTurn({ repo: "r", branch: "other", runId: "run-b", provider: "claude", prompt: "b", startedAt: Date.now() });
+
+  const seen: BusEvent[] = [];
+  const off = bus.subscribe((e) => seen.push(e));
+  try {
+    transcript.append("run-a", [{ at: 1, kind: "text", text: "hello" }]);
+    // The owner lookup is what lets a stream filter the global bus down to its own conversation.
+    expect(db.turnOwner("run-a")).toEqual({ repo: "r", branch: "feat" });
+    expect(db.turnOwner("run-b")?.branch).toBe("other");
+    expect(db.turnOwner("nope")).toBeUndefined();
+
+    const steps = seen.filter((e) => e.kind === "step");
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ runId: "run-a" });
+
+    // Finishing publishes too, so an open chat replaces "working…" with the outcome immediately.
+    db.finishTurn("run-a", { status: "done", response: "done", finishedAt: Date.now() });
+    expect(seen.filter((e) => e.kind === "turn").map((e) => e.runId)).toContain("run-a");
+  } finally {
+    off();
+  }
+  expect(bus.subscriberCount()).toBe(0); // no leaked stream after unsubscribe
+});
+
+test("a throwing subscriber (a closed stream) never breaks the run that published", () => {
+  db.startTurn({ repo: "r", branch: "feat", runId: "run-c", provider: "claude", prompt: "c", startedAt: Date.now() });
+  const off = bus.subscribe(() => { throw new Error("socket closed"); });
+  try {
+    expect(() => transcript.append("run-c", [{ at: 1, kind: "text", text: "still recorded" }])).not.toThrow();
+    expect(transcript.read("run-c")[0]?.text).toBe("still recorded"); // and the write still landed
+  } finally {
+    off();
+  }
+});
+
+// A bridge killed mid-run writes the turn at launch and never reaches its exit handler, so the turn
+// renders "▋ working…" forever. A long-lived (deployed) bridge accretes these, which is exactly
+// where a permanently-working card misleads most.
+test("turns orphaned by a dead bridge are closed at startup; genuinely live ones are left alone", () => {
+  start("run-dead", "interrupted");
+  start("run-live", "still going");
+  start("run-done", "finished");
+  db.finishTurn("run-done", { status: "done", response: "ok", finishedAt: Date.now() });
+
+  // The lease is the authority on what's still running — it deliberately survives shutdown.
+  const closed = db.reconcileRunning(new Set(["run-live"]));
+  expect(closed).toBe(1);
+
+  const byPrompt = Object.fromEntries(db.turns("r", "feat").map((t) => [t.prompt, t]));
+  expect(byPrompt.interrupted?.finishedAt).toBeGreaterThan(0);
+  expect(byPrompt.interrupted?.failed).toBe(true);
+  expect(byPrompt.interrupted?.response).toContain("bridge stopped");
+  expect(byPrompt["still going"]?.finishedAt).toBeUndefined(); // untouched — its process is alive
+  expect(byPrompt.finished?.response).toBe("ok"); // already-closed turns aren't rewritten
+
+  expect(db.reconcileRunning(new Set(["run-live"]))).toBe(0); // idempotent
 });

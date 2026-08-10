@@ -173,6 +173,8 @@ mock.module("@/api", () => ({
       return { imported };
     },
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
+    // The chat opens this URL with EventSource for its live step feed (stubbed in happydom.ts).
+    turnsStreamUrl: (repo: string, branch: string) => `/api/turns/stream?repo=${repo}&branch=${branch}`,
     handoff: async (_repo: string, branch: string, content: string) => {
       apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
     },
