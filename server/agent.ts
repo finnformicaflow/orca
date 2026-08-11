@@ -469,6 +469,9 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     runs.set(key, ok
       ? { status: "done", ...common }
       : { status: "error", ...common, error });
+    // An instruction typed while this run was in flight goes now. Fire-and-forget and after the run
+    // is marked finished, so the queued launch sees a free worktree.
+    if (options.repo && options.branch) void dispatchQueued(options.repo, options.branch, options);
   })();
   return { status: "running", provider, runId, sessionId };
 }
@@ -551,6 +554,28 @@ export async function describePr(provider: AgentProvider, prompt: string, option
 // Runs you stopped deliberately. The exit handler reads this so an interrupted run is recorded as
 // `stopped` rather than `error` — the work it already did stands, and its session stays resumable.
 const stoppedRuns = new Set<string>();
+
+// Set by index.ts, which owns the config a queued launch needs (model, permission mode, timeout).
+// A module-level hook rather than an import, so agent.ts keeps knowing nothing about config or HTTP.
+let queuedLauncher: ((message: db.QueuedMessage) => Promise<void>) | undefined;
+export function onQueuedMessage(fn: (message: db.QueuedMessage) => Promise<void>): void {
+  queuedLauncher = fn;
+}
+
+/** Send the next instruction queued for a branch, if any. Claimed in one statement, so a restart
+ *  racing itself — or a second instance — cannot dispatch the same message twice. */
+async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<void> {
+  if (!queuedLauncher) return;
+  try {
+    const next = await db.claimQueuedMessage(repo, branch);
+    if (!next) return;
+    await queuedLauncher(next);
+  } catch (e) {
+    // Never let a queued send break the run that just finished; the message stays claimed rather
+    // than retrying forever against a worktree that may be gone.
+    console.error("orca: queued message dispatch failed", e);
+  }
+}
 
 /** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
  *  any, so a caller can report what it interrupted. */

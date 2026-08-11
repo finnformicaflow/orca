@@ -211,6 +211,43 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE UNIQUE INDEX turn_step_key ON turn_step (run_id, seq);
     `,
   },
+  {
+    id: 6,
+    // Which instance ran a turn. Without it, startup reconciliation is dangerous once two instances
+    // share a database: leases are per-instance state, so instance B sees instance A's live runs as
+    // orphans with no lease and closes them mid-flight. (Found by running a second instance locally —
+    // it printed "closed 1 turn(s) left running by a previous bridge" while the first was working.)
+    // Backfilled to this instance, which is correct for a single-machine history.
+    sql: `
+      ALTER TABLE turn ADD COLUMN instance TEXT;
+      CREATE INDEX turn_instance ON turn (user_id, instance) WHERE finished_at IS NULL;
+    `,
+  },
+  {
+    id: 7,
+    // Instructions typed while a run is in flight. The composer has always invited this ("The agent
+    // is working — queue the next instruction…") and then rejected it with a 409, so the message was
+    // simply lost. Queued here and dispatched when the run finishes.
+    //
+    // In the database rather than in memory because the point is that it survives: a bridge restart
+    // between typing and dispatch is exactly when losing the message would be most galling.
+    sql: `
+      CREATE TABLE queued_message (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        worktree_path TEXT NOT NULL,
+        instruction TEXT NOT NULL,
+        attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+        provider TEXT,
+        created_at BIGINT NOT NULL,
+        dispatched_at BIGINT
+      );
+      CREATE INDEX queued_message_pending ON queued_message (user_id, repo, branch)
+        WHERE dispatched_at IS NULL;
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -325,8 +362,8 @@ export async function startTurn(input: {
   const sql = await open();
   const id = await workstreamId(input.repo, input.branch);
   await sql`
-    INSERT INTO turn (workstream_id, user_id, run_id, provider, status, prompt, session_id, raw_ref, started_at)
-    VALUES (${id}, ${currentUser()}, ${input.runId}, ${input.provider}, 'running', ${input.prompt},
+    INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, prompt, session_id, raw_ref, started_at)
+    VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.prompt},
             ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
     ON CONFLICT (run_id) DO NOTHING`;
   bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
@@ -361,10 +398,18 @@ export async function finishTurn(runId: string, input: {
 /** Close out turns left `running` by a process that is no longer alive — a bridge killed mid-run
  *  writes the turn at launch and never reaches its exit handler, so the turn renders `▋ working…`
  *  forever. Call at startup with the run ids that still hold a live lease; everything else is an
- *  orphan. Returns how many were closed. */
+ *  orphan. Returns how many were closed.
+ *
+ *  Scoped to THIS instance's turns, because leases are per-instance state: another machine's live
+ *  runs hold no lease here, and closing them would kill a working board from a machine that has
+ *  nothing to do with it. Rows predating the instance column belong to whoever is reconciling — a
+ *  single-machine history, which is what they are. */
 export async function reconcileRunning(liveRunIds: Set<string>): Promise<number> {
   const sql = await open();
-  const stuck = await sql`SELECT run_id FROM turn WHERE user_id = ${currentUser()} AND status = 'running'`;
+  const stuck = await sql`
+    SELECT run_id FROM turn
+    WHERE user_id = ${currentUser()} AND status = 'running'
+      AND (instance IS NULL OR instance = ${instanceName()})`;
   const orphans = (stuck as { run_id: string }[]).filter((t) => !liveRunIds.has(t.run_id));
   for (const { run_id } of orphans) {
     await finishTurn(run_id, { status: "error", response: "The bridge stopped before this run finished.", finishedAt: Date.now() });
@@ -536,4 +581,66 @@ export async function steps(runId: string, opts: { tail?: number; afterSeq?: num
           ) t ORDER BY seq`
       : await sql`SELECT seq, step FROM turn_step WHERE run_id = ${runId} ORDER BY seq`;
   return (rows as { seq: number; step: Fields }[]).map((r) => ({ seq: Number(r.seq), step: r.step }));
+}
+
+
+// ---- queued messages ----
+
+export type QueuedMessage = {
+  id: number; repo: string; branch: string; worktreePath: string;
+  instruction: string; attachments: string[]; provider?: string; createdAt: number;
+};
+
+/** Queue an instruction typed while a run was in flight. */
+export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt">): Promise<QueuedMessage> {
+  const sql = await open();
+  const rows = await sql`
+    INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at)
+    VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
+            ${input.attachments}, ${input.provider ?? null}, ${Date.now()})
+    RETURNING id, created_at`;
+  return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
+}
+
+/** Undispatched messages for a branch, oldest first — shown in the chat so a queued instruction is
+ *  visible rather than silently pending. */
+export async function queuedMessages(repo: string, branch: string): Promise<QueuedMessage[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at
+    FROM queued_message
+    WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
+    ORDER BY id`;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
+    instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
+    provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+  }));
+}
+
+/** Claim the next queued message for a branch, marking it dispatched in the same statement so two
+ *  instances (or a restart racing itself) cannot send it twice. */
+export async function claimQueuedMessage(repo: string, branch: string): Promise<QueuedMessage | undefined> {
+  const sql = await open();
+  const rows = await sql`
+    UPDATE queued_message SET dispatched_at = ${Date.now()}
+    WHERE id = (
+      SELECT id FROM queued_message
+      WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
+      ORDER BY id LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r && {
+    id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
+    instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
+    provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+  };
+}
+
+/** Drop a queued message before it is sent (the user changed their mind). */
+export async function cancelQueuedMessage(id: number): Promise<void> {
+  const sql = await open();
+  await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL`;
 }

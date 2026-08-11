@@ -18,7 +18,7 @@ import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
-import { mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription } from "../web/src/workstream";
+import { followUpPrompt, mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -69,6 +69,22 @@ await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-k
 // the authority on what's genuinely still running (they deliberately survive shutdown).
 const orphaned = await db.reconcileRunning(lease.liveRunIds());
 if (orphaned) console.log(`orca: closed ${orphaned} turn(s) left running by a previous bridge`);
+// A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
+// here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
+// ignorant of configuration.
+agent.onQueuedMessage(async (message) => {
+  const cfg = await loadConfig();
+  const repo = repoOf(cfg, message.repo);
+  const provider = isAgentProvider(message.provider) ? message.provider : "claude";
+  if (!providerAllowed(repo, provider)) return; // opted out since it was queued
+  await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
+    provider, repo: repo.name, branch: message.branch, action: "followup",
+    model: repo.agentModel,
+    permissionMode: repo.agentPermissionMode ?? "ask",
+    timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+  });
+});
+
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -98,7 +114,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
-  "/api/usage", "/api/diagnostics", "/api/turns/steps",
+  "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel",
 ]);
 
 /** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
@@ -459,7 +475,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
+    if (agent.isRunning(body.key)) {
+      // A follow-up typed mid-run is QUEUED. The composer invites exactly that ("the agent is
+      // working — queue the next instruction") and this route used to answer 409, losing the
+      // message. Board actions arriving mid-run are a double-click and are still refused.
+      if (body.action === "followup" && body.branch && body.worktree) {
+        const queued = await db.queueMessage({
+          repo: repo.name, branch: body.branch, worktreePath: body.worktree,
+          instruction: body.instruction ?? body.prompt, attachments: body.attachments ?? [], provider,
+        });
+        return json({ status: "queued", queued });
+      }
+      return json({ error: "an agent is already running for this worktree" }, 409);
+    }
     const receipt = await agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
@@ -534,6 +562,15 @@ async function api(req: Request, url: URL): Promise<Response> {
       }
     }
     return json(turns);
+  }
+  if (req.method === "GET" && p === "/api/queued") {
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    return json(await db.queuedMessages(repo.name, branch));
+  }
+  if (req.method === "POST" && p === "/api/queued/cancel") {
+    await db.cancelQueuedMessage(Number(body.id));
+    return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/turns/stream") {
     // The chat's live feed, pushed as each step is recorded. Server-Sent Events, not a WebSocket:

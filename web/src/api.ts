@@ -22,6 +22,10 @@ export type LiveAgent = {
   mergeClean?: "clean" | "conflict";
 };
 
+export type QueuedMessage = {
+  id: number; repo: string; branch: string; instruction: string; attachments: string[]; createdAt: number;
+};
+
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -70,6 +74,10 @@ export const api = {
    *  proxies fine — including the hop the bridge makes for a repo owned by another instance). */
   turnsStreamUrl: (repo: string, branch: string): string =>
     `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
+  /** Instructions typed while a run was in flight, waiting to be sent. */
+  queued: (repo: string, branch: string): Promise<QueuedMessage[]> =>
+    fetch(`/api/queued${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+  cancelQueued: (repo: string, id: number): Promise<{ ok: true }> => post("/api/queued/cancel", { repo, id }),
   /** Catch-up after a dropped stream: steps recorded since `since` for one run. */
   turnSteps: (repo: string, branch: string, runId: string, since: number): Promise<{ steps: AgentStep[]; seq: number; finished: boolean }> =>
     fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
@@ -106,7 +114,9 @@ export const api = {
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
   runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>
     post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
-  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>
+  // Returns `{ status: "queued" }` instead of a receipt when a run is already in flight and this is a
+  // follow-up — the bridge holds it and sends it when that run finishes.
+  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; attachments?: string[]; instruction?: string } = {}): Promise<LaunchReceipt | { status: "queued"; queued: QueuedMessage }> =>
     post("/api/agent", { repo, key, prompt, ...options }),
   // Compatibility helper for existing callers/tests while agent actions migrate to `agent`.
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>

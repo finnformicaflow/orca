@@ -306,3 +306,66 @@ test("a run stopped from the chat is recorded as stopped, keeps its work, and st
     await rm(shim, { recursive: true, force: true });
   }
 });
+
+// Found by running a second instance locally: it printed "closed 1 turn(s) left running by a previous
+// bridge" while the FIRST instance was still working. Leases are per-instance state, so another
+// machine's live runs hold no lease here — reconciliation has to be scoped or it kills a working
+// board from a machine that has nothing to do with it.
+test("startup reconciliation never closes another instance's live runs", async () => {
+  const prev = process.env.ORCA_INSTANCE;
+  try {
+    process.env.ORCA_INSTANCE = "laptop";
+    await start("run-laptop", "running on the laptop");
+
+    // The cloud instance starts up. It holds no lease for the laptop's run, and must leave it alone.
+    process.env.ORCA_INSTANCE = "cloud";
+    await start("run-cloud", "running on the cloud");
+    expect(await db.reconcileRunning(new Set(["run-cloud"]))).toBe(0);
+
+    const byPrompt = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
+    expect(byPrompt["running on the laptop"]?.finishedAt).toBeUndefined(); // untouched
+    expect(byPrompt["running on the cloud"]?.finishedAt).toBeUndefined();
+
+    // It still closes its OWN orphan — the case reconciliation exists for.
+    await start("run-cloud-dead", "died with the cloud bridge");
+    expect(await db.reconcileRunning(new Set(["run-cloud"]))).toBe(1);
+    const after = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
+    expect(after["died with the cloud bridge"]?.failed).toBe(true);
+    expect(after["running on the laptop"]?.finishedAt).toBeUndefined(); // still untouched
+  } finally {
+    if (prev === undefined) delete process.env.ORCA_INSTANCE; else process.env.ORCA_INSTANCE = prev;
+  }
+});
+
+// The composer has always invited an instruction mid-run ("The agent is working — queue the next
+// instruction…") and then answered with a 409, so the message was simply lost. Queued instead, and
+// sent when the run finishes.
+test("an instruction typed mid-run is queued, claimed once, and cancellable", async () => {
+  const queued = await db.queueMessage({
+    repo: "r", branch: "feat", worktreePath: "/wt/feat",
+    instruction: "also update the docs", attachments: ["/tmp/a.png"], provider: "claude",
+  });
+  expect(queued.id).toBeGreaterThan(0);
+  await db.queueMessage({ repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "and the changelog", attachments: [] });
+
+  // Visible while pending, so a queued instruction isn't silently in limbo.
+  expect((await db.queuedMessages("r", "feat")).map((m) => m.instruction))
+    .toEqual(["also update the docs", "and the changelog"]);
+  expect((await db.queuedMessages("r", "other"))).toEqual([]); // scoped to its branch
+
+  // Claiming marks it dispatched in the same statement, so a restart racing itself — or a second
+  // instance — cannot send the same message twice.
+  const first = await db.claimQueuedMessage("r", "feat");
+  expect(first?.instruction).toBe("also update the docs");
+  expect(first?.attachments).toEqual(["/tmp/a.png"]); // attachments survive the wait
+  expect((await db.queuedMessages("r", "feat")).map((m) => m.instruction)).toEqual(["and the changelog"]);
+
+  const second = await db.claimQueuedMessage("r", "feat");
+  expect(second?.instruction).toBe("and the changelog");
+  expect(await db.claimQueuedMessage("r", "feat")).toBeUndefined(); // drained
+
+  // Changed your mind before it went.
+  const third = await db.queueMessage({ repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "never mind", attachments: [] });
+  await db.cancelQueuedMessage(third.id);
+  expect(await db.queuedMessages("r", "feat")).toEqual([]);
+});
