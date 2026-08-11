@@ -110,7 +110,9 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/orca`,
       worktreeRoot: `${DEV}/orca/.worktrees`,
       baseBranch: "main",
-      slackChannel: "#engineering",
+      // No slackChannel: Orca's own PRs aren't announced to the team channel. (This file only seeds
+      // an unconfigured database now — leaving a channel here would seed Slack back on for this repo
+      // if the DB were ever rebuilt, since the backfill enables Slack wherever a channel is set.)
       previewServices: [
         { name: "web", command: "cd web && bunx --bun vite --port {port}", open: true },
       ],
