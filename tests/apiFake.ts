@@ -44,7 +44,6 @@ export const apiFake = {
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
-  handoffs: [] as { branch: string; content: string }[],
   slackSends: [] as { repo: string; text: string }[],
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
   // Rename flow: title AI-suggest returns this; rename() calls are captured for assertions.
@@ -85,7 +84,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -193,9 +192,6 @@ mock.module("@/api", () => ({
       };
     },
     stopAgent: async (key: string) => { apiFake.stopped.push(key); return { ok: true as const }; },
-    handoff: async (_repo: string, branch: string, content: string) => {
-      apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
-    },
     slack: async (repo: string, text: string) => {
       apiFake.slackSends.push({ repo, text });
       if (!apiFake.slackPosted) throw new Error("Slack post failed: not_authed");

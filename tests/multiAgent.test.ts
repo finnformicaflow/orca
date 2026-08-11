@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { agentCommand, claudeSteps, codexSteps, cursorSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
-import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
+import { handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 
@@ -219,32 +219,7 @@ describe("provider adapters", () => {
     expect(prompt).not.toContain("RAW RESPONSE SHOULD NOT BE COPIED");
   });
 
-  test("Copy CLI uses the active provider's native resume command", () => {
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", sessionId: "c-1" })).toBe('cd "/wt/x" && claude --resume c-1 --permission-mode auto');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", sessionId: "x-1" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox x-1');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex" })).toBe('cd "/wt/x" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox --last');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", sessionId: "a-1" })).toBe('cd "/wt/x" && cursor-agent --resume a-1 --force');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor" })).toBe('cd "/wt/x" && cursor-agent --continue --force');
-    // No id but the provider has run here → continue its latest; `fresh` → start a new session.
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude" })).toBe('cd "/wt/x" && claude --continue --permission-mode auto');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", fresh: true })).toBe('cd "/wt/x" && claude --permission-mode auto');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true })).toBe('cd "/wt/x" && codex --dangerously-bypass-approvals-and-sandbox');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", fresh: true })).toBe('cd "/wt/x" && cursor-agent --force');
-  });
 
-  test("Copy CLI seeds a fresh interactive session with the handoff file on a model switch", () => {
-    const seedFile = "/state/handoff/r--feat.md";
-    // Each provider starts a NEW interactive session with the transcript as its opening prompt.
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "claude", fresh: true, seedFile }))
-      .toBe('cd "/wt/x" && claude "$(cat "/state/handoff/r--feat.md")" --permission-mode auto');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "codex", fresh: true, seedFile }))
-      .toBe('cd "/wt/x" && codex "$(cat "/state/handoff/r--feat.md")" --dangerously-bypass-approvals-and-sandbox');
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", fresh: true, seedFile }))
-      .toBe('cd "/wt/x" && cursor-agent "$(cat "/state/handoff/r--feat.md")" --force');
-    // A known native session id always resumes it directly — no seed, the prior model isn't re-run.
-    expect(attachCommand({ worktreePath: "/wt/x", provider: "cursor", sessionId: "a-1", seedFile }))
-      .toBe('cd "/wt/x" && cursor-agent --resume a-1 --force');
-  });
 });
 
 describe("cross-provider continuation", () => {
@@ -381,17 +356,16 @@ describe("cross-provider continuation", () => {
     expect(launch.history).toEqual(prior);
   });
 
-  test("Copy CLI / Promote follow the pin, and never resume an agent that hasn't run here", async () => {
+  test("Follow-ups and Promote follow the pin, and never resume an agent that hasn't run here", async () => {
     // Pin matches the last run → resume its native session by id.
     expect(store.resumeTarget(row)).toEqual({ provider: "claude", sessionId: "claude-session", fresh: false });
     // Pin points at an agent that never ran here → a FRESH session, not a session id from another
     // provider and not a `--continue` that errors with "no conversation to continue".
     const switched = store.resumeTarget({ ...row, preferredProvider: "codex" });
     expect(switched).toEqual({ provider: "codex", fresh: true });
-    expect(attachCommand({ worktreePath: "/wt/feat", ...switched })).toBe('cd "/wt/feat" && codex --dangerously-bypass-approvals-and-sandbox');
-    // The Claude counterpart of the reported bug: fresh Claude start, never `claude --continue`.
+    // The Claude counterpart of the reported bug: a fresh Claude session, never a resume of Codex's.
     const toClaude = store.resumeTarget({ ...row, agentProvider: "codex", sessionId: "codex-1", transcript: [{ id: "t", provider: "codex", prompt: "x", response: "y", sessionId: "codex-1" }], preferredProvider: "claude" });
-    expect(attachCommand({ worktreePath: "/wt/feat", ...toClaude })).toBe('cd "/wt/feat" && claude --permission-mode auto');
+    expect(toClaude).toEqual({ provider: "claude", fresh: true });
     // A stored session with no recorded provider is treated as Claude's, so it still resumes by id.
     expect(store.resumeTarget({ ...row, agentProvider: undefined })).toEqual({ provider: "claude", sessionId: "claude-session", fresh: false });
   });
@@ -436,22 +410,7 @@ describe("cross-provider continuation", () => {
     expect(apiFake.agentLaunches.at(-1)!.resume).toBe("cursor-session");
   });
 
-  test("Copy CLI hands the portable transcript to a switched-in model without resuming the old one", async () => {
-    // Claude ran here and is (say) maxed out; the card is pinned to Cursor, which has never run here.
-    const r: store.Row = { ...row, agentProvider: "claude", sessionId: "claude-session", preferredProvider: "cursor", transcript: prior, worktreePath: "/wt/feat" };
-    const cmd = await store.cliCommand(r);
-    expect(apiFake.handoffs).toHaveLength(1);
-    expect(apiFake.handoffs[0]!.content).toContain("taking over this worktree from Claude");
-    // Interactive Cursor session seeded from the transcript file — Claude is never re-invoked.
-    expect(cmd).toBe('cd "/wt/feat" && cursor-agent "$(cat "/state/handoff/feat.md")" --force');
-  });
 
-  test("Copy CLI resumes natively when the pinned model already ran here (no handoff written)", async () => {
-    const r: store.Row = { ...row, agentProvider: "cursor", sessionId: "cursor-session", preferredProvider: "cursor", worktreePath: "/wt/feat" };
-    const cmd = await store.cliCommand(r);
-    expect(apiFake.handoffs).toHaveLength(0);
-    expect(cmd).toBe('cd "/wt/feat" && cursor-agent --resume cursor-session --force');
-  });
 });
 
   // Live steps for the other two providers. The transcript layer was always provider-agnostic; only

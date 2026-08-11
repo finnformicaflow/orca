@@ -1,5 +1,5 @@
 // E2E for the copy shortcuts in Actions → Agent: Copy worktree copies the branch path, while Copy
-// CLI copies the active provider's resumable command. Copy CLI also remains in the card's top-right
+// CLI copies the active provider's resumable command. the copy menu also remains in the card's top-right
 // copy menu (see cardDetails.test.tsx). Driven against the preloaded fake api
 // (tests/apiFake.ts) and rendered into a real DOM. See WorkstreamActions.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
@@ -60,17 +60,6 @@ describe("Copy worktree action", () => {
     expect(copied).toBe("/wt/feat");
   });
 
-  test("Actions → Agent → Copy CLI copies the exact Codex resume command", async () => {
-    mount({ ...row, agentProvider: "codex", sessionId: "codex-123" });
-    await pointerdown([...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Actions"))!);
-    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Agent")!;
-    await pointerdown(agentTrigger);
-    await click(agentTrigger);
-    const item = menuitem("Copy CLI")!;
-    expect(item).not.toBeNull();
-    await click(item);
-    expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123');
-  });
 
   const openSlackItem = async (label: string) => {
     await pointerdown([...container!.querySelectorAll("button")].find((button) => button.textContent?.includes("Actions"))!);

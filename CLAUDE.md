@@ -15,13 +15,11 @@ status badge (running/done/error). Headless one-shot is the mechanism for the AU
 (create, Fix CI, Resolve conflicts, Address review, Follow up, Slack, PR description) — they need the
 structured outcome / portable transcript / run ledger, so **board automation is never routed through
 tmux**. The card's **terminal** is now a conversation modal (the durable turns + a composer, see
-below), not a live shell; a live tmux lane existed once and its backend is left dormant. For a quick
-jump to a real terminal, "Copy CLI" still gives the provider-native resume
-command to jump into an interactive session. When you
-switch a card's agent (e.g. one model is maxed out), Copy CLI instead seeds a NEW interactive session
-of the pinned provider with the portable transcript (written to a handoff file under the state dir,
-never the worktree), so you keep prompting the new model in-context and the previous model is never
-resumed. Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
+below), not a live shell; a live tmux lane existed once and its backend is left dormant. (History: "Copy CLI" used to hand you a
+provider-native resume command for a real terminal, with a handoff file seeding a new session on a
+model switch. It was retired once the chat could hold the whole conversation itself — every provider
+now streams its steps into the modal, and a follow-up typed mid-run is queued rather than refused.)
+Same-provider follow-ups use the native session id. Cross-provider continuation starts a new native
 session seeded with Orca's bounded portable transcript (instructions + final outcomes); files/git in
 the shared worktree remain the source of truth. Each worktree is one feature/session, so Orca infers
 native resume versus cross-provider handoff from the selected provider instead of exposing a chat-mode toggle.

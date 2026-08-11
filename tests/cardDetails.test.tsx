@@ -1,6 +1,6 @@
 // E2E for the enriched swimlane card details: the worktree name (read-only context) + a coloured
 // diffstat render on every lane EXCEPT Done, and the top-right copy menu offers the PR link (when
-// there's a PR) + the worktree name + Copy CLI. Driven against the fake api (tests/apiFake.ts) — the card polls
+// there's a PR) + the worktree name. Driven against the fake api (tests/apiFake.ts) — the card polls
 // api.summary — rendered into a real DOM. See Board.WorkstreamCard.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
@@ -104,33 +104,8 @@ describe("swimlane card details", () => {
     expect(copied).toBe("enrich-cards-1");
   });
 
-  test("a card's copy menu offers Copy CLI; a card with no agent run yet gets a fresh session", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount(base); // adopted PR: worktree but no agent has run here, so no conversation to continue
-    await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
-    expect(item).not.toBeNull();
-    await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --permission-mode auto`); // fresh, NOT --continue
-  });
 
-  test("Copy CLI --resume's the persisted session id when there is one", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount({ ...base, sessionId: "abc-123" });
-    await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
-    await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --resume abc-123 --permission-mode auto`);
-  });
 
-  test("Copy CLI includes non-interactive Codex exec sessions when resuming", async () => {
-    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount({ ...base, agentProvider: "codex", sessionId: "codex-123" });
-    await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
-    await click(item);
-    expect(copied).toBe(`cd "/wt/enrich-cards-1" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123`);
-  });
 
   test("a local card's copy menu has no Copy PR link option, only the worktree name", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
-  cliCommand, disableAutoMerge, merge, promote, providerFor, rename, resolveConflicts, sendSlack, setCardProvider, staleHours, suggestTitle, toggleFollow, useAgentProviders, useRepos, type Row,
+  disableAutoMerge, merge, promote, providerFor, rename, resolveConflicts, sendSlack, setCardProvider, staleHours, suggestTitle, toggleFollow, useAgentProviders, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -58,15 +58,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
 
-  // Copy shortcuts adopt a missing worktree first. Copy CLI intentionally lives both here and in
-  // the card's top-right copy menu: this submenu is discoverable while the icon is faster.
+  // Copy shortcuts adopt a missing worktree first.
   const copyWorktree = async () => {
     const path = row.worktreePath ?? (await ensureWorktree(row));
     try { await navigator.clipboard.writeText(path); } catch { window.prompt("Copy the worktree path:", path); }
-  };
-  const copyCli = async () => {
-    const command = await cliCommand(row);
-    try { await navigator.clipboard.writeText(command); } catch { window.prompt("Copy the CLI command:", command); }
   };
   const copyLink = async () => {
     if (!row.prUrl) return;
@@ -152,7 +147,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
                 <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>

@@ -11,7 +11,7 @@ import { freePort, killTree, previewHost } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, bulkActions, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
+  addressReviewPrompt, bulkActions, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
   DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -53,10 +53,6 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   // attachment paths (any file type) are appended for the agent to Read; none = prompt unchanged
   expect(withAttachments("go", [])).toBe("go");
   expect(withAttachments("go", ["/tmp/a.png", "/tmp/spec.docx"])).toContain("/tmp/spec.docx");
-  // attach command drops you into a session continuing the headless run: exact id → --resume it;
-  // unknown id → --continue the most recent conversation in that dir (never a bare, fresh `claude`).
-  expect(attachCommand({ worktreePath: wt, sessionId: "abc-123" })).toBe(`cd "${wt}" && claude --resume abc-123 --permission-mode auto`);
-  expect(attachCommand({ worktreePath: wt })).toBe(`cd "${wt}" && claude --continue --permission-mode auto`);
 });
 
 test("explicit prompt builders preserve action intent without natural-language inference", () => {
