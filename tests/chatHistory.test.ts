@@ -12,120 +12,140 @@ import * as agent from "../server/agent";
 import * as transcript from "../server/transcript";
 import * as bus from "../server/bus";
 import type { BusEvent } from "../server/bus";
+import { freshSchema, type TestDb } from "./pg";
 
 let dir: string;
 let prevStateDir: string | undefined;
+let prevDbUrl: string | undefined;
+let pg: TestDb;
 
+// A real Postgres in an isolated schema — the same engine the app runs on. The state dir still holds
+// the transcripts, leases and ledger, so both get a clean slate per test.
 beforeEach(async () => {
   prevStateDir = process.env.ORCA_STATE_DIR;
+  prevDbUrl = process.env.ORCA_DATABASE_URL;
   dir = await mkdtemp(join(tmpdir(), "orca-db-"));
   process.env.ORCA_STATE_DIR = dir;
-  db.close(); // drop any handle held against a previous state dir
+  pg = await freshSchema("chathistory");
+  process.env.ORCA_DATABASE_URL = pg.url;
+  await db.close(); // drop any pool held against a previous database
 });
 afterEach(async () => {
-  db.close();
+  await agent.flushHistory(); // never close the pool under an in-flight fire-and-forget write
+  await db.close();
+  await pg.drop();
   if (prevStateDir === undefined) delete process.env.ORCA_STATE_DIR; else process.env.ORCA_STATE_DIR = prevStateDir;
+  if (prevDbUrl === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDbUrl;
   await rm(dir, { recursive: true, force: true });
 });
+
+/** Wait for a fire-and-forget history write to land (see recordTurn in agent.ts). */
+const settled = async (branch = "feat") => {
+  for (let i = 0; i < 200; i++) {
+    if ((await db.turns("r", branch))[0]?.finishedAt) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
 
 const start = (runId: string, prompt: string, branch = "feat") =>
   db.startTurn({ repo: "r", branch, runId, provider: "claude", prompt, sessionId: `sess-${runId}`, startedAt: Date.now() });
 
-test("a turn is durable from launch, before the run produces any output", () => {
-  start("run-1", "add the thing");
+test("a turn is durable from launch, before the run produces any output", async () => {
+  await start("run-1", "add the thing");
 
   // The whole point: this row exists while the agent is still working. A bridge restart here used to
   // lose the run entirely; now it survives as an interrupted turn.
-  const [turn] = db.turns("r", "feat");
+  const [turn] = await db.turns("r", "feat");
   expect(turn?.prompt).toBe("add the thing");
   expect(turn?.response).toBe("");
   expect(turn?.finishedAt).toBeUndefined();
 });
 
-test("completing a run fills in its response and structured outcome", () => {
-  start("run-1", "add the thing");
-  db.finishTurn("run-1", {
+test("completing a run fills in its response and structured outcome", async () => {
+  await start("run-1", "add the thing");
+  await db.finishTurn("run-1", {
     status: "done", response: "## Outcome\nAdded it.",
     structured: { outcome: "Added it.", verification: ["bun test"], decisions: [], remaining: [], commits: ["abc123 add"] },
     sessionId: "sess-final", finishedAt: Date.now(),
   });
 
-  const [turn] = db.turns("r", "feat");
+  const [turn] = await db.turns("r", "feat");
   expect(turn?.response).toBe("## Outcome\nAdded it.");
   expect(turn?.structured?.commits).toEqual(["abc123 add"]);
   expect(turn?.sessionId).toBe("sess-final"); // Codex/Cursor only reveal theirs mid-run
   expect(turn?.failed).toBeUndefined();
 });
 
-test("a failed run keeps its error as the turn's outcome", () => {
-  start("run-1", "break it");
-  db.finishTurn("run-1", { status: "error", response: "exit 1", finishedAt: Date.now() });
+test("a failed run keeps its error as the turn's outcome", async () => {
+  await start("run-1", "break it");
+  await db.finishTurn("run-1", { status: "error", response: "exit 1", finishedAt: Date.now() });
 
-  const [turn] = db.turns("r", "feat");
+  const [turn] = await db.turns("r", "feat");
   expect(turn?.failed).toBe(true);
   expect(turn?.response).toBe("exit 1");
 });
 
-test("a fast follow-up can't overwrite the previous turn", () => {
+test("a fast follow-up can't overwrite the previous turn", async () => {
   // The old in-memory map was keyed by WORKTREE PATH, so a second launch replaced the first run's
   // completed record before the client's next poll ever saw it. Turns are keyed by runId instead.
-  start("run-1", "first");
-  db.finishTurn("run-1", { status: "done", response: "first done", finishedAt: Date.now() });
-  start("run-2", "second");
-  db.finishTurn("run-2", { status: "done", response: "second done", finishedAt: Date.now() });
+  await start("run-1", "first");
+  await db.finishTurn("run-1", { status: "done", response: "first done", finishedAt: Date.now() });
+  await start("run-2", "second");
+  await db.finishTurn("run-2", { status: "done", response: "second done", finishedAt: Date.now() });
 
-  expect(db.turns("r", "feat").map((t) => t.response)).toEqual(["first done", "second done"]);
+  expect((await db.turns("r", "feat")).map((t) => t.response)).toEqual(["first done", "second done"]);
 });
 
-test("history survives the branch it was made on", () => {
-  start("run-1", "shipped work");
-  db.finishTurn("run-1", { status: "done", response: "done", finishedAt: Date.now() });
+test("history survives the branch it was made on", async () => {
+  await start("run-1", "shipped work");
+  await db.finishTurn("run-1", { status: "done", response: "done", finishedAt: Date.now() });
 
-  db.archive("r", "feat"); // merged + reaped
+  await db.archive("r", "feat"); // merged + reaped
 
   // Gone from the LIVE view (the board shouldn't show it)...
-  expect(db.turns("r", "feat")).toEqual([]);
+  expect(await db.turns("r", "feat")).toEqual([]);
   // ...but retained, which is what makes chaining from a merged conversation possible at all.
-  const rows = db.db().query("SELECT COUNT(*) AS n FROM turn").get() as { n: number };
-  expect(rows.n).toBe(1);
+  const rows = await (await db.open())`SELECT COUNT(*)::int AS n FROM turn`;
+  expect(rows[0].n).toBe(1);
 });
 
-test("a reused branch name starts a fresh conversation, not the dead one's", () => {
-  start("run-1", "original work");
-  db.archive("r", "feat");
+test("a reused branch name starts a fresh conversation, not the dead one's", async () => {
+  await start("run-1", "original work");
+  await db.archive("r", "feat");
 
-  start("run-2", "unrelated later work");
+  await start("run-2", "unrelated later work");
 
   // The partial unique index lets the name be reused; the archived workstream keeps its own history.
-  expect(db.turns("r", "feat").map((t) => t.prompt)).toEqual(["unrelated later work"]);
+  expect((await db.turns("r", "feat")).map((t) => t.prompt)).toEqual(["unrelated later work"]);
 });
 
-test("turns are scoped per repo, so same-named branches in different repos don't merge", () => {
-  start("run-1", "in repo r");
-  db.startTurn({ repo: "other", branch: "feat", runId: "run-2", provider: "codex", prompt: "in repo other", startedAt: Date.now() });
+test("turns are scoped per repo, so same-named branches in different repos don't merge", async () => {
+  await start("run-1", "in repo r");
+  await db.startTurn({ repo: "other", branch: "feat", runId: "run-2", provider: "codex", prompt: "in repo other", startedAt: Date.now() });
 
-  expect(db.turns("r", "feat").map((t) => t.prompt)).toEqual(["in repo r"]);
-  expect(db.turns("other", "feat").map((t) => t.prompt)).toEqual(["in repo other"]);
+  expect((await db.turns("r", "feat")).map((t) => t.prompt)).toEqual(["in repo r"]);
+  expect((await db.turns("other", "feat")).map((t) => t.prompt)).toEqual(["in repo other"]);
 });
 
-test("relaunching the same runId doesn't duplicate the turn", () => {
-  start("run-1", "once");
-  start("run-1", "once");
-  expect(db.turns("r", "feat")).toHaveLength(1);
+test("relaunching the same runId doesn't duplicate the turn", async () => {
+  await start("run-1", "once");
+  await start("run-1", "once");
+  expect(await db.turns("r", "feat")).toHaveLength(1);
 });
 
-test("the database is owner-only — it holds prompts and responses in plaintext", () => {
-  start("run-1", "something sensitive");
-  expect(statSync(join(dir, "orca.db")).mode & 0o777).toBe(0o600);
-});
+// (Removed: the database used to be a 0600 file in the state dir, and this asserted that mode.
+// With Postgres the equivalent protection is network + role scoping, which is deployment
+// configuration rather than something this suite can meaningfully assert. What IS still testable —
+// that prompts and responses never leave the state dir for a worktree — is covered by the
+// transcript-path case below.)
 
-test("reopening the state dir keeps the history (it is a file, not a cache)", () => {
-  start("run-1", "persisted");
-  db.finishTurn("run-1", { status: "done", response: "still here", finishedAt: Date.now() });
+test("reopening the state dir keeps the history (it is a file, not a cache)", async () => {
+  await start("run-1", "persisted");
+  await db.finishTurn("run-1", { status: "done", response: "still here", finishedAt: Date.now() });
 
   db.close(); // simulate a bridge restart
 
-  expect(db.turns("r", "feat").map((t) => t.response)).toEqual(["still here"]);
+  expect((await db.turns("r", "feat")).map((t) => t.response)).toEqual(["still here"]);
 });
 
 // End-to-end through the real launcher, with a fake `claude` on PATH — the run records its own turn,
@@ -138,14 +158,14 @@ test("a real agent run records its own turn, with no client polling it", async (
   const realPath = process.env.PATH;
   process.env.PATH = `${shim}:${realPath}`;
   try {
-    const receipt = agent.runAgent(dir, "do the work", { repo: "r", branch: "feat", provider: "claude" });
+    const receipt = await agent.runAgent(dir, "do the work", { repo: "r", branch: "feat", provider: "claude" });
     expect(receipt.status).toBe("running");
     // The turn is already on disk while the process is still running.
-    expect(db.turns("r", "feat")[0]?.prompt).toBe("do the work");
+    expect((await db.turns("r", "feat"))[0]?.prompt).toBe("do the work");
 
     while (agent.status(dir).status === "running") await new Promise((r) => setTimeout(r, 25));
 
-    const [turn] = db.turns("r", "feat");
+    const [turn] = await db.turns("r", "feat");
     expect(turn?.response).toContain("Shipped it.");
     expect(turn?.structured?.outcome).toBe("Shipped it.");
     expect(turn?.finishedAt).toBeGreaterThan(0);
@@ -176,7 +196,7 @@ test("a run's steps are persisted as they stream and readable after it finishes"
   const realPath = process.env.PATH;
   process.env.PATH = `${shim}:${realPath}`;
   try {
-    const receipt = agent.runAgent(dir, "fix the tests", { repo: "r", branch: "feat", provider: "claude" });
+    const receipt = await agent.runAgent(dir, "fix the tests", { repo: "r", branch: "feat", provider: "claude" });
     while (agent.status(dir).status === "running") await new Promise((r) => setTimeout(r, 25));
 
     // Readable AFTER the run — the in-memory trail could not do this.
@@ -192,7 +212,7 @@ test("a run's steps are persisted as they stream and readable after it finishes"
     expect(transcript.read(receipt.runId, 2).map((s) => s.kind)).toEqual(["tool", "text"]); // tail
 
     // The durable turn still carries the final outcome; steps are the reasoning behind it.
-    expect(db.turns("r", "feat")[0]?.structured?.outcome).toBe("Shipped it.");
+    expect((await db.turns("r", "feat"))[0]?.structured?.outcome).toBe("Shipped it.");
   } finally {
     process.env.PATH = realPath;
     agent.stop(dir);
@@ -200,7 +220,7 @@ test("a run's steps are persisted as they stream and readable after it finishes"
   }
 });
 
-test("one runaway tool result can't dominate a transcript, and a missing one is not an error", () => {
+test("one runaway tool result can't dominate a transcript, and a missing one is not an error", async () => {
   // Bounding is per-field so a `cat` of a lockfile costs a clipped step, never the whole file.
   const big = transcript.boundStep({ at: 1, kind: "tool", name: "Bash", output: "x".repeat(500_000) });
   expect(big.output!.length).toBeLessThan(40_000);
@@ -209,40 +229,43 @@ test("one runaway tool result can't dominate a transcript, and a missing one is 
   expect(transcript.read("no-such-run")).toEqual([]);
 });
 
-// The live feed. Steps are PUSHED as they're recorded (in-process bus → SSE), replacing a 4s poll
-// that both lagged the agent and refetched the whole conversation each tick.
-test("recorded steps are pushed to subscribers, scoped to the branch that owns the run", () => {
-  db.startTurn({ repo: "r", branch: "feat", runId: "run-a", provider: "claude", prompt: "a", startedAt: Date.now() });
-  db.startTurn({ repo: "r", branch: "other", runId: "run-b", provider: "claude", prompt: "b", startedAt: Date.now() });
+// The live feed. Turn lifecycle events are published by the DB; step events are published by the
+// caller of transcript.append (agent.ts), which knows the branch — transcript.ts stays pure
+// persistence. Events carry repo/branch so a chat stream filters without a database read per step.
+test("bus events are addressed to the branch that owns the run", async () => {
+  await start("run-a", "a");
+  await start("run-b", "b", "other");
 
   const seen: BusEvent[] = [];
   const off = bus.subscribe((e) => seen.push(e));
   try {
-    transcript.append("run-a", [{ at: 1, kind: "text", text: "hello" }]);
-    // The owner lookup is what lets a stream filter the global bus down to its own conversation.
-    expect(db.turnOwner("run-a")).toEqual({ repo: "r", branch: "feat" });
-    expect(db.turnOwner("run-b")?.branch).toBe("other");
-    expect(db.turnOwner("nope")).toBeUndefined();
+    // Finishing publishes, so an open chat replaces "working…" with the outcome immediately — and
+    // the event names the branch, which is what lets one stream ignore another's runs.
+    await db.finishTurn("run-a", { status: "done", response: "done", finishedAt: Date.now() });
+    const turnEvents = seen.filter((e) => e.kind === "turn" && e.runId === "run-a");
+    expect(turnEvents).toHaveLength(1);
+    expect(turnEvents[0]).toMatchObject({ repo: "r", branch: "feat" });
 
-    const steps = seen.filter((e) => e.kind === "step");
-    expect(steps).toHaveLength(1);
-    expect(steps[0]).toMatchObject({ runId: "run-a" });
-
-    // Finishing publishes too, so an open chat replaces "working…" with the outcome immediately.
-    db.finishTurn("run-a", { status: "done", response: "done", finishedAt: Date.now() });
-    expect(seen.filter((e) => e.kind === "turn").map((e) => e.runId)).toContain("run-a");
+    // The owner lookup still exists for anything that has only a runId.
+    expect(await db.turnOwner("run-a")).toEqual({ repo: "r", branch: "feat" });
+    expect((await db.turnOwner("run-b"))?.branch).toBe("other");
+    expect(await db.turnOwner("nope")).toBeUndefined();
   } finally {
     off();
   }
   expect(bus.subscriberCount()).toBe(0); // no leaked stream after unsubscribe
 });
 
-test("a throwing subscriber (a closed stream) never breaks the run that published", () => {
-  db.startTurn({ repo: "r", branch: "feat", runId: "run-c", provider: "claude", prompt: "c", startedAt: Date.now() });
+test("a throwing subscriber (a closed stream) never breaks the run that published", async () => {
+  await start("run-c", "c");
   const off = bus.subscribe(() => { throw new Error("socket closed"); });
   try {
-    expect(() => transcript.append("run-c", [{ at: 1, kind: "text", text: "still recorded" }])).not.toThrow();
-    expect(transcript.read("run-c")[0]?.text).toBe("still recorded"); // and the write still landed
+    // transcript.append returns what it wrote, so the caller can publish it; the write itself must
+    // land regardless of what any subscriber does.
+    expect(transcript.append("run-c", [{ at: 1, kind: "text", text: "still recorded" }]))
+      .toMatchObject([{ text: "still recorded" }]);
+    expect(transcript.read("run-c")[0]?.text).toBe("still recorded");
+    await expect(db.finishTurn("run-c", { status: "done", response: "ok", finishedAt: Date.now() })).resolves.toBeUndefined();
   } finally {
     off();
   }
@@ -251,24 +274,24 @@ test("a throwing subscriber (a closed stream) never breaks the run that publishe
 // A bridge killed mid-run writes the turn at launch and never reaches its exit handler, so the turn
 // renders "▋ working…" forever. A long-lived (deployed) bridge accretes these, which is exactly
 // where a permanently-working card misleads most.
-test("turns orphaned by a dead bridge are closed at startup; genuinely live ones are left alone", () => {
-  start("run-dead", "interrupted");
-  start("run-live", "still going");
-  start("run-done", "finished");
-  db.finishTurn("run-done", { status: "done", response: "ok", finishedAt: Date.now() });
+test("turns orphaned by a dead bridge are closed at startup; genuinely live ones are left alone", async () => {
+  await start("run-dead", "interrupted");
+  await start("run-live", "still going");
+  await start("run-done", "finished");
+  await db.finishTurn("run-done", { status: "done", response: "ok", finishedAt: Date.now() });
 
   // The lease is the authority on what's still running — it deliberately survives shutdown.
-  const closed = db.reconcileRunning(new Set(["run-live"]));
+  const closed = await db.reconcileRunning(new Set(["run-live"]));
   expect(closed).toBe(1);
 
-  const byPrompt = Object.fromEntries(db.turns("r", "feat").map((t) => [t.prompt, t]));
+  const byPrompt = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
   expect(byPrompt.interrupted?.finishedAt).toBeGreaterThan(0);
   expect(byPrompt.interrupted?.failed).toBe(true);
   expect(byPrompt.interrupted?.response).toContain("bridge stopped");
   expect(byPrompt["still going"]?.finishedAt).toBeUndefined(); // untouched — its process is alive
   expect(byPrompt.finished?.response).toBe("ok"); // already-closed turns aren't rewritten
 
-  expect(db.reconcileRunning(new Set(["run-live"]))).toBe(0); // idempotent
+  expect(await db.reconcileRunning(new Set(["run-live"]))).toBe(0); // idempotent
 });
 
 // Stop is not Discard: the process dies, everything else survives. The turn must record that
@@ -283,14 +306,14 @@ test("a run stopped from the chat is recorded as stopped, keeps its work, and st
   const realPath = process.env.PATH;
   process.env.PATH = `${shim}:${realPath}`;
   try {
-    const receipt = agent.runAgent(dir, "refactor everything", { repo: "r", branch: "feat", provider: "claude" });
+    const receipt = await agent.runAgent(dir, "refactor everything", { repo: "r", branch: "feat", provider: "claude" });
     while (!agent.runSteps(receipt.runId).length) await new Promise((r) => setTimeout(r, 25));
 
     expect(agent.stop(dir)).toBe(receipt.runId); // reports what it interrupted
     // Wait for the exit handler to write, rather than guessing at a sleep.
-    for (let i = 0; i < 200 && !db.turns("r", "feat")[0]?.finishedAt; i++) await new Promise((r) => setTimeout(r, 25));
+    for (let i = 0; i < 200 && !(await db.turns("r", "feat"))[0]?.finishedAt; i++) await new Promise((r) => setTimeout(r, 25));
 
-    const [turn] = db.turns("r", "feat");
+    const [turn] = await db.turns("r", "feat");
     expect(turn?.stopped).toBe(true);
     expect(turn?.failed).toBeUndefined(); // NOT an error — you did this on purpose
     expect(turn?.sessionId).toBeTruthy(); // resumable, so a follow-up redirects the same session

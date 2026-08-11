@@ -38,6 +38,19 @@ cp .env.example .env
 # .env → ORCA_DEV_ROOT=$HOME/Documents/dev   (the dir that holds your repos)
 ```
 
+Orca keeps its chat history in **Postgres** (`ORCA_DATABASE_URL`), so it can later be shared by more
+than one Orca instance — a cloud box and a laptop, each running its own worktrees against one
+database. Create it once, then point `.env` at it:
+
+```sh
+createdb orca
+# .env → ORCA_DATABASE_URL=postgres://localhost:5432/orca
+#        ORCA_TEST_DATABASE_URL=postgres://localhost:5432/postgres
+```
+
+`bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
+throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
+
 At least one agent CLI (`claude`, `codex`, `cursor-agent`) must be on the **bridge's** `$PATH`. If a CLI
 lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shell you launch
 `bun run dev` from, or you'll see `Executable not found in $PATH`.

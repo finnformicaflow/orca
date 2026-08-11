@@ -67,7 +67,7 @@ if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
 // the authority on what's genuinely still running (they deliberately survive shutdown).
-const orphaned = db.reconcileRunning(lease.liveRunIds());
+const orphaned = await db.reconcileRunning(lease.liveRunIds());
 if (orphaned) console.log(`orca: closed ${orphaned} turn(s) left running by a previous bridge`);
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
@@ -191,7 +191,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: `Can't merge — PR ${why}`, status }, 409);
     }
     await gh.mergePr(repo.repoPath, body.pr);
-    if (body.branch) db.archive(repo.name, body.branch); // finished, not forgotten — the chat history stays
+    if (body.branch) await db.archive(repo.name, body.branch); // finished, not forgotten — the chat history stays
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });
   }
@@ -205,7 +205,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     }
     if (body.branch) await git.deleteBranch(repo.repoPath, body.branch);
-    if (body.branch) db.archive(repo.name, body.branch);
+    if (body.branch) await db.archive(repo.name, body.branch);
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/preview") {
@@ -281,7 +281,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     preview.stop(body.worktreePath);
     await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     if (body.deleteBranch && body.branch) await git.deleteBranch(repo.repoPath, body.branch); // never for a PR branch
-    if (body.deleteBranch && body.branch) db.archive(repo.name, body.branch);
+    if (body.deleteBranch && body.branch) await db.archive(repo.name, body.branch);
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
@@ -297,7 +297,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       preview.stop(w.worktreePath, true); // merged branch reaped → drop its preview DB too
       await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
       await git.deleteBranch(repo.repoPath, w.branch);
-      db.archive(repo.name, w.branch); // reaped from disk; its conversation is kept
+      await db.archive(repo.name, w.branch); // reaped from disk; its conversation is kept
     }
     wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
@@ -348,7 +348,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/merge-local") {
     await git.mergeLocal(repo.repoPath, repo.baseBranch, body.branch);
-    if (body.branch) db.archive(repo.name, body.branch);
+    if (body.branch) await db.archive(repo.name, body.branch);
     if (body.worktreePath) await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     return json({ ok: true });
   }
@@ -356,7 +356,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
-    const receipt = agent.runAgent(body.worktreePath, body.prompt, {
+    const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
       action: body.action, evidenceChars: body.evidenceChars,
@@ -370,7 +370,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
-    const receipt = agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
+    const receipt = await agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
       action: body.action, evidenceChars: body.evidenceChars,
@@ -381,11 +381,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/enrichment") {
     // What git/gh can't recover about a branch — prompt, title, provider/session pointer, follow
     // state, Slack timestamps. Lived in localStorage until it outgrew a 5MB shared bucket.
-    return json(db.enrichment(repo.name));
+    return json(await db.enrichment(repo.name));
   }
   if (req.method === "POST" && p === "/api/enrichment") {
     if (!body.branch) return json({ error: "branch required" }, 400);
-    db.patchEnrichment(repo.name, body.branch, body.fields ?? {});
+    await db.patchEnrichment(repo.name, body.branch, body.fields ?? {});
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/suggest-title") {
@@ -413,20 +413,20 @@ async function api(req: Request, url: URL): Promise<Response> {
     const title = String(body.title ?? "").trim();
     if (!body.branch || !title) return json({ error: "branch and title required" }, 400);
     if (body.pr) await gh.editTitle(repo.repoPath, body.pr, title); // PR title is the card title; make it stick on GitHub
-    db.patchEnrichment(repo.name, body.branch, { title }); // record it locally too (shown for pre-PR locals)
+    await db.patchEnrichment(repo.name, body.branch, { title }); // record it locally too (shown for pre-PR locals)
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/enrichment/import") {
     // One-shot adoption of a browser's pre-DB localStorage, transcripts included. Idempotent: it
     // only fills workstreams the DB doesn't already own.
-    return json({ imported: db.importEnrichment(body.entries ?? []) });
+    return json({ imported: await db.importEnrichment(body.entries ?? []) });
   }
   if (req.method === "GET" && p === "/api/turns") {
     // The durable conversation for a branch — written server-side at run start/exit, so it survives
     // a bridge restart, a closed tab, and follow-ups that land faster than the client polls.
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
-    const turns = db.turns(repo.name, branch);
+    const turns = await db.turns(repo.name, branch);
     // Decorate every turn with its recorded steps (the agent's thought process), read from the run's
     // transcript — so it's there for finished turns too, and survives a bridge restart. The WHOLE
     // transcript is sent: a tail was the point of "I can't see the depth of the conversation", and
@@ -456,8 +456,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
         const keepAlive = setInterval(() => { try { controller.enqueue(": keep-alive\n\n"); } catch { unsubscribe(); } }, 25_000);
         const off = bus.subscribe((e) => {
-          const owner = db.turnOwner(e.runId);
-          if (owner?.repo !== repo.name || owner.branch !== branch) return;
+          if (e.repo !== repo.name || e.branch !== branch) return;
           if (e.kind === "step") send("step", { runId: e.runId, steps: e.steps });
           else send("turn", { runId: e.runId });
         });
