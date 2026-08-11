@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, claudeSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
+import { agentCommand, claudeSteps, codexSteps, cursorSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
 import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -50,11 +50,12 @@ describe("provider adapters", () => {
     expect(agentCommand("codex", "/wt/x", "go", "x-1")).toEqual([
       "codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "x-1", "--", "go",
     ]);
+    // stream-json, like claude: the steps have to arrive as they happen for the chat to show them.
     expect(agentCommand("cursor", "/wt/x", "go")).toEqual([
-      "cursor-agent", "-p", "--output-format", "json", "--force", "--trust", "--", "go",
+      "cursor-agent", "-p", "--output-format", "stream-json", "--force", "--trust", "--", "go",
     ]);
     expect(agentCommand("cursor", "/wt/x", "go", "a-1")).toEqual([
-      "cursor-agent", "-p", "--resume", "a-1", "--output-format", "json", "--force", "--trust", "--", "go",
+      "cursor-agent", "-p", "--resume", "a-1", "--output-format", "stream-json", "--force", "--trust", "--", "go",
     ]);
   });
 
@@ -452,3 +453,55 @@ describe("cross-provider continuation", () => {
     expect(cmd).toBe('cd "/wt/feat" && cursor-agent --resume cursor-session --force');
   });
 });
+
+  // Live steps for the other two providers. The transcript layer was always provider-agnostic; only
+  // the event mapping was Claude-only, so a Codex or Cursor card showed "working…" and then a result
+  // with nothing in between. Both mappings are written against events captured from REAL runs, not
+  // guessed — the shapes below are verbatim.
+  test("maps Codex item events to steps, including a command's output and exit status", () => {
+    expect(codexSteps({ type: "item.completed", item: { id: "i0", type: "agent_message", text: "done" } }))
+      .toMatchObject([{ kind: "text", text: "done" }]);
+    // A started item is the call; the completed one carries its result.
+    expect(codexSteps({ type: "item.started", item: { id: "i1", type: "command_execution", command: "/bin/zsh -lc ls", status: "in_progress" } }))
+      .toMatchObject([{ kind: "tool", name: "command_execution", text: "Running: /bin/zsh -lc ls", detail: "/bin/zsh -lc ls" }]);
+    expect(codexSteps({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "ls", aggregated_output: "a.txt\n", exit_code: 0, status: "completed" } }))
+      .toMatchObject([{ kind: "tool", name: "result", output: "a.txt", isError: false }]);
+    expect(codexSteps({ type: "item.completed", item: { type: "command_execution", command: "false", aggregated_output: "", exit_code: 1 } }))
+      .toMatchObject([{ isError: true }]);
+    // An unfamiliar tool still shows up rather than vanishing from the conversation.
+    expect(codexSteps({ type: "item.started", item: { type: "web_search", query: "orca" } }))
+      .toMatchObject([{ kind: "tool", text: "Searching the web: orca" }]);
+    expect(codexSteps({ type: "turn.completed", usage: {} })).toEqual([]);
+  });
+
+  test("maps Cursor stream events to steps, joining thinking deltas into one block", () => {
+    const state = { thinking: "" };
+    // Cursor is the one provider that exposes REAL reasoning text — but only in deltas, with a
+    // completed event that carries none. Emitting each delta would stutter; they're joined.
+    expect(cursorSteps({ type: "thinking", subtype: "delta", text: "Running ls " }, state)).toEqual([]);
+    expect(cursorSteps({ type: "thinking", subtype: "delta", text: "to list files" }, state)).toEqual([]);
+    expect(cursorSteps({ type: "thinking", subtype: "completed" }, state))
+      .toMatchObject([{ kind: "thinking", text: "Running ls to list files" }]);
+    expect(state.thinking).toBe(""); // and the buffer resets for the next block
+
+    expect(cursorSteps({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "I'll list the files." }] } }, state))
+      .toMatchObject([{ kind: "text", text: "I'll list the files." }]);
+
+    const shell = { shellToolCall: { args: { command: "ls" }, result: { success: { command: "ls", exitCode: 0, stdout: "a.txt\n", stderr: "" } } } };
+    expect(cursorSteps({ type: "tool_call", subtype: "started", tool_call: shell }, state))
+      .toMatchObject([{ kind: "tool", name: "shell", text: "shell: ls", detail: "ls" }]);
+    expect(cursorSteps({ type: "tool_call", subtype: "completed", tool_call: shell }, state))
+      .toMatchObject([{ kind: "tool", name: "result", output: "a.txt", isError: false }]);
+  });
+
+  test("Cursor's outcome is the last result event of the stream, and the old buffered body still parses", () => {
+    const stream = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "c-1" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done", session_id: "cur-1", duration_ms: 7830, usage: { inputTokens: 4819, outputTokens: 75 } }),
+    ].join("\n");
+    expect(parseCursorOutput(stream)).toMatchObject({ sessionId: "cur-1", result: "done", isError: false });
+    // A single JSON body — the older form, and what a crash may leave behind — still works.
+    expect(parseCursorOutput(JSON.stringify({ type: "result", is_error: true, result: "boom", session_id: "cur-2" })))
+      .toMatchObject({ sessionId: "cur-2", result: "boom", isError: true });
+  });
