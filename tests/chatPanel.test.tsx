@@ -8,6 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
+import { groupSteps, type AgentStep } from "../shared/agent";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -109,4 +110,90 @@ test("the composer sends a follow-up through the normal launch path", async () =
 
   // Same headless one-shot every board action uses — the chat view adds no second runtime.
   expect(apiFake.claudePrompts.at(-1)).toContain("and now this");
+});
+
+test("a tool's output stays inside its own accordion instead of spilling into the log", async () => {
+  // The bug: results were recorded as their own steps, so the collapsed call held only the command
+  // while its (much longer) output rendered unconditionally underneath — "all collapsed, but the
+  // majority of the text is just there". groupSteps folds the result into the call it belongs to.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "Done.", finishedAt: 2,
+    steps: [
+      { at: 1, kind: "text", text: "Running the suite now." },
+      { at: 2, kind: "tool", name: "Bash", text: "Running: bun test", detail: "bun test" },
+      { at: 3, kind: "tool", name: "result", output: "SECRET_TOOL_OUTPUT 289 pass" },
+    ],
+  }]);
+
+  await mount(base);
+
+  expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
+  expect(text()).toContain("Running: bun test");      // the call's summary line — visible
+  expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
+  expect(text()).not.toContain("Tool result");        // and NOT a second row of its own
+
+  // Opening that one call reveals the command AND its output together.
+  const toggle = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Running: bun test"));
+  await act(async () => { toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
+});
+
+test("groupSteps pairs parallel calls with their results in order, and keeps an orphan visible", () => {
+  // Claude emits several tool_use blocks in one event and their results in a later one, so matching
+  // is positional: first call ↔ first result.
+  const grouped = groupSteps([
+    { at: 1, kind: "tool", name: "Read", text: "Reading a.ts" },
+    { at: 1, kind: "tool", name: "Read", text: "Reading b.ts" },
+    { at: 2, kind: "tool", name: "result", output: "contents of a" },
+    { at: 2, kind: "tool", name: "result", output: "contents of b", isError: true },
+  ]);
+  expect(grouped).toHaveLength(2); // two calls, no free-floating result rows
+  expect(grouped[0]).toMatchObject({ text: "Reading a.ts", output: "contents of a" });
+  expect(grouped[1]).toMatchObject({ text: "Reading b.ts", output: "contents of b", isError: true });
+
+  // A result with no call to match (a transcript read mid-run) is kept, with a label so it is still
+  // collapsible rather than rendering bare.
+  expect(groupSteps([{ at: 1, kind: "tool", name: "result", output: "orphan" }]))
+    .toMatchObject([{ text: "Tool result", output: "orphan" }]);
+
+  // Pure: the caller's steps are not mutated (the panel re-groups on every render).
+  const input: AgentStep[] = [{ at: 1, kind: "tool", name: "Bash", text: "Running: x" }, { at: 2, kind: "tool", name: "result", output: "out" }];
+  groupSteps(input);
+  expect(input[0]!.output).toBeUndefined();
+});
+
+test("the log follows new output, but not while the reader has scrolled up", async () => {
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "go", startedAt: 1 }]);
+  await mount(base);
+
+  const log = container!.querySelector("div.overflow-y-auto") as HTMLElement;
+  // happy-dom doesn't lay out, so drive the geometry the scroll handler reads.
+  Object.defineProperty(log, "scrollHeight", { value: 1000, configurable: true });
+  Object.defineProperty(log, "clientHeight", { value: 200, configurable: true });
+  const scrolled: number[] = [];
+  log.scrollTo = ((opts: { top: number }) => scrolled.push(opts.top)) as unknown as typeof log.scrollTo;
+
+  // A step arriving on the live stream is what appends output to the log.
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  const pushStep = async (text: string) => {
+    await act(async () => {
+      stream.dispatchEvent(Object.assign(new Event("step"), {
+        data: JSON.stringify({ runId: "run-1", steps: [{ at: 1, kind: "text", text }] }),
+      }));
+      await flush();
+    });
+  };
+
+  // Reader scrolls up to read something → following stops, so incoming steps don't yank them away.
+  log.scrollTop = 200;
+  await act(async () => { log.dispatchEvent(new Event("scroll")); });
+  await pushStep("while scrolled up");
+  expect(text()).toContain("while scrolled up"); // still rendered — just not scrolled to
+  expect(scrolled).toHaveLength(0);
+
+  // Back at the bottom → following resumes and the next arrival scrolls again.
+  log.scrollTop = 800; // 1000 - 200: pinned to the bottom
+  await act(async () => { log.dispatchEvent(new Event("scroll")); });
+  await pushStep("back at the bottom");
+  expect(scrolled).toEqual([1000]);
 });

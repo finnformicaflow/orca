@@ -24,6 +24,32 @@ export type AgentStep = {
   isError?: boolean;
 };
 
+/** Fold each tool RESULT into the call it belongs to, so the chat renders one collapsible unit per
+ *  tool use instead of a collapsed call followed by its output spilling down the page. Claude emits
+ *  the calls in one assistant event and the results in a later user event, so matching is FIFO —
+ *  parallel calls come back in the order they were made. A result with no call left to match (a
+ *  transcript that starts mid-run) keeps its own row rather than being dropped. Pure. */
+export function groupSteps(steps: AgentStep[]): AgentStep[] {
+  const grouped: AgentStep[] = [];
+  const awaitingResult: AgentStep[] = [];
+  for (const step of steps) {
+    if (step.kind === "tool" && step.name === "result") {
+      const call = awaitingResult.shift();
+      if (call) {
+        call.output = step.output;
+        call.isError = step.isError;
+      } else {
+        grouped.push({ ...step, text: "Tool result" }); // orphan — still collapsible, never bare
+      }
+      continue;
+    }
+    const copy = { ...step };
+    grouped.push(copy);
+    if (copy.kind === "tool") awaitingResult.push(copy);
+  }
+  return grouped;
+}
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;

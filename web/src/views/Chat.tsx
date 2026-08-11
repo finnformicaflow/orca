@@ -10,8 +10,12 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api } from "../api";
 import { followUp, type Row } from "../store";
-import { agentLabel } from "../../../shared/agent";
+import { agentLabel, groupSteps } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+
+// How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
+// rounding and the composer resizing, so following doesn't switch off on its own.
+const FOLLOW_SLACK = 48;
 
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
@@ -20,15 +24,10 @@ function Step({ step }: { step: AgentStep }) {
   const [open, setOpen] = useState(false);
   if (step.kind === "text") return <p className="whitespace-pre-wrap break-words text-neutral-300">{step.text}</p>;
   if (step.kind === "thinking") return <p className="whitespace-pre-wrap break-words italic text-neutral-500">{step.text}</p>;
-  // A bare result (no summary line) belongs to the tool call above it, so it renders as that call's
-  // output rather than its own row.
+  // A tool call carries its own result (see groupSteps), so EVERYTHING it produced is behind this
+  // one toggle — input and output. Nothing spills into the log unopened; the narration above is the
+  // readable thread, and a tool's detail is there when you want it.
   const body = [step.detail, step.output].filter(Boolean).join("\n\n");
-  if (!step.text) {
-    if (!step.output) return null;
-    return (
-      <pre className={`ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l-2 pl-2 text-[11px] ${step.isError ? "border-red-800 text-red-400" : "border-neutral-800 text-neutral-500"}`}>{step.output}</pre>
-    );
-  }
   return (
     <div>
       <button
@@ -51,8 +50,9 @@ function Step({ step }: { step: AgentStep }) {
  *  point is reading the conversation the way you would in the terminal, so hiding it behind a toggle
  *  (as this first did) defeats it. The toggle stays, to fold a long run away once you're done with
  *  it. */
-function Steps({ steps, live }: { steps: AgentStep[]; live: boolean }) {
+function Steps({ steps: raw, live }: { steps: AgentStep[]; live: boolean }) {
   const [open, setOpen] = useState(true);
+  const steps = groupSteps(raw); // fold each tool result into its call — one toggle per tool use
   if (!steps.length) return null;
   const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} />)}</div>;
   if (live) return body;
@@ -127,7 +127,8 @@ function Turn({ turn }: { turn: AgentTurn }) {
 
 export function ChatPanel({ row }: { row: Row }) {
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
   const turnsLoaded = useRef(false); // first `ready` is this stream's own open, not a reconnect
   const running = row.agentStatus === "running";
 
@@ -151,16 +152,28 @@ export function ChatPanel({ row }: { row: Row }) {
     return () => { live = false; source.close(); };
   }, [row.repo, row.branch]);
 
-  // Follow the tail as turns arrive, the way a terminal scrolls.
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [turns?.length, running]);
+  // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
+  // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you
+  // back down mid-read is the worst version of this), and returning to the bottom resumes following.
+  // Keyed on `turns` itself, not its length, so appended steps scroll too.
+  useEffect(() => {
+    if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+  }, [turns]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK;
+  };
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200">
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        className="min-h-0 flex-1 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200"
+      >
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
-        <div ref={bottom} />
       </div>
       <ChatComposer
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
