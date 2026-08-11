@@ -76,6 +76,10 @@ export type RepoConfig = {
   providers?: AgentProvider[];
   /** Authority granted to this repo's agents (default `ask`, i.e. NOT bypassPermissions). */
   agentPermissionMode?: AgentPermissionMode;
+  /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
+   *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
+   *  which is how a laptop and a cloud box divide the work without a queue between them. */
+  runsOn?: string;
   /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
@@ -149,6 +153,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
         ? (r.providers as unknown[]).filter((v) => !AGENT_PROVIDERS.includes(v as AgentProvider))
         : ["(not an array)"];
       if (bad.length) errors.push(`${where}.providers must contain only ${AGENT_PROVIDERS.join(", ")}`);
+    }
+    if (r.runsOn !== undefined && (typeof r.runsOn !== "string" || !r.runsOn.trim())) {
+      errors.push(`${where}.runsOn must be an instance name`);
     }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
@@ -329,4 +336,12 @@ export function providersFor(repo: RepoConfig, available: readonly AgentProvider
 /** Whether a repo may run this provider — the check every launch path goes through. */
 export function providerAllowed(repo: RepoConfig, provider: AgentProvider): boolean {
   return (repo.providers ?? []).includes(provider);
+}
+
+
+/** Does THIS instance execute this repo? Absent `runsOn` means yes — one machine, today's
+ *  behaviour. Reads are never gated by this: you can see a repo another machine runs, you just
+ *  don't act on it here. */
+export function runsHere(repo: RepoConfig, instance: string): boolean {
+  return !repo.runsOn || repo.runsOn === instance;
 }

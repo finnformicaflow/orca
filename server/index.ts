@@ -1,7 +1,7 @@
 import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
-  providerAllowed, providersFor, repoOf, saveConfigDocument, type RepoConfig,
+  providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type RepoConfig,
 } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
@@ -71,6 +71,21 @@ if (orphaned) console.log(`orca: closed ${orphaned} turn(s) left running by a pr
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+/** Worktrees reported by OTHER instances, read back from Postgres. Tagged with the instance and its
+ *  last check-in so the board can mark a sleeping machine's rows as stale rather than presenting them
+ *  as current. Advisory: a database hiccup degrades to "just what this machine sees". */
+async function foreignInventory(repo: string, exclude?: string): Promise<unknown[]> {
+  try {
+    const rows = await db.inventory(repo);
+    return rows
+      .filter((r) => r.instance !== (exclude ?? db.instanceName()))
+      .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
+  } catch (e) {
+    console.error("orca: inventory read failed", e);
+    return [];
+  }
+}
 
 /** Refuse an action a repo hasn't opted into. The bridge is the authority, not the client: a stale
  *  tab must not be able to post to Slack or start a preview a repo has since turned off. */
@@ -311,8 +326,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
-    // source of truth for the Draft lane: live worktrees + run status + local mergeability
+    // Source of truth for the Draft lane: live worktrees + run status + local mergeability.
+    //
+    // An instance only inspects the repos IT runs — it cannot stat another machine's disk — and
+    // publishes what it found. The response is the union across instances, read back from Postgres,
+    // so a board on either machine shows both and an instance that is asleep leaves its rows stale
+    // rather than making the whole board slow or empty.
     countAgentPoll();
+    const instance = db.instanceName();
+    if (!runsHere(repo, instance)) return json(await foreignInventory(repo.name));
     let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
     const merged = await gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()); // empty for local-only repos
@@ -327,7 +349,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
-    return json(await Promise.all(wts.map(async (w) => {
+    const mine = await Promise.all(wts.map(async (w) => {
       const run = agent.status(w.worktreePath);
       const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
       return {
@@ -345,7 +367,11 @@ async function api(req: Request, url: URL): Promise<Response> {
         sessionId: run.sessionId,
         mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
       };
-    })));
+    }));
+    // Publish before responding, so the other instance's next poll sees this one's work.
+    await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
+      .catch((e) => console.error("orca: inventory publish failed", e)); // advisory — never fail a poll
+    return json([...mine, ...(await foreignInventory(repo.name, instance))]);
   }
   if (req.method === "POST" && p === "/api/prs/label") {
     await gh.addLabel(repo.repoPath, body.pr, repo.previewLabel ?? "preview");

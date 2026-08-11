@@ -160,6 +160,36 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         WHERE NOT config ? 'features';
     `,
   },
+  {
+    id: 4,
+    // What each instance can see. The board used to be computed live from the local filesystem on
+    // every poll, which stops working the moment a second instance owns some of the worktrees: the
+    // laptop cannot stat the cloud box's disk. Each instance PUBLISHES what it sees instead, and the
+    // board is served from here — so an instance that is asleep leaves its rows stale rather than
+    // making the whole board slow or empty.
+    sql: `
+      CREATE TABLE worktree_inventory (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        data JSONB NOT NULL,
+        seen_at BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX worktree_inventory_key
+        ON worktree_inventory (user_id, instance, repo, branch);
+
+      -- Liveness, so the board can say "this machine last checked in 40 minutes ago" instead of
+      -- silently presenting stale rows as current.
+      CREATE TABLE instance (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        seen_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, name)
+      );
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -394,4 +424,52 @@ export async function saveConfig(input: { repos: { name: string; config: Fields 
       INSERT INTO app_config (user_id, config, updated_at) VALUES (${user}, ${input.app}, ${now})
       ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config, updated_at = ${now}`;
   });
+}
+
+
+// ---- instances + inventory ----
+
+/** This process's identity. Two Orca instances share one database, so every row they publish says
+ *  which machine it came from. Defaults to the hostname, which is right for a laptop. */
+export function instanceName(): string {
+  return process.env.ORCA_INSTANCE || Bun.env.HOSTNAME || "local";
+}
+
+/** Publish what THIS instance can see of a repo, and mark it alive. Replaces the repo's rows for this
+ *  instance, so a branch that has gone away stops being reported. */
+export async function publishInventory(repo: string, worktrees: { branch: string; data: Fields }[]): Promise<void> {
+  const sql = await open();
+  const user = currentUser();
+  const instance = instanceName();
+  const now = Date.now();
+  await sql.begin(async (tx: Bun.SQL) => {
+    await tx`DELETE FROM worktree_inventory WHERE user_id = ${user} AND instance = ${instance} AND repo = ${repo}`;
+    for (const w of worktrees) {
+      await tx`
+        INSERT INTO worktree_inventory (user_id, instance, repo, branch, data, seen_at)
+        VALUES (${user}, ${instance}, ${repo}, ${w.branch}, ${w.data}, ${now})`;
+    }
+    await tx`
+      INSERT INTO instance (user_id, name, seen_at) VALUES (${user}, ${instance}, ${now})
+      ON CONFLICT (user_id, name) DO UPDATE SET seen_at = ${now}`;
+  });
+}
+
+/** Everything every instance can see of a repo, newest sighting first per branch. Each row carries
+ *  the instance that reported it and how long ago, so the board can mark stale machines. */
+export async function inventory(repo: string): Promise<{ instance: string; branch: string; data: Fields; seenAt: number }[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT instance, branch, data, seen_at FROM worktree_inventory
+    WHERE user_id = ${currentUser()} AND repo = ${repo}
+    ORDER BY seen_at DESC`;
+  return (rows as { instance: string; branch: string; data: Fields; seen_at: string }[])
+    .map((r) => ({ instance: r.instance, branch: r.branch, data: r.data ?? {}, seenAt: Number(r.seen_at) }));
+}
+
+/** Every instance that has ever checked in, with its last sighting. */
+export async function instances(): Promise<{ name: string; seenAt: number }[]> {
+  const sql = await open();
+  const rows = await sql`SELECT name, seen_at FROM instance WHERE user_id = ${currentUser()} ORDER BY name`;
+  return (rows as { name: string; seen_at: string }[]).map((r) => ({ name: r.name, seenAt: Number(r.seen_at) }));
 }
