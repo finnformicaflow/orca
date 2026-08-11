@@ -173,7 +173,7 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
 /** A run's recorded steps — the agent's thought process — oldest first, `tail` limiting to the last
  *  N. Read from the transcript file rather than memory, so it works for a FINISHED run and survives a
  *  bridge restart (that's the whole point: the chat's history used to die with the process). */
-export function runSteps(runId: string, tail?: number): AgentStep[] {
+export function runSteps(runId: string, tail?: number): Promise<AgentStep[]> {
   return transcript.read(runId, tail);
 }
 
@@ -257,9 +257,9 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       if (!line.trim()) continue;
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
-      const written = transcript.append(runId, claudeSteps(event));
-      // Push to any open chat stream. Addressed to the branch here (rather than looked up per event)
-      // because this is the hottest path in the system — one event per recorded step.
+      const written = await transcript.append(runId, claudeSteps(event));
+      // Push to any chat stream open on THIS instance — which is the only place a stream for this
+      // run can be served, since a request for a repo owned elsewhere is proxied to its owner.
       if (written.length && owner?.repo && owner.branch) {
         bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }

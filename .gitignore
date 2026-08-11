@@ -5,3 +5,6 @@ web/dist/
 orca.config.local.ts
 .worktrees/
 .env
+
+# Claude Code's own worktrees and local state — never part of the repo.
+.claude/

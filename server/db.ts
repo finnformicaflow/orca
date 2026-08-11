@@ -160,6 +160,57 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         WHERE NOT config ? 'features';
     `,
   },
+  {
+    id: 4,
+    // What each instance can see. The board used to be computed live from the local filesystem on
+    // every poll, which stops working the moment a second instance owns some of the worktrees: the
+    // laptop cannot stat the cloud box's disk. Each instance PUBLISHES what it sees instead, and the
+    // board is served from here — so an instance that is asleep leaves its rows stale rather than
+    // making the whole board slow or empty.
+    sql: `
+      CREATE TABLE worktree_inventory (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        data JSONB NOT NULL,
+        seen_at BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX worktree_inventory_key
+        ON worktree_inventory (user_id, instance, repo, branch);
+
+      -- Liveness, so the board can say "this machine last checked in 40 minutes ago" instead of
+      -- silently presenting stale rows as current.
+      CREATE TABLE instance (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        seen_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, name)
+      );
+    `,
+  },
+  {
+    id: 5,
+    // The agent's recorded steps. These lived as JSONL files under the state dir, which is right for
+    // one machine and wrong for two: a transcript on the cloud box's disk cannot be read by a board
+    // open on the laptop, so opening that conversation showed nothing. Making the database the source
+    // of truth has to include the steps, or "the same conversation from either machine" isn't true.
+    //
+    // `seq` is per run and unique, which also makes ingestion idempotent — a retried write cannot
+    // duplicate a step.
+    sql: `
+      CREATE TABLE turn_step (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        seq INT NOT NULL,
+        step JSONB NOT NULL,
+        at BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX turn_step_key ON turn_step (run_id, seq);
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -394,4 +445,95 @@ export async function saveConfig(input: { repos: { name: string; config: Fields 
       INSERT INTO app_config (user_id, config, updated_at) VALUES (${user}, ${input.app}, ${now})
       ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config, updated_at = ${now}`;
   });
+}
+
+
+// ---- instances + inventory ----
+
+/** This process's identity. Two Orca instances share one database, so every row they publish says
+ *  which machine it came from. Defaults to the hostname, which is right for a laptop. */
+export function instanceName(): string {
+  return process.env.ORCA_INSTANCE || Bun.env.HOSTNAME || "local";
+}
+
+/** Publish what THIS instance can see of a repo, and mark it alive. Replaces the repo's rows for this
+ *  instance, so a branch that has gone away stops being reported. */
+export async function publishInventory(repo: string, worktrees: { branch: string; data: Fields }[]): Promise<void> {
+  const sql = await open();
+  const user = currentUser();
+  const instance = instanceName();
+  const now = Date.now();
+  await sql.begin(async (tx: Bun.SQL) => {
+    await tx`DELETE FROM worktree_inventory WHERE user_id = ${user} AND instance = ${instance} AND repo = ${repo}`;
+    for (const w of worktrees) {
+      await tx`
+        INSERT INTO worktree_inventory (user_id, instance, repo, branch, data, seen_at)
+        VALUES (${user}, ${instance}, ${repo}, ${w.branch}, ${w.data}, ${now})`;
+    }
+    await tx`
+      INSERT INTO instance (user_id, name, seen_at) VALUES (${user}, ${instance}, ${now})
+      ON CONFLICT (user_id, name) DO UPDATE SET seen_at = ${now}`;
+  });
+}
+
+/** Everything every instance can see of a repo, newest sighting first per branch. Each row carries
+ *  the instance that reported it and how long ago, so the board can mark stale machines. */
+export async function inventory(repo: string): Promise<{ instance: string; branch: string; data: Fields; seenAt: number }[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT instance, branch, data, seen_at FROM worktree_inventory
+    WHERE user_id = ${currentUser()} AND repo = ${repo}
+    ORDER BY seen_at DESC`;
+  return (rows as { instance: string; branch: string; data: Fields; seen_at: string }[])
+    .map((r) => ({ instance: r.instance, branch: r.branch, data: r.data ?? {}, seenAt: Number(r.seen_at) }));
+}
+
+/** Every instance that has ever checked in, with its last sighting. */
+export async function instances(): Promise<{ name: string; seenAt: number }[]> {
+  const sql = await open();
+  const rows = await sql`SELECT name, seen_at FROM instance WHERE user_id = ${currentUser()} ORDER BY name`;
+  return (rows as { name: string; seen_at: string }[]).map((r) => ({ name: r.name, seenAt: Number(r.seen_at) }));
+}
+
+
+// ---- steps (the agent's thought process) ----
+
+/** Append steps to a run, numbered from `startSeq`. The unique (run_id, seq) index makes this
+ *  idempotent: a retried write collides rather than duplicating. Returns how many landed. */
+export async function appendSteps(runId: string, startSeq: number, steps: Fields[]): Promise<number> {
+  if (!steps.length) return 0;
+  const sql = await open();
+  const user = currentUser();
+  const now = Date.now();
+  let written = 0;
+  for (const [i, step] of steps.entries()) {
+    const rows = await sql`
+      INSERT INTO turn_step (user_id, run_id, seq, step, at)
+      VALUES (${user}, ${runId}, ${startSeq + i}, ${step}, ${now})
+      ON CONFLICT (run_id, seq) DO NOTHING
+      RETURNING id`;
+    if (rows.length) written++;
+  }
+  return written;
+}
+
+/** The next sequence number for a run — read once per run, then tracked in memory by the caller. */
+export async function nextStepSeq(runId: string): Promise<number> {
+  const sql = await open();
+  const rows = await sql`SELECT COALESCE(MAX(seq), 0) AS max FROM turn_step WHERE run_id = ${runId}`;
+  return Number(rows[0]?.max ?? 0) + 1;
+}
+
+/** A run's steps, oldest first. `tail` returns only the last N; `afterSeq` only what's newer, which
+ *  is how a chat stream watching a run on ANOTHER instance catches up without refetching. */
+export async function steps(runId: string, opts: { tail?: number; afterSeq?: number } = {}): Promise<{ seq: number; step: Fields }[]> {
+  const sql = await open();
+  const rows = opts.afterSeq !== undefined
+    ? await sql`SELECT seq, step FROM turn_step WHERE run_id = ${runId} AND seq > ${opts.afterSeq} ORDER BY seq`
+    : opts.tail !== undefined
+      ? await sql`SELECT seq, step FROM (
+            SELECT seq, step FROM turn_step WHERE run_id = ${runId} ORDER BY seq DESC LIMIT ${opts.tail}
+          ) t ORDER BY seq`
+      : await sql`SELECT seq, step FROM turn_step WHERE run_id = ${runId} ORDER BY seq`;
+  return (rows as { seq: number; step: Fields }[]).map((r) => ({ seq: Number(r.seq), step: r.step }));
 }

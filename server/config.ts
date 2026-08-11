@@ -76,6 +76,10 @@ export type RepoConfig = {
   providers?: AgentProvider[];
   /** Authority granted to this repo's agents (default `ask`, i.e. NOT bypassPermissions). */
   agentPermissionMode?: AgentPermissionMode;
+  /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
+   *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
+   *  which is how a laptop and a cloud box divide the work without a queue between them. */
+  runsOn?: string;
   /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
@@ -87,6 +91,10 @@ export type RepoConfig = {
 };
 
 export type OrcaConfig = {
+  /** Where each named instance can be reached, e.g. `{ cloud: "http://orca.tail1234.ts.net:8787" }`.
+   *  A request for a repo this instance doesn't run is forwarded to its owner — that is how a board
+   *  on the laptop acts on a session executing in the cloud without a job queue between them. */
+  instances?: Record<string, string>;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -150,6 +158,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
         : ["(not an array)"];
       if (bad.length) errors.push(`${where}.providers must contain only ${AGENT_PROVIDERS.join(", ")}`);
     }
+    if (r.runsOn !== undefined && (typeof r.runsOn !== "string" || !r.runsOn.trim())) {
+      errors.push(`${where}.runsOn must be an instance name`);
+    }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
     }
@@ -183,6 +194,11 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       && (portRange[0] as number) <= (portRange[1] as number);
     if (!ok) errors.push("portRange must be [min, max] port numbers with min <= max");
   }
+  if (d.instances !== undefined) {
+    const ok = d.instances && typeof d.instances === "object" && !Array.isArray(d.instances)
+      && Object.values(d.instances as Record<string, unknown>).every((v) => typeof v === "string" && /^https?:\/\//.test(v));
+    if (!ok) errors.push("instances must map an instance name to its base URL");
+  }
   if (d.staleHours !== undefined && (typeof d.staleHours !== "number" || d.staleHours < 0)) {
     errors.push("staleHours must be a non-negative number");
   }
@@ -197,6 +213,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       portRange: (portRange as [number, number]) ?? [30000, 40000],
       staleHours: (d.staleHours as number) ?? 24,
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
+      instances: d.instances as Record<string, string> | undefined,
     },
   };
 }
@@ -272,6 +289,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     portRange: (app.portRange as [number, number]) ?? [30000, 40000],
     staleHours: (app.staleHours as number) ?? 24,
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
+    instances: app.instances as Record<string, string> | undefined,
   };
   cached = config;
   return config;
@@ -293,6 +311,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       portRange: config.portRange,
       staleHours: config.staleHours,
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
+      ...(config.instances === undefined ? {} : { instances: config.instances }),
     },
   });
   invalidateConfig();
@@ -329,4 +348,12 @@ export function providersFor(repo: RepoConfig, available: readonly AgentProvider
 /** Whether a repo may run this provider — the check every launch path goes through. */
 export function providerAllowed(repo: RepoConfig, provider: AgentProvider): boolean {
   return (repo.providers ?? []).includes(provider);
+}
+
+
+/** Does THIS instance execute this repo? Absent `runsOn` means yes — one machine, today's
+ *  behaviour. Reads are never gated by this: you can see a repo another machine runs, you just
+ *  don't act on it here. */
+export function runsHere(repo: RepoConfig, instance: string): boolean {
+  return !repo.runsOn || repo.runsOn === instance;
 }

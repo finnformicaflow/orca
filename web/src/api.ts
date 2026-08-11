@@ -2,7 +2,7 @@ import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, MergedPr, PrDetail, PrSummary, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
-import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn } from "../../shared/agent";
 import type { SyncResult } from "./workstream";
 
 export type LiveAgent = {
@@ -20,7 +20,6 @@ export type LiveAgent = {
   agentPrompt?: string;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";
-  tmux?: boolean; // a live interactive tmux terminal exists for this worktree
 };
 
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
@@ -66,19 +65,26 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
-  /** URL for the chat's SSE feed — a URL, not a fetch, because EventSource opens it itself (and
-   *  reconnects on its own when the bridge restarts). Relative, so Vite's dev proxy forwards it;
-   *  unlike a WS upgrade, the proxy handles SSE fine. */
+  /** URL for the chat's live stream — a URL, not a fetch, because EventSource opens it itself and
+   *  reconnects on its own. Relative, so Vite's dev proxy forwards it (unlike a WS upgrade, SSE
+   *  proxies fine — including the hop the bridge makes for a repo owned by another instance). */
   turnsStreamUrl: (repo: string, branch: string): string =>
     `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
-  ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
-    post("/api/terminal/ensure", { repo, ...b }),
+  /** Catch-up after a dropped stream: steps recorded since `since` for one run. */
+  turnSteps: (repo: string, branch: string, runId: string, since: number): Promise<{ steps: AgentStep[]; seq: number; finished: boolean }> =>
+    fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
-  mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),
+  // The client sends its own local midnight: "merged today" belongs to the person reading the board,
+  // not to the timezone of whatever machine the bridge runs on.
+  mergedPrs: (repo: string): Promise<MergedPr[]> => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    return fetch(`/api/prs/merged${q(repo, `&since=${midnight.getTime()}`)}`).then(res);
+  },
   prDetail: (repo: string, n: number): Promise<PrDetail> => fetch(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => fetch(`/api/prs/${n}/diff${q(repo)}`).then(res),
   reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => fetch(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),

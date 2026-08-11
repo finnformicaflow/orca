@@ -132,28 +132,51 @@ export function ChatPanel({ row }: { row: Row }) {
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
-  const turnsLoaded = useRef(false); // first `ready` is this stream's own open, not a reconnect
+  const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
+  const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
+  const opened = useRef(false); // first `ready` is this stream opening, not a reconnect
   const running = row.agentStatus === "running";
 
-  // The conversation loads once, then the SSE stream keeps it current: steps are appended to the
-  // in-flight turn as the agent records them (that's the live, terminal-like feel), and a `turn`
-  // event triggers one refetch so the durable outcome replaces "working…". (History: this polled
-  // /api/turns every 4s, which both lagged the agent and refetched the whole conversation each time.)
+  // The conversation loads once, then steps are PUSHED as the agent records them — that's the
+  // terminal-like feel. The stream is served by the instance that owns the repo (the bridge proxies
+  // there if it isn't this one), so there is one delivery path whether the agent runs on this
+  // machine or in the cloud. A dropped connection resumes from the cursor rather than refetching the
+  // whole conversation.
   useEffect(() => {
     let live = true;
-    const load = () => void api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
-    load();
+    const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
+    void load();
+
     const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
-    source.addEventListener("turn", load);
+    source.addEventListener("turn", () => void load());
     source.addEventListener("step", (e) => {
       const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
       setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
     });
-    // A dropped stream (bridge restart, sleep/wake) reconnects on its own; refetch on recovery so
-    // anything recorded while it was down is picked up rather than silently missing.
-    source.addEventListener("ready", () => { if (turnsLoaded.current) load(); else turnsLoaded.current = true; });
+    // `ready` fires on open AND on every automatic reconnect. The first is this stream opening; a
+    // later one means we were disconnected, so catch up from the cursor — anything recorded while we
+    // were away would otherwise be silently missing.
+    source.addEventListener("ready", () => {
+      if (!opened.current) { opened.current = true; return; }
+      void (async () => {
+        const pending = turnsRef.current?.find((t) => !t.finishedAt);
+        if (!pending) return void load();
+        try {
+          const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
+          const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
+          if (!live) return;
+          if (steps.length) {
+            cursors.current.set(pending.id, seq);
+            setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+          }
+          if (finished) await load();
+        } catch { void load(); }
+      })();
+    });
     return () => { live = false; source.close(); };
   }, [row.repo, row.branch]);
+
+  useEffect(() => { turnsRef.current = turns; }, [turns]);
 
   // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you

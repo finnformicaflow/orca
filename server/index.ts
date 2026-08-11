@@ -1,19 +1,17 @@
 import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
-  providerAllowed, providersFor, repoOf, saveConfigDocument, type RepoConfig,
+  providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
-import * as tmux from "./tmux";
-import { terminalWs, type TerminalData } from "./terminal";
-import { sessionName } from "../shared/tmux";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as transcript from "./transcript";
 import * as bus from "./bus";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
@@ -75,10 +73,60 @@ const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
+/** Worktrees reported by OTHER instances, read back from Postgres. Tagged with the instance and its
+ *  last check-in so the board can mark a sleeping machine's rows as stale rather than presenting them
+ *  as current. Advisory: a database hiccup degrades to "just what this machine sees". */
+async function foreignInventory(repo: string, exclude?: string): Promise<unknown[]> {
+  try {
+    const rows = await db.inventory(repo);
+    return rows
+      .filter((r) => r.instance !== (exclude ?? db.instanceName()))
+      .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
+  } catch (e) {
+    console.error("orca: inventory read failed", e);
+    return [];
+  }
+}
+
 /** Refuse an action a repo hasn't opted into. The bridge is the authority, not the client: a stale
  *  tab must not be able to post to Slack or start a preview a repo has since turned off. */
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
+
+// Routes served by ANY instance because they read only Postgres — history stays readable even when
+// the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
+// must run where the repo lives.
+const DATABASE_ONLY = new Set([
+  "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/usage", "/api/diagnostics", "/api/turns/steps",
+]);
+
+/** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
+ *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
+ *  instance is a pipe. Returns undefined when the request should be handled locally. */
+async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig): Promise<Response | undefined> {
+  if (DATABASE_ONLY.has(url.pathname)) return undefined;
+  const instance = db.instanceName();
+  if (runsHere(repo, instance)) return undefined;
+  const base = cfg.instances?.[repo.runsOn!];
+  if (!base) {
+    return json({ error: `${repo.name} runs on "${repo.runsOn}", which has no address configured (set instances.${repo.runsOn})` }, 502);
+  }
+  const target = new URL(url.pathname + url.search, base);
+  try {
+    // Streamed through, not buffered: /api/turns/stream never completes, so awaiting a body here
+    // would hang the chat instead of relaying it.
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers: req.headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.clone().text(),
+      signal: req.signal,
+    });
+    return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+  } catch (e) {
+    return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
+  }
+}
 
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
@@ -105,6 +153,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
+  // A repo this instance doesn't run is handled by the instance that does.
+  const forwarded = await forwardToOwner(req, url, repo, cfg);
+  if (forwarded) return forwarded;
 
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
@@ -199,7 +250,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await gh.listPrs(repo.repoPath)); // source of truth for the PR lanes
   }
   if (req.method === "GET" && p === "/api/prs/merged") {
-    return json(await gh.listMerged(repo.repoPath));
+    // `since` is the client's local midnight in ms — see gh.listMerged.
+    const since = Number(url.searchParams.get("since"));
+    return json(await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined));
   }
   const reviewEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/review-evidence$/);
   if (req.method === "GET" && reviewEvidenceMatch) {
@@ -236,7 +289,6 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/prs/close") {
     await gh.closePr(repo.repoPath, body.pr); // abandon without merging
-    if (body.branch) await tmux.killSession(sessionName(repo.name, body.branch)); // end the interactive terminal too
     if (body.worktreePath) {
       agent.stop(body.worktreePath);
       if (body.branch) await agent.killByBranch(body.branch);
@@ -293,20 +345,6 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.
     return json({ path: writeHandoffFile(repo.name, String(body.branch), String(body.content ?? "")) });
   }
-  if (req.method === "POST" && p === "/api/terminal/ensure") {
-    // Open (or re-open) the hand-driven tmux terminal for a worktree. Idempotent: an existing session
-    // is left as-is and the WS just re-attaches. The launch command reuses attachCommand — the exact
-    // native-resume / seeded-handoff logic Copy CLI uses — so the interactive lane and Copy CLI agree.
-    if (!tmux.available()) return json({ error: "tmux is not installed on this host" }, 501);
-    const provider = body.provider ?? "claude";
-    if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    if (!body.branch || !body.worktreePath) return json({ error: "branch and worktreePath required" }, 400);
-    const name = sessionName(repo.name, body.branch);
-    const command = attachCommand({ worktreePath: body.worktreePath, provider, sessionId: body.sessionId, fresh: body.fresh, seedFile: body.seedFile });
-    await tmux.ensureSession(name, body.worktreePath, command);
-    return json({ name });
-  }
   if (req.method === "POST" && p === "/api/worktrees/adopt") {
     const wt = await git.adoptWorktree(repo.repoPath, repo.worktreeRoot, body.branch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
@@ -320,7 +358,6 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/worktrees/remove") {
     agent.stop(body.worktreePath); // kill any running agent before removing its worktree
     if (body.branch) await agent.killByBranch(body.branch); // also catch ones orphaned by a restart
-    if (body.branch) await tmux.killSession(sessionName(repo.name, body.branch)); // and the interactive terminal
     preview.stop(body.worktreePath);
     await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     if (body.deleteBranch && body.branch) await git.deleteBranch(repo.repoPath, body.branch); // never for a PR branch
@@ -328,15 +365,21 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
-    // source of truth for the Draft lane: live worktrees + run status + local mergeability
+    // Source of truth for the Draft lane: live worktrees + run status + local mergeability.
+    //
+    // An instance only inspects the repos IT runs — it cannot stat another machine's disk — and
+    // publishes what it found. The response is the union across instances, read back from Postgres,
+    // so a board on either machine shows both and an instance that is asleep leaves its rows stale
+    // rather than making the whole board slow or empty.
     countAgentPoll();
+    const instance = db.instanceName();
+    if (!runsHere(repo, instance)) return json(await foreignInventory(repo.name));
     let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
     const merged = await gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()); // empty for local-only repos
     for (const w of wts.filter((w) => merged.has(w.branch))) {
       agent.stop(w.worktreePath);
       await agent.killByBranch(w.branch);
-      await tmux.killSession(sessionName(repo.name, w.branch));
       preview.stop(w.worktreePath, true); // merged branch reaped → drop its preview DB too
       await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
       await git.deleteBranch(repo.repoPath, w.branch);
@@ -344,16 +387,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     wts = wts.filter((w) => !merged.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
-    // Interactive tmux sessions outlive the bridge, so discover them each poll (not from memory) —
-    // this is how the board re-surfaces a live terminal after a restart. Empty when tmux is absent.
-    const tmuxSessions = new Set(await tmux.listSessions());
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
-    return json(await Promise.all(wts.map(async (w) => {
+    const mine = await Promise.all(wts.map(async (w) => {
       const run = agent.status(w.worktreePath);
       const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
       return {
         ...w,
-        tmux: tmuxSessions.has(sessionName(repo.name, w.branch)),
         agentStatus,
         agentError: run.error,
         agentResult: run.result,
@@ -367,7 +406,11 @@ async function api(req: Request, url: URL): Promise<Response> {
         sessionId: run.sessionId,
         mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
       };
-    })));
+    }));
+    // Publish before responding, so the other instance's next poll sees this one's work.
+    await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
+      .catch((e) => console.error("orca: inventory publish failed", e)); // advisory — never fail a poll
+    return json([...mine, ...(await foreignInventory(repo.name, instance))]);
   }
   if (req.method === "POST" && p === "/api/prs/label") {
     await gh.addLabel(repo.repoPath, body.pr, repo.previewLabel ?? "preview");
@@ -484,16 +527,20 @@ async function api(req: Request, url: URL): Promise<Response> {
     // asks for just the last N.
     const tail = Number(url.searchParams.get("steps")) || undefined;
     for (const t of turns) {
-      const steps = agent.runSteps(t.id, tail);
-      if (steps.length) t.steps = steps;
+      const numbered = await transcript.numbered(t.id, { tail });
+      if (numbered.length) {
+        t.steps = numbered.map((n) => n.step);
+        t.stepSeq = numbered[numbered.length - 1]!.seq; // where the live tail resumes from
+      }
     }
     return json(turns);
   }
   if (req.method === "GET" && p === "/api/turns/stream") {
-    // The chat's live feed. Server-Sent Events, not a WebSocket: it's one-way, EventSource reconnects
-    // by itself, and it survives a reverse proxy — which matters the day this runs on a remote host.
-    // Steps are pushed as they're recorded (in-process bus, no self-polling); `turn` just tells the
-    // client to refetch /api/turns, which stays the source of truth for a turn's durable outcome.
+    // The chat's live feed, pushed as each step is recorded. Server-Sent Events, not a WebSocket:
+    // one-way, EventSource reconnects itself, and it traverses a reverse proxy — including the hop
+    // this instance makes when the repo belongs to another one (see forwardToOwner). The stream is
+    // always served by the instance that OWNS the repo, so the run and the bus are in the same
+    // process and there is exactly one delivery path.
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
     let unsubscribe = () => {};
@@ -523,6 +570,23 @@ async function api(req: Request, url: URL): Promise<Response> {
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
     });
   }
+  if (req.method === "GET" && p === "/api/turns/steps") {
+    // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The
+    // live path is the stream above; this exists so a reconnect resumes rather than refetching a
+    // whole conversation, and it reads Postgres so any instance can answer it.
+    const branch = url.searchParams.get("branch");
+    const runId = url.searchParams.get("runId");
+    if (!branch || !runId) return json({ error: "branch and runId required" }, 400);
+    const since = Number(url.searchParams.get("since")) || 0;
+    const fresh = await transcript.numbered(runId, { afterSeq: since });
+    const turn = (await db.turns(repo.name, branch)).find((t) => t.id === runId);
+    return json({
+      steps: fresh.map((f) => f.step),
+      seq: fresh.length ? fresh[fresh.length - 1]!.seq : since,
+      // The client stops polling and refetches the conversation once the turn has its outcome.
+      finished: Boolean(turn?.finishedAt),
+    });
+  }
   if (req.method === "POST" && p === "/api/agent/stop") {
     // Stop the run without discarding anything: the worktree, its commits, and the provider session
     // all stay, so a follow-up resumes the same conversation and redirects it. This is the "it's
@@ -547,34 +611,26 @@ async function serveStatic(url: URL): Promise<Response> {
   return new Response("Orca bridge up. Build the UI with `bun run build`, or use `bun run dev`.");
 }
 
-Bun.serve<TerminalData>({
+Bun.serve({
   port: API_PORT,
-  // The interactive terminal streams a raw shell over this WS. Bind to localhost ONLY so it (and the
-  // rest of the bridge — a single-user local tool) is never exposed on the network. `send-keys` into
-  // a session would otherwise be remotely reachable.
-  hostname: "127.0.0.1",
+  // Bind to localhost ONLY. (The keystrokes-into-a-shell WebSocket that made this critical is gone,
+  // but the bridge still runs agents with repo-granted authority, so it stays off the network until
+  // there is a deliberate reason — and an ACL — to expose it.)
+  // Loopback by default. ORCA_BIND exists for the deployed instance, which is reached over a tailnet
+  // — bind the tailnet interface there, never 0.0.0.0, or the same process is also served to whatever
+  // café wifi the machine is on.
+  hostname: process.env.ORCA_BIND || "127.0.0.1",
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,
-  async fetch(req, server) {
+  async fetch(req) {
     const url = new URL(req.url);
-    // Interactive terminal WebSocket, scoped to repo+branch. The listen socket is localhost-only, so
-    // this endpoint is unreachable off the machine by construction.
-    if (url.pathname === "/api/terminal/ws") {
-      const repoName = url.searchParams.get("repo") ?? undefined;
-      const branch = url.searchParams.get("branch");
-      if (!branch) return json({ error: "branch required" }, 400);
-      const name = sessionName(repoOf(await loadConfig(), repoName).name, branch);
-      if (server.upgrade(req, { data: { name } })) return undefined;
-      return new Response("expected a websocket upgrade", { status: 426 });
-    }
     try {
       return url.pathname.startsWith("/api/") ? await api(req, url) : await serveStatic(url);
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
   },
-  websocket: terminalWs,
 });
 
 // Preview servers hold ports, so free them on shutdown. Agents are left running so a restart

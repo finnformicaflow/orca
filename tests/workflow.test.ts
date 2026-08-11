@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, copyToWorktree, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
-import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
-import { freePort, killTree } from "../server/preview";
+import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
+import { freePort, killTree, previewHost } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
@@ -882,4 +882,36 @@ describe("W8 sync-worktrees", () => {
       { branch: "d", outcome: "dirty" }, { branch: "e", outcome: "diverged" }, { branch: "f", outcome: "no upstream" },
     ])).toBe("synced 2, up to date 1, skipped: dirty 1, diverged 1, no upstream 1");
   });
+});
+
+test("P4 deployment shape: preview links name a reachable host, and Done·today follows the CLIENT's day", async () => {
+  // Preview URLs are opened by the BROWSER, so `localhost` is right for a laptop instance and wrong
+  // the moment Orca runs on a box reached over a tailnet.
+  const prev = process.env.ORCA_PREVIEW_HOST;
+  try {
+    expect(previewHost()).toBe("localhost"); // default keeps a laptop instance working unchanged
+    process.env.ORCA_PREVIEW_HOST = "orca-box.tail1234.ts.net";
+    expect(previewHost()).toBe("orca-box.tail1234.ts.net");
+  } finally {
+    if (prev === undefined) delete process.env.ORCA_PREVIEW_HOST; else process.env.ORCA_PREVIEW_HOST = prev;
+  }
+
+  // "Today" belongs to the person looking at the board, not to the bridge's timezone — identical
+  // while Orca runs on your laptop, and wrong once it doesn't.
+  const day = 86_400_000;
+  const now = Date.now();
+  // A fresh repo: listMerged caches per working directory, so reusing the shared one would serve a
+  // previous case's rows.
+  const merged = await makeScratchRepo();
+  await setPrListFixture([
+    { number: 1, title: "Merged an hour ago", headRefName: "recent", url: "u1", mergedAt: new Date(now - 3_600_000).toISOString() },
+    { number: 2, title: "Merged three days ago", headRefName: "old", url: "u2", mergedAt: new Date(now - 3 * day).toISOString() },
+  ]);
+  // A boundary the client supplies is honoured...
+  expect((await listMerged(merged, now - 4 * day)).map((p) => p.number)).toEqual([1, 2]); // both inside
+  expect((await listMerged(merged, now - 2 * day)).map((p) => p.number)).toEqual([1]); // the 3-day-old one falls outside
+  expect((await listMerged(merged, now - day)).map((p) => p.number)).toEqual([1]);
+  expect((await listMerged(merged, now + day)).map((p) => p.number)).toEqual([]);
+  // ...and omitting it falls back to the server's own day, so an old client still works.
+  expect((await listMerged(merged)).map((p) => p.number)).toEqual([1]);
 });

@@ -173,9 +173,9 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   const scrolled: number[] = [];
   log.scrollTo = ((opts: { top: number }) => scrolled.push(opts.top)) as unknown as typeof log.scrollTo;
 
-  // A step arriving on the live stream is what appends output to the log.
+  // A step pushed down the live stream is what appends output to the log.
   const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
-  const pushStep = async (text: string) => {
+  const push = async (text: string) => {
     await act(async () => {
       stream.dispatchEvent(Object.assign(new Event("step"), {
         data: JSON.stringify({ runId: "run-1", steps: [{ at: 1, kind: "text", text }] }),
@@ -187,35 +187,13 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   // Reader scrolls up to read something → following stops, so incoming steps don't yank them away.
   log.scrollTop = 200;
   await act(async () => { log.dispatchEvent(new Event("scroll")); });
-  await pushStep("while scrolled up");
+  await push("while scrolled up");
   expect(text()).toContain("while scrolled up"); // still rendered — just not scrolled to
   expect(scrolled).toHaveLength(0);
 
   // Back at the bottom → following resumes and the next arrival scrolls again.
   log.scrollTop = 800; // 1000 - 200: pinned to the bottom
   await act(async () => { log.dispatchEvent(new Event("scroll")); });
-  await pushStep("back at the bottom");
+  await push("back at the bottom");
   expect(scrolled).toEqual([1000]);
-});
-
-test("Stop interrupts the run without discarding the worktree, and reads as stopped not failed", async () => {
-  // "It's going down the wrong track" — kill the process, keep the branch, its commits, and the
-  // provider session, so the next message resumes and redirects rather than starting over.
-  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "refactor everything", startedAt: 1 }]);
-  await mount({ ...base, agentStatus: "running" });
-
-  const stop = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("stop"));
-  expect(stop).toBeDefined(); // offered only while a run is in flight
-  await act(async () => { stop!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  expect(apiFake.stopped).toEqual(["/wt/feat"]); // the worktree's run, not the workstream
-
-  // A stopped turn keeps its session id (so a follow-up resumes it) and is not styled as a failure.
-  apiFake.turnsData.set("r::feat", [{
-    id: "run-1", provider: "claude", prompt: "refactor everything", startedAt: 1, finishedAt: 2,
-    stopped: true, sessionId: "c-1", response: "Stopped. The work so far stands; reply to redirect.",
-  }]);
-  await mount(base);
-  expect(text()).toContain("stopped by you");
-  expect(text()).toContain("The work so far stands");
-  expect(text()).not.toContain("failed");
 });

@@ -67,6 +67,8 @@ export type AgentTurn = {
   // run's transcript. Present for finished turns too, so the chat can show HOW a turn got there and
   // not just what it concluded.
   steps?: AgentStep[];
+  /** Sequence number of the last step above — the cursor the chat's live tail resumes from. */
+  stepSeq?: number;
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

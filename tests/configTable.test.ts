@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as db from "../server/db";
 import {
   configDocument, expandPath, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
-  providerAllowed, providersFor, saveConfigDocument, templatePath,
+  providerAllowed, providersFor, runsHere, saveConfigDocument, templatePath,
 } from "../server/config";
 import { agentCommand } from "../server/agent";
 import { MIGRATIONS } from "../server/db";
@@ -235,4 +235,75 @@ test("the backfill turns Slack and previews on only where the repo was already a
   await sql.unsafe(MIGRATION_3);
   invalidateConfig();
   expect(featuresOf((await loadConfig()).repos[0]!)).toMatchObject({ slack: true, previews: true });
+});
+
+// ---- two instances, one database ----
+
+test("each instance publishes what it can see, and the union is served from Postgres", async () => {
+  // The board used to be computed live from the local filesystem every poll. That stops working the
+  // moment a second instance owns some of the worktrees: the laptop cannot stat the cloud box's disk.
+  const prevInstance = process.env.ORCA_INSTANCE;
+  try {
+    process.env.ORCA_INSTANCE = "laptop";
+    await db.publishInventory("app", [
+      { branch: "feat-a", data: { branch: "feat-a", agentStatus: "running" } },
+      { branch: "feat-b", data: { branch: "feat-b", agentStatus: "idle" } },
+    ]);
+    process.env.ORCA_INSTANCE = "cloud";
+    await db.publishInventory("app", [{ branch: "feat-c", data: { branch: "feat-c", agentStatus: "done" } }]);
+
+    const all = await db.inventory("app");
+    expect(all.map((r) => `${r.instance}:${r.branch}`).sort())
+      .toEqual(["cloud:feat-c", "laptop:feat-a", "laptop:feat-b"]);
+    expect((await db.instances()).map((i) => i.name)).toEqual(["cloud", "laptop"]);
+
+    // Publishing REPLACES that instance's rows for the repo, so a branch that has gone away stops
+    // being reported — without touching what the other instance published.
+    process.env.ORCA_INSTANCE = "laptop";
+    await db.publishInventory("app", [{ branch: "feat-a", data: { branch: "feat-a", agentStatus: "idle" } }]);
+    expect((await db.inventory("app")).map((r) => `${r.instance}:${r.branch}`).sort())
+      .toEqual(["cloud:feat-c", "laptop:feat-a"]);
+
+    // Each row carries when its instance last checked in, so a sleeping machine's rows can be shown
+    // as stale rather than presented as current.
+    expect((await db.inventory("app")).every((r) => r.seenAt > 0)).toBe(true);
+  } finally {
+    if (prevInstance === undefined) delete process.env.ORCA_INSTANCE; else process.env.ORCA_INSTANCE = prevInstance;
+  }
+});
+
+test("a repo names the instance that executes it; unset means whichever instance is reading", () => {
+  const base = { name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", previewServices: [] };
+  expect(runsHere(base as never, "laptop")).toBe(true);   // today's single-machine behaviour
+  expect(runsHere({ ...base, runsOn: "cloud" } as never, "cloud")).toBe(true);
+  expect(runsHere({ ...base, runsOn: "cloud" } as never, "laptop")).toBe(false);
+  expect(parseConfigDocument(doc({ repos: [{ ...base, runsOn: "" }] })).errors)
+    .toContain("repos[0].runsOn must be an instance name");
+});
+
+test("a repo owned by another instance is reachable only if that instance has an address", () => {
+  // The forwarding rule's two halves: what may be answered anywhere, and what must run where the
+  // repo lives. Reads backed purely by Postgres stay local so history is readable even when the
+  // machine that produced it is asleep; anything touching a worktree goes to its owner.
+  const { config, errors } = parseConfigDocument(doc({
+    repos: [
+      { name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", runsOn: "cloud" },
+      { name: "here", repoPath: "/r2", worktreeRoot: "/w2", baseBranch: "main" },
+    ],
+    instances: { cloud: "http://orca.tail1234.ts.net:8787" },
+  }));
+  expect(errors).toEqual([]);
+  expect(config!.instances).toEqual({ cloud: "http://orca.tail1234.ts.net:8787" });
+
+  // A repo with no runsOn is run by whichever instance reads it — today's single-machine behaviour.
+  expect(runsHere(config!.repos[1]!, "laptop")).toBe(true);
+  expect(runsHere(config!.repos[0]!, "laptop")).toBe(false);
+  expect(runsHere(config!.repos[0]!, "cloud")).toBe(true);
+
+  // An address that isn't a URL is rejected — otherwise the failure surfaces later as an opaque
+  // fetch error on the first action against that repo.
+  expect(parseConfigDocument(doc({ instances: { cloud: "orca-box" } })).errors)
+    .toContain("instances must map an instance name to its base URL");
+  expect(parseConfigDocument(doc({ instances: ["cloud"] })).errors)
+    .toContain("instances must map an instance name to its base URL");
 });

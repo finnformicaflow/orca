@@ -373,7 +373,6 @@ export type Row = {
   sessionId?: string;
   transcript?: AgentTurn[];
   mergeClean?: "clean" | "conflict";
-  tmux?: boolean; // a live interactive tmux terminal exists for this worktree
   promoted?: boolean;
   prNumber?: number;
   prUrl?: string;
@@ -435,7 +434,7 @@ export function useWorkstreams(): Row[] {
         preferredProvider: e.preferredProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
-        mergeClean: wt?.mergeClean, tmux: wt?.tmux, promoted: e.promoted,
+        mergeClean: wt?.mergeClean, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps,
@@ -578,26 +577,6 @@ export async function cliCommand(row: Row): Promise<string> {
   return attachCommand(await resolveAttach(row));
 }
 
-/** Open (ensure) the interactive tmux terminal for this row's worktree — the hand-driven lane. Enters
- *  the pinned agent the same way Copy CLI does; idempotent server-side, so re-opening re-attaches to
- *  the running session rather than starting a second one. */
-export async function openTerminal(row: Row): Promise<void> {
-  const { worktreePath, provider, sessionId, fresh, seedFile } = await resolveAttach(row);
-  await api.ensureTerminal(row.repo, { branch: row.branch, worktreePath, provider, sessionId, fresh, seedFile });
-}
-
-/** New-draft "Start interactive session": cut the worktree, then start the agent in tmux seeded with
- *  the typed prompt as its first message and drop the user into the browser terminal. No headless run
- *  is launched — this lane is driven by hand; closing the tab leaves the session running (tmux
- *  persists). Returns the new branch so the caller can navigate to its Terminal tab. */
-export async function startInteractive(repo: string, prompt: string, provider: AgentProvider): Promise<{ branch: string }> {
-  const { branch, worktreePath, title } = await api.createWorktree(repo, prompt, provider);
-  patchEnrich(repo, branch, { prompt, title, agentProvider: provider, createdAt: now() });
-  const seedFile = (await api.handoff(repo, branch, prompt)).path; // the typed prompt = the opening message
-  await api.ensureTerminal(repo, { branch, worktreePath, provider, fresh: true, seedFile });
-  await refresh();
-  return { branch };
-}
 
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();

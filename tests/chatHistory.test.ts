@@ -10,8 +10,6 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as transcript from "../server/transcript";
-import * as bus from "../server/bus";
-import type { BusEvent } from "../server/bus";
 import { freshSchema, type TestDb } from "./pg";
 
 let dir: string;
@@ -200,16 +198,14 @@ test("a run's steps are persisted as they stream and readable after it finishes"
     while (agent.status(dir).status === "running") await new Promise((r) => setTimeout(r, 25));
 
     // Readable AFTER the run — the in-memory trail could not do this.
-    const steps = agent.runSteps(receipt.runId);
+    const steps = await agent.runSteps(receipt.runId);
     expect(steps.map((s) => s.kind)).toEqual(["thinking", "tool", "tool", "text"]);
     expect(steps[0]?.text).toBe("the lease is stale");
     expect(steps[1]).toMatchObject({ name: "Bash", text: "Running: bun test", detail: "bun test" });
     expect(steps[2]?.output).toBe("2 pass 0 fail"); // the tool RESULT, which used to be dropped
     expect(steps[3]?.text).toBe("Tests pass.");
 
-    // And it's on disk under the state dir, not in the worktree — so it can never reach a diff/PR.
-    expect(transcript.transcriptPath(receipt.runId).startsWith(dir)).toBe(true);
-    expect(transcript.read(receipt.runId, 2).map((s) => s.kind)).toEqual(["tool", "text"]); // tail
+    expect((await transcript.read(receipt.runId, 2)).map((s) => s.kind)).toEqual(["tool", "text"]); // tail
 
     // The durable turn still carries the final outcome; steps are the reasoning behind it.
     expect((await db.turns("r", "feat"))[0]?.structured?.outcome).toBe("Shipped it.");
@@ -226,49 +222,33 @@ test("one runaway tool result can't dominate a transcript, and a missing one is 
   expect(big.output!.length).toBeLessThan(40_000);
   expect(big.output).toContain("truncated");
   // Advisory, like the lease and ledger: no transcript degrades to "no steps", never a throw.
-  expect(transcript.read("no-such-run")).toEqual([]);
+  expect(await transcript.read("no-such-run")).toEqual([]);
 });
 
-// The live feed. Turn lifecycle events are published by the DB; step events are published by the
-// caller of transcript.append (agent.ts), which knows the branch — transcript.ts stays pure
-// persistence. Events carry repo/branch so a chat stream filters without a database read per step.
-test("bus events are addressed to the branch that owns the run", async () => {
+// The chat's live tail. Steps are read back by sequence number, so a client polls with the cursor it
+// already holds and gets only what's new — the same query whether the run is on this machine or
+// another one, which is the whole reason the in-process bus and its SSE stream were removed.
+test("steps are readable by cursor, so a tail returns only what is new", async () => {
   await start("run-a", "a");
-  await start("run-b", "b", "other");
+  await transcript.append("run-a", [{ at: 1, kind: "text", text: "one" }, { at: 2, kind: "text", text: "two" }]);
 
-  const seen: BusEvent[] = [];
-  const off = bus.subscribe((e) => seen.push(e));
-  try {
-    // Finishing publishes, so an open chat replaces "working…" with the outcome immediately — and
-    // the event names the branch, which is what lets one stream ignore another's runs.
-    await db.finishTurn("run-a", { status: "done", response: "done", finishedAt: Date.now() });
-    const turnEvents = seen.filter((e) => e.kind === "turn" && e.runId === "run-a");
-    expect(turnEvents).toHaveLength(1);
-    expect(turnEvents[0]).toMatchObject({ repo: "r", branch: "feat" });
+  const all = await transcript.numbered("run-a");
+  expect(all.map((r) => r.step.text)).toEqual(["one", "two"]);
+  expect(all.map((r) => r.seq)).toEqual([1, 2]); // dense, so a cursor is just "how far I've read"
 
-    // The owner lookup still exists for anything that has only a runId.
-    expect(await db.turnOwner("run-a")).toEqual({ repo: "r", branch: "feat" });
-    expect((await db.turnOwner("run-b"))?.branch).toBe("other");
-    expect(await db.turnOwner("nope")).toBeUndefined();
-  } finally {
-    off();
-  }
-  expect(bus.subscriberCount()).toBe(0); // no leaked stream after unsubscribe
+  await transcript.append("run-a", [{ at: 3, kind: "text", text: "three" }]);
+  expect((await transcript.numbered("run-a", { afterSeq: 2 })).map((r) => r.step.text)).toEqual(["three"]);
+  expect(await transcript.numbered("run-a", { afterSeq: 3 })).toEqual([]); // caught up → nothing to send
+  expect((await transcript.read("run-a", 1)).map((s) => s.text)).toEqual(["three"]); // tail
 });
 
-test("a throwing subscriber (a closed stream) never breaks the run that published", async () => {
-  await start("run-c", "c");
-  const off = bus.subscribe(() => { throw new Error("socket closed"); });
-  try {
-    // transcript.append returns what it wrote, so the caller can publish it; the write itself must
-    // land regardless of what any subscriber does.
-    expect(transcript.append("run-c", [{ at: 1, kind: "text", text: "still recorded" }]))
-      .toMatchObject([{ text: "still recorded" }]);
-    expect(transcript.read("run-c")[0]?.text).toBe("still recorded");
-    await expect(db.finishTurn("run-c", { status: "done", response: "ok", finishedAt: Date.now() })).resolves.toBeUndefined();
-  } finally {
-    off();
-  }
+test("a retried write cannot duplicate a step", async () => {
+  // The unique (run_id, seq) index is what makes ingestion idempotent — it matters more once a step
+  // can be written by a process that might retry.
+  await start("run-b", "b");
+  await db.appendSteps("run-b", 1, [{ at: 1, kind: "text", text: "once" } as never]);
+  await db.appendSteps("run-b", 1, [{ at: 1, kind: "text", text: "once" } as never]); // same seq again
+  expect((await transcript.numbered("run-b")).length).toBe(1);
 });
 
 // A bridge killed mid-run writes the turn at launch and never reaches its exit handler, so the turn
@@ -307,7 +287,7 @@ test("a run stopped from the chat is recorded as stopped, keeps its work, and st
   process.env.PATH = `${shim}:${realPath}`;
   try {
     const receipt = await agent.runAgent(dir, "refactor everything", { repo: "r", branch: "feat", provider: "claude" });
-    while (!agent.runSteps(receipt.runId).length) await new Promise((r) => setTimeout(r, 25));
+    while (!(await agent.runSteps(receipt.runId)).length) await new Promise((r) => setTimeout(r, 25));
 
     expect(agent.stop(dir)).toBe(receipt.runId); // reports what it interrupted
     // Wait for the exit handler to write, rather than guessing at a sleep.
@@ -319,7 +299,7 @@ test("a run stopped from the chat is recorded as stopped, keeps its work, and st
     expect(turn?.sessionId).toBeTruthy(); // resumable, so a follow-up redirects the same session
     expect(turn?.finishedAt).toBeGreaterThan(0); // and it doesn't linger as "working…"
     // The work it recorded before you stopped it is kept, not discarded.
-    expect(agent.runSteps(receipt.runId).map((s) => s.text)).toContain("Refactoring…");
+    expect((await agent.runSteps(receipt.runId)).map((s) => s.text)).toContain("Refactoring…");
   } finally {
     process.env.PATH = realPath;
     agent.stop(dir);
