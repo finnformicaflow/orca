@@ -75,7 +75,7 @@ export async function close(): Promise<void> {
 // Numbered, append-only steps recorded in `migration`. Never edit an existing step — add another.
 // (SQLite's `PRAGMA user_version` did this job before; Postgres needs the table, but the discipline
 // is identical, and deliberately not a migration framework.)
-const MIGRATIONS: { id: number; sql: string }[] = [
+export const MIGRATIONS: { id: number; sql: string }[] = [
   {
     id: 1,
     sql: `
@@ -134,6 +134,30 @@ const MIGRATIONS: { id: number; sql: string }[] = [
         config JSONB NOT NULL,
         updated_at BIGINT NOT NULL
       );
+    `,
+  },
+  {
+    id: 3,
+    // Per-repo opt-ins default to OFF, but a repo configured BEFORE they existed was already doing
+    // all of this — so record what it was doing rather than silently switching it off underneath a
+    // working board. New repos start closed; existing ones become explicit and revocable.
+    // `previews` is only turned on where the repo actually defines services, and Slack only where a
+    // channel is set, so the backfill grants nothing the repo wasn't already able to do.
+    sql: `
+      UPDATE repo_config SET config = config
+        || jsonb_build_object(
+             'features', jsonb_build_object(
+               'slack',            config ? 'slackChannel',
+               'followAutomation', true,
+               'aiPrDescription',  true,
+               'autoMerge',        true,
+               'previews',         COALESCE(jsonb_array_length(config->'previewServices') > 0, false),
+               'aiTitles',         true
+             ),
+             'agentPermissionMode', 'bypass',
+             'providers', COALESCE(config->'providers', '["claude","codex","cursor"]'::jsonb)
+           )
+        WHERE NOT config ? 'features';
     `,
   },
 ];

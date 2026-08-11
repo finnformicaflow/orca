@@ -36,8 +36,13 @@ describe("provider adapters", () => {
 
   test("builds native fresh/resume commands for Claude, Codex, and Cursor", () => {
     // The prompt is the trailing positional after `--` in every form (see the leading-dash case below).
-    expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
+    // `bypassPermissions` is no longer unconditional — a repo opts into it (see agentPermissionMode),
+    // so the default form asks rather than bypassing.
+    expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, undefined, "bypass")).toEqual([
       "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+    ]);
+    expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
+      "claude", "-p", "--permission-mode", "default", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
     ]);
     expect(agentCommand("codex", "/wt/x", "go")).toEqual([
       "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "--", "go",
@@ -56,7 +61,7 @@ describe("provider adapters", () => {
   test("a repo's agentModel pins the Claude runs only, leaving the one-shots and other providers alone", () => {
     // Without it, headless runs silently inherit ~/.claude/settings.json's `model` — the same default
     // your interactive sessions use, which is not necessarily what you want Orca's agents on.
-    const pinned = agentCommand("claude", "/wt/x", "go", undefined, "s-1", "claude-opus-5[1m]");
+    const pinned = agentCommand("claude", "/wt/x", "go", undefined, "s-1", "claude-opus-5[1m]", "bypass");
     expect(pinned.slice(0, 6)).toEqual(["claude", "-p", "--permission-mode", "bypassPermissions", "--model", "claude-opus-5[1m]"]);
     expect(pinned.at(-1)).toBe("go"); // still the trailing positional after `--`
     expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, "opus")).toContain("--resume"); // resumes still pin

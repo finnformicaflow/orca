@@ -75,6 +75,7 @@ export type LaunchOptions = {
   repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
   model?: string; // repo's `agentModel` — claude only; unset means the CLI's own default
+  permissionMode?: "bypass" | "ask"; // repo's `agentPermissionMode`; `ask` (the default) is NOT bypass
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
 };
@@ -350,7 +351,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask"): string[] {
   if (provider === "codex") {
     return resume
       ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, "--", prompt]
@@ -363,8 +364,10 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
   // stream-json under -p. The final `result` event is the same object the old `json` form emitted,
   // so parseClaudeStreamOutput extracts the identical outcome/meta at exit.
-  // `model` comes from the repo's `agentModel`; unset → the claude CLI's own default.
-  return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
+  // `model` comes from the repo's `agentModel`; unset → the claude CLI's own default. The permission
+  // mode is the repo's: `bypassPermissions` was unconditional, which is fine for your own repo and
+  // much less so for a client's, so a repo now opts into it.
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
@@ -379,7 +382,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const proc = Bun.spawn(
-    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model),
+    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode),
     { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
