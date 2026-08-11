@@ -1,5 +1,5 @@
 import { tmpdir } from "os";
-import { API_PORT, loadConfig, repoOf } from "./config";
+import { API_PORT, configDocument, invalidateConfig, loadConfig, parseConfigDocument, repoOf, saveConfigDocument } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
@@ -56,7 +56,6 @@ async function resolvePrDescription(
   return description!.trim();
 }
 
-const cfg = await loadConfig();
 // Take the API port from a stale bridge (a prior dev run, or another checkout's instance) before
 // binding — otherwise a fresh bridge with newer routes silently loses the bind and the UI proxies
 // `/api` to the old code, 404ing on anything new (this is what made "Test master" report "not found").
@@ -75,6 +74,10 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
+  // Read per request, not once at startup: the configuration lives in the database now, so adding a
+  // repo or changing a setting takes effect on the next call rather than the next deploy. Cached in
+  // config.ts and invalidated on write, so this is a map lookup in the common case.
+  const cfg = await loadConfig();
   // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
   // Handled before the JSON body parse below — this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
@@ -89,7 +92,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     return json({ paths });
   }
-  const body: any = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+  // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
+  // handler an empty object, which then failed validation as "repos must be a non-empty array".
+  const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
 
@@ -105,6 +110,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     return url.searchParams.get("format") === "text"
       ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
       : json(report);
+  }
+  if (req.method === "GET" && p === "/api/config/document") {
+    // The stored document, paths still templated — what a settings UI edits and what you'd paste
+    // into another machine.
+    return json(await configDocument());
+  }
+  if (req.method === "PUT" && p === "/api/config/document") {
+    // Paste-a-document, wrangler style: the whole config is the unit, so repos absent from it are
+    // removed. Invalid input is REJECTED with every problem listed — never half-applied.
+    const { config, errors } = parseConfigDocument(body.config ?? body);
+    if (!config) return json({ errors }, 400);
+    await saveConfigDocument(config);
+    return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "GET" && p === "/api/config") {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
@@ -514,7 +532,7 @@ Bun.serve<TerminalData>({
       const repoName = url.searchParams.get("repo") ?? undefined;
       const branch = url.searchParams.get("branch");
       if (!branch) return json({ error: "branch required" }, 400);
-      const name = sessionName(repoOf(cfg, repoName).name, branch);
+      const name = sessionName(repoOf(await loadConfig(), repoName).name, branch);
       if (server.upgrade(req, { data: { name } })) return undefined;
       return new Response("expected a websocket upgrade", { status: 426 });
     }

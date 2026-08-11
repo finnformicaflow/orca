@@ -1,3 +1,5 @@
+import * as db from "./db";
+
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
 export type PreviewService = {
   name: string;
@@ -61,6 +63,88 @@ export type OrcaConfig = {
   agentTimeoutMinutes?: number;
 };
 
+/** A repo path as STORED. Paths are per-machine — once a laptop and a cloud box share one database,
+ *  the same repo lives at different absolute paths on each — so a stored config keeps them as
+ *  templates and each instance expands them on read. `${ORCA_DEV_ROOT}` and a leading `~` are the two
+ *  forms; anything else is taken literally. */
+export function expandPath(value: string): string {
+  const devRoot = process.env.ORCA_DEV_ROOT ?? "";
+  const home = process.env.HOME ?? "";
+  return value
+    .replace(/\$\{ORCA_DEV_ROOT\}/g, devRoot)
+    .replace(/^~(?=\/|$)/, home);
+}
+
+/** The inverse, used when seeding the database from the checked-in file: store the portable form so
+ *  another machine reading the same row resolves it against its own ORCA_DEV_ROOT. */
+export function templatePath(value: string): string {
+  const devRoot = process.env.ORCA_DEV_ROOT;
+  if (devRoot && value.startsWith(devRoot)) return `\${ORCA_DEV_ROOT}${value.slice(devRoot.length)}`;
+  return value;
+}
+
+const PATH_FIELDS = ["repoPath", "worktreeRoot"] as const;
+
+/** Validate a pasted configuration document. Returns the parsed config or a list of problems — the
+ *  point of a paste-a-document flow is that a bad paste is REJECTED with reasons, not half-applied.
+ *  Pure, so the rules are testable without a database. */
+export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors: string[] } {
+  const errors: string[] = [];
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { errors: ["config must be an object"] };
+  const d = doc as Record<string, unknown>;
+  const repos = d.repos;
+  if (!Array.isArray(repos) || repos.length === 0) {
+    errors.push("repos must be a non-empty array");
+    return { errors };
+  }
+  const seen = new Set<string>();
+  for (const [i, raw] of repos.entries()) {
+    const where = `repos[${i}]`;
+    if (!raw || typeof raw !== "object") { errors.push(`${where} must be an object`); continue; }
+    const r = raw as Record<string, unknown>;
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    if (!name) errors.push(`${where}.name is required`);
+    else if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) errors.push(`${where}.name must be a slug (letters, digits, dashes)`);
+    else if (seen.has(name)) errors.push(`${where}.name "${name}" is duplicated`);
+    else seen.add(name);
+    for (const f of ["repoPath", "worktreeRoot", "baseBranch"] as const) {
+      if (typeof r[f] !== "string" || !(r[f] as string).trim()) errors.push(`${where}.${f} is required`);
+    }
+    if (r.previewServices !== undefined && !Array.isArray(r.previewServices)) {
+      errors.push(`${where}.previewServices must be an array`);
+    }
+    for (const [j, svc] of ((r.previewServices as unknown[]) ?? []).entries()) {
+      const s = svc as Record<string, unknown> | null;
+      if (!s || typeof s !== "object") { errors.push(`${where}.previewServices[${j}] must be an object`); continue; }
+      if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${where}.previewServices[${j}].name is required`);
+      if (typeof s.command !== "string" || !s.command.trim()) errors.push(`${where}.previewServices[${j}].command is required`);
+    }
+  }
+  const portRange = d.portRange;
+  if (portRange !== undefined) {
+    const ok = Array.isArray(portRange) && portRange.length === 2
+      && portRange.every((n) => typeof n === "number" && Number.isInteger(n) && n > 0 && n < 65536)
+      && (portRange[0] as number) <= (portRange[1] as number);
+    if (!ok) errors.push("portRange must be [min, max] port numbers with min <= max");
+  }
+  if (d.staleHours !== undefined && (typeof d.staleHours !== "number" || d.staleHours < 0)) {
+    errors.push("staleHours must be a non-negative number");
+  }
+  if (d.agentTimeoutMinutes !== undefined && (typeof d.agentTimeoutMinutes !== "number" || d.agentTimeoutMinutes <= 0)) {
+    errors.push("agentTimeoutMinutes must be a positive number");
+  }
+  if (errors.length) return { errors };
+  return {
+    errors: [],
+    config: {
+      repos: repos as RepoConfig[],
+      portRange: (portRange as [number, number]) ?? [30000, 40000],
+      staleHours: (d.staleHours as number) ?? 24,
+      agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
+    },
+  };
+}
+
 /** Look up a repo by name, defaulting to the first configured repo. */
 export const repoOf = (cfg: OrcaConfig, name?: string): RepoConfig =>
   cfg.repos.find((r) => r.name === name) ?? cfg.repos[0]!;
@@ -69,8 +153,98 @@ export const repoOf = (cfg: OrcaConfig, name?: string): RepoConfig =>
  *  without dragging orca.config into Vite's config-dependency graph — see server/ports.ts. */
 export { API_PORT } from "./ports";
 
-// Loaded lazily so tests can exercise adapters without a config file.
+// The configuration lives in the DATABASE, so adding a project is a paste rather than an edit-and-
+// restart — and so a second Orca instance sharing the database inherits it. `orca.config.ts` remains
+// only as the seed for a database that has never been configured, and as the escape hatch if you'd
+// rather keep editing a file.
+//
+// Cached in memory because the board polls constantly; `invalidateConfig()` clears it on write, so a
+// paste takes effect on the next request with no restart.
+let cached: OrcaConfig | null = null;
+
+export function invalidateConfig(): void {
+  cached = null;
+}
+
+/** The checked-in file, or undefined when there isn't one (a fresh install, or ORCA_DEV_ROOT unset). */
+async function fileConfig(): Promise<OrcaConfig | undefined> {
+  try {
+    const mod = await import("../orca.config.ts");
+    return mod.default as OrcaConfig;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Store the checked-in file as the initial rows, with machine-specific path prefixes turned back
+ *  into `${ORCA_DEV_ROOT}` templates so another machine resolves them against its own root. */
+async function seedFromFile(file: OrcaConfig): Promise<void> {
+  await db.saveConfig({
+    repos: file.repos.map(({ name, ...rest }) => ({
+      name,
+      config: {
+        ...rest,
+        repoPath: templatePath(rest.repoPath),
+        worktreeRoot: templatePath(rest.worktreeRoot),
+      } as unknown as db.Fields,
+    })),
+    app: {
+      portRange: file.portRange,
+      staleHours: file.staleHours,
+      ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
+    },
+  });
+}
+
+/** The effective configuration: database rows, seeded once from the file if the database is empty. */
 export async function loadConfig(): Promise<OrcaConfig> {
-  const mod = await import("../orca.config.ts");
-  return mod.default as OrcaConfig;
+  if (cached) return cached;
+  let rows = await db.repoConfigs();
+  if (!rows.length) {
+    const file = await fileConfig();
+    if (file?.repos.length) {
+      await seedFromFile(file);
+      rows = await db.repoConfigs();
+    }
+  }
+  const app = await db.appConfig();
+  const config: OrcaConfig = {
+    repos: rows.map((r) => {
+      const c = r.config as unknown as RepoConfig;
+      return { ...c, name: r.name, repoPath: expandPath(c.repoPath ?? ""), worktreeRoot: expandPath(c.worktreeRoot ?? "") };
+    }),
+    portRange: (app.portRange as [number, number]) ?? [30000, 40000],
+    staleHours: (app.staleHours as number) ?? 24,
+    agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
+  };
+  cached = config;
+  return config;
+}
+
+/** Persist a validated document, storing paths in their portable form. Invalidates the cache, so the
+ *  next request sees it — no restart. */
+export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
+  await db.saveConfig({
+    repos: config.repos.map(({ name, ...rest }) => ({
+      name,
+      config: {
+        ...rest,
+        repoPath: templatePath(rest.repoPath),
+        worktreeRoot: templatePath(rest.worktreeRoot),
+      } as unknown as db.Fields,
+    })),
+    app: {
+      portRange: config.portRange,
+      staleHours: config.staleHours,
+      ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
+    },
+  });
+  invalidateConfig();
+}
+
+/** The document as stored (paths still templated) — what the settings UI shows you to edit. */
+export async function configDocument(): Promise<Record<string, unknown>> {
+  const rows = await db.repoConfigs();
+  const app = await db.appConfig();
+  return { repos: rows.map((r) => ({ name: r.name, ...r.config })), ...app };
 }
