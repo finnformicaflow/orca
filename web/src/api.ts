@@ -73,6 +73,8 @@ export const api = {
     `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
   ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
     post("/api/terminal/ensure", { repo, ...b }),
+  /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
+  stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),

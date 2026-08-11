@@ -270,3 +270,36 @@ test("turns orphaned by a dead bridge are closed at startup; genuinely live ones
 
   expect(db.reconcileRunning(new Set(["run-live"]))).toBe(0); // idempotent
 });
+
+// Stop is not Discard: the process dies, everything else survives. The turn must record that
+// distinction, because a stopped run's session id is what lets the next message resume and redirect
+// it instead of starting the conversation over.
+test("a run stopped from the chat is recorded as stopped, keeps its work, and stays resumable", async () => {
+  const shim = await mkdtemp(join(tmpdir(), "orca-claude-"));
+  // Emits a step, then hangs — so there is real recorded work when the stop lands.
+  const event = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Refactoring…" }] } });
+  await writeFile(join(shim, "claude"), `#!/bin/sh\necho '${event}'\nsleep 30\n`);
+  await chmod(join(shim, "claude"), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${shim}:${realPath}`;
+  try {
+    const receipt = agent.runAgent(dir, "refactor everything", { repo: "r", branch: "feat", provider: "claude" });
+    while (!agent.runSteps(receipt.runId).length) await new Promise((r) => setTimeout(r, 25));
+
+    expect(agent.stop(dir)).toBe(receipt.runId); // reports what it interrupted
+    // Wait for the exit handler to write, rather than guessing at a sleep.
+    for (let i = 0; i < 200 && !db.turns("r", "feat")[0]?.finishedAt; i++) await new Promise((r) => setTimeout(r, 25));
+
+    const [turn] = db.turns("r", "feat");
+    expect(turn?.stopped).toBe(true);
+    expect(turn?.failed).toBeUndefined(); // NOT an error — you did this on purpose
+    expect(turn?.sessionId).toBeTruthy(); // resumable, so a follow-up redirects the same session
+    expect(turn?.finishedAt).toBeGreaterThan(0); // and it doesn't linger as "working…"
+    // The work it recorded before you stopped it is kept, not discarded.
+    expect(agent.runSteps(receipt.runId).map((s) => s.text)).toContain("Refactoring…");
+  } finally {
+    process.env.PATH = realPath;
+    agent.stop(dir);
+    await rm(shim, { recursive: true, force: true });
+  }
+});

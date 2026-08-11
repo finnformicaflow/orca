@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api } from "../api";
-import { followUp, type Row } from "../store";
+import { followUp, refresh, type Row } from "../store";
 import { agentLabel, groupSteps } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 
@@ -70,6 +70,9 @@ function Steps({ steps: raw, live }: { steps: AgentStep[]; live: boolean }) {
  *  the raw final message as monospace text. Terminal palette, so it reads on the dark window. */
 function Output({ turn }: { turn: AgentTurn }) {
   if (turn.failed) return <pre className="whitespace-pre-wrap break-words text-red-400">{turn.response || "exited without output"}</pre>;
+  // Stopped is amber, not red: you interrupted it, the work so far stands, and the session is still
+  // resumable — replying in the composer redirects it rather than starting over.
+  if (turn.stopped) return <pre className="whitespace-pre-wrap break-words text-amber-400">{turn.response || "Stopped."}</pre>;
   const s = turn.structured;
   if (!s) return <pre className="whitespace-pre-wrap break-words text-neutral-300">{turn.response || "(no output)"}</pre>;
   return (
@@ -103,7 +106,7 @@ function Turn({ turn }: { turn: AgentTurn }) {
       </div>
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
-          {agentLabel(turn.provider)}{turn.failed ? " · failed" : ""}
+          {agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}
         </div>
         {/* A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as
             an unfinished exchange rather than vanishing. */}
@@ -159,6 +162,19 @@ export function ChatPanel({ row }: { row: Row }) {
   useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [turns]);
+  const [stopping, setStopping] = useState(false);
+  // Stop, not Discard: kills the process but keeps the worktree, its commits, and the provider
+  // session, so the next message resumes the same conversation and steers it somewhere else.
+  const onStop = async () => {
+    if (!row.worktreePath) return;
+    setStopping(true);
+    try {
+      await api.stopAgent(row.worktreePath);
+      await refresh(); // the card's running state drives this button and the composer's placeholder
+    } finally {
+      setStopping(false);
+    }
+  };
   const onScroll = () => {
     const el = scroller.current;
     if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK;
@@ -171,6 +187,19 @@ export function ChatPanel({ row }: { row: Row }) {
         onScroll={onScroll}
         className="min-h-0 flex-1 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200"
       >
+        {running && (
+          <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={stopping}
+              className="rounded border border-amber-800 bg-neutral-950/90 px-2 py-0.5 text-[11px] text-amber-400 hover:border-amber-600 hover:text-amber-300 disabled:opacity-50"
+              title="Interrupt this run. The worktree, its commits, and the session are kept — reply below to redirect it."
+            >
+              {stopping ? "stopping…" : "■ stop"}
+            </button>
+          </div>
+        )}
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}

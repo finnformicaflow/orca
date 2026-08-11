@@ -63,6 +63,7 @@ export const apiFake = {
   // The bridge's durable enrichment + chat history (server/db.ts), keyed `repo::branch`. Tests seed
   // and assert against this instead of localStorage — it stands in for the DB, not for a cache.
   enrichmentData: new Map<string, Record<string, unknown>>(),
+  stopped: [] as string[],
   turnsData: new Map<string, unknown[]>(),
   // When set, importEnrichment rejects — the migration must then KEEP the browser's blob, since it
   // is the only copy of that history.
@@ -82,7 +83,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.terminalEnsures = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -175,6 +176,7 @@ mock.module("@/api", () => ({
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
     // The chat opens this URL with EventSource for its live step feed (stubbed in happydom.ts).
     turnsStreamUrl: (repo: string, branch: string) => `/api/turns/stream?repo=${repo}&branch=${branch}`,
+    stopAgent: async (key: string) => { apiFake.stopped.push(key); return { ok: true as const }; },
     handoff: async (_repo: string, branch: string, content: string) => {
       apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
     },

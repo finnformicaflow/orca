@@ -197,3 +197,25 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   await pushStep("back at the bottom");
   expect(scrolled).toEqual([1000]);
 });
+
+test("Stop interrupts the run without discarding the worktree, and reads as stopped not failed", async () => {
+  // "It's going down the wrong track" — kill the process, keep the branch, its commits, and the
+  // provider session, so the next message resumes and redirects rather than starting over.
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "refactor everything", startedAt: 1 }]);
+  await mount({ ...base, agentStatus: "running" });
+
+  const stop = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("stop"));
+  expect(stop).toBeDefined(); // offered only while a run is in flight
+  await act(async () => { stop!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.stopped).toEqual(["/wt/feat"]); // the worktree's run, not the workstream
+
+  // A stopped turn keeps its session id (so a follow-up resumes it) and is not styled as a failure.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "refactor everything", startedAt: 1, finishedAt: 2,
+    stopped: true, sessionId: "c-1", response: "Stopped. The work so far stands; reply to redirect.",
+  }]);
+  await mount(base);
+  expect(text()).toContain("stopped by you");
+  expect(text()).toContain("The work so far stands");
+  expect(text()).not.toContain("failed");
+});

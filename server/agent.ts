@@ -112,6 +112,10 @@ export function parseRunMeta(j: any): RunMeta {
 
 const runs = new Map<string, Run>();
 
+// How long to let stdout/stderr drain after the process exits before finalizing the turn anyway.
+// Generous for a normal exit (the pipe closes immediately), bounded for the pathological one.
+const DRAIN_GRACE_MS = 2_000;
+
 function codexSessionId(line: string): string | undefined {
   try {
     const event = JSON.parse(line);
@@ -124,7 +128,7 @@ function codexSessionId(line: string): string | undefined {
 /** Read Codex JSONL without waiting for the process to finish. Codex chooses its own thread UUID
  *  (there is no Claude-style `--session-id` flag), but emits it first. Publishing it into `runs`
  *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
-async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<string> {
+async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
@@ -132,6 +136,7 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
     const { value, done } = await reader.read();
     if (done) break;
     raw += value;
+    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
@@ -217,7 +222,7 @@ function toolResultText(content: unknown): string | undefined {
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
  *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
  *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
-async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<string> {
+async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
@@ -225,6 +230,7 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
     const { value, done } = await reader.read();
     if (done) break;
     raw += value;
+    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
@@ -362,13 +368,23 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     repo: options.repo!, branch: options.branch!, runId, provider, prompt, sessionId, startedAt,
   }));
   void (async () => {
-    const [out, err] = await Promise.all([
-      provider === "codex" ? readCodexOutput(key, proc)
-        : provider === "claude" ? readClaudeStream(runId, proc)
-        : new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+    // Read stdout/stderr, but NEVER let the pipe decide when the turn is finalized. Killing the CLI
+    // does not necessarily close its stdout — a grandchild (a shell's `sleep`, a spawned build) can
+    // hold the write end open indefinitely, and waiting on EOF would leave the turn stuck `running`
+    // forever with its work unrecorded. So: wait for the process to exit, then give the readers a
+    // short grace to drain, then proceed with whatever landed (the holders expose partial output).
+    const outHolder = { raw: "" };
+    const errHolder = { raw: "" };
+    const reads = Promise.all([
+      provider === "codex" ? readCodexOutput(key, proc, outHolder)
+        : provider === "claude" ? readClaudeStream(runId, proc, outHolder)
+        : new Response(proc.stdout).text().then((t) => (outHolder.raw = t)),
+      new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
+    await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
+    const out = outHolder.raw;
+    const err = errHolder.raw;
     if (timeout) clearTimeout(timeout);
     // A superseded (re-run) or stopped run must not clobber the live `runs` entry — but its output is
     // still real work that happened, so it's parsed and its turn is still completed in the DB. This
@@ -400,11 +416,15 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;
+    const wasStopped = stoppedRuns.delete(runId);
     const error = ok ? undefined : (err.trim() || result || `exit ${code}`).slice(0, 300);
     recordTurn(options, () => db.finishTurn(runId, {
-      status: ok ? "done" : "error",
+      // A run you stopped is not a failure: whatever it completed stands, and the session id below
+      // keeps it resumable, so a follow-up redirects it rather than starting over.
+      status: wasStopped ? "stopped" : ok ? "done" : "error",
       // A failed run still has something worth keeping — the error is the turn's outcome.
-      response: result ?? error, structured, sessionId: resolvedSessionId, finishedAt,
+      response: wasStopped ? (result ?? "Stopped. The work so far stands; reply to redirect.") : (result ?? error),
+      structured, sessionId: resolvedSessionId, finishedAt,
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
@@ -498,12 +518,19 @@ export async function describePr(provider: AgentProvider, prompt: string, option
   }
 }
 
-/** Kill and forget a run (e.g. on discard). */
-export function stop(key: string): void {
+// Runs you stopped deliberately. The exit handler reads this so an interrupted run is recorded as
+// `stopped` rather than `error` — the work it already did stands, and its session stays resumable.
+const stoppedRuns = new Set<string>();
+
+/** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
+ *  any, so a caller can report what it interrupted. */
+export function stop(key: string): string | undefined {
   const r = runs.get(key);
+  if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
   try { r?.proc?.kill(); } catch { /* already gone */ }
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
+  return r?.runId;
 }
 
 /** Recognize the headless CLI forms Orca launches, including resumed Cursor conversations. */

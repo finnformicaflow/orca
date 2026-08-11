@@ -58,6 +58,9 @@ export type AgentTurn = {
   structured?: AgentOutcome;
   sessionId?: string;
   failed?: boolean;
+  /** You stopped this run from the chat. Distinct from `failed`: the work it did stands, and its
+   *  session is still resumable — a follow-up picks up where it left off. */
+  stopped?: boolean;
   startedAt?: number;
   finishedAt?: number;
   // The agent's recorded steps — its thought process — server-decorated onto /api/turns from the

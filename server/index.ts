@@ -474,6 +474,14 @@ async function api(req: Request, url: URL): Promise<Response> {
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
     });
   }
+  if (req.method === "POST" && p === "/api/agent/stop") {
+    // Stop the run without discarding anything: the worktree, its commits, and the provider session
+    // all stay, so a follow-up resumes the same conversation and redirects it. This is the "it's
+    // going the wrong way" button — NOT Discard, which reaps the branch.
+    if (!body.key) return json({ error: "key required" }, 400);
+    const runId = agent.stop(body.key);
+    return json({ ok: true, runId });
+  }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
     const key = url.searchParams.get("key");
     if (!key) return json({ error: "key required" }, 400);

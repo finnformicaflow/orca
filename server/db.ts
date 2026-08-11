@@ -21,7 +21,7 @@ import { statePath } from "./state";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
 import * as bus from "./bus";
 
-export type TurnStatus = "running" | "done" | "error";
+export type TurnStatus = "running" | "done" | "error" | "stopped";
 
 const SCHEMA = `
 CREATE TABLE workstream (
@@ -194,6 +194,7 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   structured: r.structured ? JSON.parse(r.structured) as AgentOutcome : undefined,
   sessionId: r.session_id ?? undefined,
   failed: r.status === "error" ? true : undefined,
+  stopped: r.status === "stopped" ? true : undefined,
   startedAt: r.started_at,
   finishedAt: r.finished_at ?? undefined,
 });
@@ -216,7 +217,7 @@ export function startTurn(input: {
 /** Complete the turn started by `startTurn`. The session id is re-supplied because Codex and Cursor
  *  only reveal theirs mid-run. */
 export function finishTurn(runId: string, input: {
-  status: "done" | "error"; response?: string; structured?: AgentOutcome;
+  status: "done" | "error" | "stopped"; response?: string; structured?: AgentOutcome;
   sessionId?: string; finishedAt: number;
 }): void {
   db().query(
