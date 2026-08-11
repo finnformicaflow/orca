@@ -5,9 +5,11 @@
 // source of truth. Nothing here is durable; the transcript file and the DB already are.
 import type { AgentStep } from "../shared/agent";
 
+// Events carry the branch they belong to, so a chat stream can filter without a database read on
+// what is the hottest path in the system (one event per recorded step).
 export type BusEvent =
-  | { kind: "step"; runId: string; steps: AgentStep[] }
-  | { kind: "turn"; runId: string };
+  | { kind: "step"; runId: string; repo: string; branch: string; steps: AgentStep[] }
+  | { kind: "turn"; runId: string; repo: string; branch: string };
 
 type Listener = (event: BusEvent) => void;
 const listeners = new Set<Listener>();

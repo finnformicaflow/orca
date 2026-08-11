@@ -8,13 +8,31 @@ import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
+import * as bus from "./bus";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
- *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped. */
-function recordTurn(options: LaunchOptions, write: () => void): void {
-  if (!options.repo || !options.branch) return;
-  try { write(); } catch (e) { console.error("orca: chat history write failed", e); }
+ *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
+ *
+ *  Fire-and-forget on purpose: the database is async (Postgres) but `launch()` returns its receipt
+ *  synchronously, and a history write must never be something the run waits on. The write is still
+ *  ordered per run, because `startTurn` is awaited inside the same chain the exit handler joins. */
+function recordTurn(options: LaunchOptions, write: () => Promise<void>): Promise<void> {
+  if (!options.repo || !options.branch) return Promise.resolve();
+  const pending = write().catch((e) => console.error("orca: chat history write failed", e));
+  historyWrites.add(pending);
+  void pending.finally(() => historyWrites.delete(pending));
+  return pending;
+}
+
+// In-flight history writes. Fire-and-forget is right for the RUN (it must never wait on the DB), but
+// shutdown and tests need a point at which they are known to have landed — otherwise the pool closes
+// underneath a write and the turn is lost for the very reason the DB exists.
+const historyWrites = new Set<Promise<unknown>>();
+
+/** Wait for every outstanding history write. Call before closing the pool (shutdown, teardown). */
+export async function flushHistory(): Promise<void> {
+  while (historyWrites.size) await Promise.all([...historyWrites]);
 }
 
 // Per-run metadata pulled from the `claude -p` JSON: which model ran, how full its context got, its
@@ -222,7 +240,7 @@ function toolResultText(content: unknown): string | undefined {
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
  *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
  *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
-async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }): Promise<string> {
+async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
@@ -238,7 +256,12 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       if (!line.trim()) continue;
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
-      transcript.append(runId, claudeSteps(event));
+      const written = transcript.append(runId, claudeSteps(event));
+      // Push to any open chat stream. Addressed to the branch here (rather than looked up per event)
+      // because this is the hottest path in the system — one event per recorded step.
+      if (written.length && owner?.repo && owner.branch) {
+        bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
+      }
     }
   }
   transcript.forget(runId);
@@ -344,7 +367,7 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   return ["claude", "-p", "--permission-mode", "bypassPermissions", ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
-export function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): LaunchReceipt {
+export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
   // Reject an overlap whether we remember the run in-process OR a durable lease from before a restart
   // says one is still live in this worktree.
   if (runs.get(key)?.status === "running" || lease.leased(key)) throw new Error("an agent is already running for this worktree");
@@ -364,9 +387,12 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
   lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
-  recordTurn(options, () => db.startTurn({
+  // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
+  // reason it is written at launch, and an async database must not quietly weaken it.
+  const started = recordTurn(options, () => db.startTurn({
     repo: options.repo!, branch: options.branch!, runId, provider, prompt, sessionId, startedAt,
   }));
+  await started;
   void (async () => {
     // Read stdout/stderr, but NEVER let the pipe decide when the turn is finalized. Killing the CLI
     // does not necessarily close its stdout — a grandchild (a shell's `sleep`, a spawned build) can
@@ -377,7 +403,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     const errHolder = { raw: "" };
     const reads = Promise.all([
       provider === "codex" ? readCodexOutput(key, proc, outHolder)
-        : provider === "claude" ? readClaudeStream(runId, proc, outHolder)
+        : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch })
         : new Response(proc.stdout).text().then((t) => (outHolder.raw = t)),
       new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
     ]);
@@ -418,6 +444,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
     const ok = code === 0 && !isError;
     const wasStopped = stoppedRuns.delete(runId);
     const error = ok ? undefined : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => db.finishTurn(runId, {
       // A run you stopped is not a failure: whatever it completed stands, and the session id below
       // keeps it resumable, so a follow-up redirects it rather than starting over.
@@ -444,7 +471,7 @@ export function launch(key: string, cwd: string, prompt: string, options: Launch
 }
 
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
-export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions) => launch(worktreePath, worktreePath, prompt, options);
+export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions): Promise<LaunchReceipt> => launch(worktreePath, worktreePath, prompt, options);
 
 export const isRunning = (key: string): boolean => runs.get(key)?.status === "running" || lease.leased(key);
 

@@ -46,23 +46,33 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   physically can't, plus proxies GitHub so tokens never touch the browser. It is still not a
   "backend" in the app sense — no service layer, no ORM, no job queue. It owns exactly one piece
   of business state (the chat history, below) because that data exists nowhere else.
-- **The chat history (`server/db.ts`, SQLite via `bun:sqlite`) IS app state — a deliberate reversal
+- **The chat history (`server/db.ts`, POSTGRES via `Bun.SQL`) IS app state — a deliberate reversal
   of the original "no DB" rule.** (History: enrichment lived wholly in `localStorage` and turns were
   recorded by the *browser*, from a poll — so a bridge restart, a closed tab, or a follow-up landing
   inside the 8s poll window destroyed the agent's response permanently. The turn is now written where
   the data already is: inserted at `launch()` with `status='running'`, completed in the exit handler.)
-  Two tables: `workstream` (surrogate integer id; `(repo, branch)` is a *mutable pointer*, unique only
+  Two tables: `workstream` (surrogate id; `(user, repo, branch)` is a *mutable pointer*, unique only
   while live, so renames and reused branch names don't collide) and `turn` (keyed by `run_id`, so a
   fast follow-up can't clobber its predecessor the way the worktree-path-keyed `runs` map did).
+  **It is Postgres, not SQLite, because the database is becoming the shared source of truth for more
+  than one Orca instance** (a cloud box and a laptop, each executing its own worktrees against one
+  database) — which a file on one host cannot be. `Bun.SQL` ships with the runtime, so it costs no
+  dependency. **Every table carries `user_id`** from the first migration: there is no auth yet
+  (`db.currentUser()` returns a constant) and exactly one user, but retrofitting row-level scoping
+  later would mean revisiting every query, so the column goes in while it is free.
   **Nothing is deleted — finished workstreams are ARCHIVED**, because the conversations most worth
   chaining from later are exactly the ones whose branches got merged and reaped. Granularity is
   prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
   stream — that's far larger, mostly tool output, and the provider already keeps it; `turn.raw_ref`
-  points back at it. Migrations are `PRAGMA user_version` + a numbered step, nothing more. A history
-  write must never break the run that produced it (`recordTurn` swallows and logs).
-- **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) holds both.** The DB lives here too
-  (mode `0600` — it holds prompts and responses in plaintext) alongside the *advisory* operational
-  files. It holds run **leases** (`server/lease.ts`: pid/runId/provider/
+  points back at it. Migrations are numbered, append-only steps in a `migration` table — never edit an
+  applied step, add another — and each runs in one transaction. A history write must never break the
+  run that produced it (`recordTurn` logs and swallows). The API is async throughout: `launch()`
+  **awaits** the start write, because "the turn exists before the run can produce output" is the whole
+  point of writing at launch; the finish write is fire-and-forget, tracked so `agent.flushHistory()`
+  can drain it before shutdown closes the pool.
+- **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) holds the on-disk state.** The
+  database is no longer among it (see `ORCA_DATABASE_URL`); the dir holds the per-run **transcripts**
+  (`server/transcript.ts`) alongside the *advisory* operational files. It holds run **leases** (`server/lease.ts`: pid/runId/provider/
   branch/expiry, so a restarted bridge rejects overlapping agent runs and reclaims dead/expired
   ones) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
   `/api/diagnostics` — never prompts, responses, logs, or secrets; it is NOT a transcript backup).

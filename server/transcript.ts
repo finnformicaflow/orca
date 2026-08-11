@@ -12,7 +12,6 @@
 import { appendFileSync, readFileSync, statSync, existsSync } from "fs";
 import type { AgentStep } from "../shared/agent";
 import { statePath } from "./state";
-import * as bus from "./bus";
 
 // Per-step caps keep one runaway tool result (a `cat` of a lockfile, a 10k-line test log) from
 // dominating the file; the file cap bounds a pathological run overall. Sized from real runs: at
@@ -37,24 +36,27 @@ export function boundStep(step: AgentStep): AgentStep {
 // and re-stats once, which is exactly right — the cap is a safety valve, not an accounting record.
 const sizes = new Map<string, number>();
 
-/** Append steps to a run's transcript. Never throws: a history write must not break the run. */
-export function append(runId: string, steps: AgentStep[]): void {
-  if (!steps.length) return;
+/** Append steps to a run's transcript, returning what was written (bounded) so the caller can publish
+ *  it to any open chat stream — this module stays pure persistence and knows nothing about branches.
+ *  Never throws: a history write must not break the run. */
+export function append(runId: string, steps: AgentStep[]): AgentStep[] {
+  if (!steps.length) return [];
   try {
     const path = transcriptPath(runId);
     let size = sizes.get(runId) ?? (existsSync(path) ? statSync(path).size : 0);
-    if (size >= MAX_FILE) return;
+    if (size >= MAX_FILE) return [];
     const bounded = steps.map(boundStep);
     const payload = `${bounded.map((s) => JSON.stringify(s)).join("\n")}\n`;
     appendFileSync(path, payload);
-    bus.publish({ kind: "step", runId, steps: bounded }); // push to any open chat stream
     size += Buffer.byteLength(payload);
     if (size >= MAX_FILE) {
       appendFileSync(path, `${JSON.stringify({ at: Date.now(), kind: "text", text: "…(transcript truncated: run exceeded the recorded-step limit)…" } satisfies AgentStep)}\n`);
     }
     sizes.set(runId, size);
+    return bounded;
   } catch (e) {
     console.error("orca: transcript write failed", e);
+    return [];
   }
 }
 
