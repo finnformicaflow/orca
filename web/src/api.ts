@@ -65,8 +65,12 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
-  /** The chat's live tail: steps recorded since `since` for one run. A poll rather than a stream —
-   *  see /api/turns/steps for why. */
+  /** URL for the chat's live stream — a URL, not a fetch, because EventSource opens it itself and
+   *  reconnects on its own. Relative, so Vite's dev proxy forwards it (unlike a WS upgrade, SSE
+   *  proxies fine — including the hop the bridge makes for a repo owned by another instance). */
+  turnsStreamUrl: (repo: string, branch: string): string =>
+    `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
+  /** Catch-up after a dropped stream: steps recorded since `since` for one run. */
   turnSteps: (repo: string, branch: string, runId: string, since: number): Promise<{ steps: AgentStep[]; seq: number; finished: boolean }> =>
     fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */

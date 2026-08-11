@@ -8,6 +8,7 @@ import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
+import * as bus from "./bus";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
@@ -240,7 +241,7 @@ function toolResultText(content: unknown): string | undefined {
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
  *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
  *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
-async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }): Promise<string> {
+async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
@@ -256,7 +257,12 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       if (!line.trim()) continue;
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
-      await transcript.append(runId, claudeSteps(event));
+      const written = await transcript.append(runId, claudeSteps(event));
+      // Push to any chat stream open on THIS instance — which is the only place a stream for this
+      // run can be served, since a request for a repo owned elsewhere is proxied to its owner.
+      if (written.length && owner?.repo && owner.branch) {
+        bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
+      }
     }
   }
   transcript.forget(runId);
@@ -400,7 +406,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     const errHolder = { raw: "" };
     const reads = Promise.all([
       provider === "codex" ? readCodexOutput(key, proc, outHolder)
-        : provider === "claude" ? readClaudeStream(runId, proc, outHolder)
+        : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch })
         : new Response(proc.stdout).text().then((t) => (outHolder.raw = t)),
       new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
     ]);

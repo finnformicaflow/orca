@@ -26,6 +26,7 @@
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
+import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
 
@@ -328,6 +329,7 @@ export async function startTurn(input: {
     VALUES (${id}, ${currentUser()}, ${input.runId}, ${input.provider}, 'running', ${input.prompt},
             ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
     ON CONFLICT (run_id) DO NOTHING`;
+  bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
 }
 
 /** Complete the turn started by `startTurn`. The session id is re-supplied because Codex and Cursor
@@ -352,6 +354,8 @@ export async function finishTurn(runId: string, input: {
       RETURNING workstream_id
     )
     SELECT w.repo, w.branch FROM updated JOIN workstream w ON w.id = updated.workstream_id`;
+  const owner = rows[0] as { repo: string; branch: string | null } | undefined;
+  if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
 }
 
 /** Close out turns left `running` by a process that is no longer alive — a bridge killed mid-run

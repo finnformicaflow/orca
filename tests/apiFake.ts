@@ -174,7 +174,8 @@ mock.module("@/api", () => ({
       return { imported };
     },
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
-    // The chat's live tail (see /api/turns/steps). Tests drive it through `turnStepsData`.
+    // The chat's live stream (stubbed EventSource in happydom.ts) plus its reconnect catch-up.
+    turnsStreamUrl: (repo: string, branch: string) => `/api/turns/stream?repo=${repo}&branch=${branch}`,
     turnSteps: async (_repo: string, _branch: string, runId: string, since: number) => {
       const all = (apiFake.turnStepsData.get(runId) ?? []) as { seq: number; step: unknown }[];
       const fresh = all.filter((s) => s.seq > since);

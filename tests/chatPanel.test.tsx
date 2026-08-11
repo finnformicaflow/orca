@@ -173,25 +173,27 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   const scrolled: number[] = [];
   log.scrollTo = ((opts: { top: number }) => scrolled.push(opts.top)) as unknown as typeof log.scrollTo;
 
-  // The chat tails the in-flight turn once a second; seed what that tail will return.
-  let seq = 0;
-  const emit = async (text: string) => {
-    apiFake.turnStepsData.set("run-1", [...(apiFake.turnStepsData.get("run-1") ?? []), { seq: ++seq, step: { at: 1, kind: "text", text } }]);
-    for (let i = 0; i < 40 && !container!.textContent?.includes(text); i++) {
-      await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
-    }
+  // A step pushed down the live stream is what appends output to the log.
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  const push = async (text: string) => {
+    await act(async () => {
+      stream.dispatchEvent(Object.assign(new Event("step"), {
+        data: JSON.stringify({ runId: "run-1", steps: [{ at: 1, kind: "text", text }] }),
+      }));
+      await flush();
+    });
   };
 
   // Reader scrolls up to read something → following stops, so incoming steps don't yank them away.
   log.scrollTop = 200;
   await act(async () => { log.dispatchEvent(new Event("scroll")); });
-  await emit("while scrolled up");
+  await push("while scrolled up");
   expect(text()).toContain("while scrolled up"); // still rendered — just not scrolled to
   expect(scrolled).toHaveLength(0);
 
   // Back at the bottom → following resumes and the next arrival scrolls again.
   log.scrollTop = 800; // 1000 - 200: pinned to the bottom
   await act(async () => { log.dispatchEvent(new Event("scroll")); });
-  await emit("back at the bottom");
-  expect(scrolled).toContain(1000);
+  await push("back at the bottom");
+  expect(scrolled).toEqual([1000]);
 });

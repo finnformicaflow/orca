@@ -1,7 +1,7 @@
 import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
-  providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type RepoConfig,
+  providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
@@ -12,6 +12,7 @@ import { usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
+import * as bus from "./bus";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
@@ -92,6 +93,41 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
 
+// Routes served by ANY instance because they read only Postgres — history stays readable even when
+// the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
+// must run where the repo lives.
+const DATABASE_ONLY = new Set([
+  "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/usage", "/api/diagnostics", "/api/turns/steps",
+]);
+
+/** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
+ *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
+ *  instance is a pipe. Returns undefined when the request should be handled locally. */
+async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig): Promise<Response | undefined> {
+  if (DATABASE_ONLY.has(url.pathname)) return undefined;
+  const instance = db.instanceName();
+  if (runsHere(repo, instance)) return undefined;
+  const base = cfg.instances?.[repo.runsOn!];
+  if (!base) {
+    return json({ error: `${repo.name} runs on "${repo.runsOn}", which has no address configured (set instances.${repo.runsOn})` }, 502);
+  }
+  const target = new URL(url.pathname + url.search, base);
+  try {
+    // Streamed through, not buffered: /api/turns/stream never completes, so awaiting a body here
+    // would hang the chat instead of relaying it.
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers: req.headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.clone().text(),
+      signal: req.signal,
+    });
+    return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+  } catch (e) {
+    return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
+  }
+}
+
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
   // Read per request, not once at startup: the configuration lives in the database now, so adding a
@@ -117,6 +153,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
+  // A repo this instance doesn't run is handled by the instance that does.
+  const forwarded = await forwardToOwner(req, url, repo, cfg);
+  if (forwarded) return forwarded;
 
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
@@ -496,15 +535,45 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     return json(turns);
   }
+  if (req.method === "GET" && p === "/api/turns/stream") {
+    // The chat's live feed, pushed as each step is recorded. Server-Sent Events, not a WebSocket:
+    // one-way, EventSource reconnects itself, and it traverses a reverse proxy — including the hop
+    // this instance makes when the repo belongs to another one (see forwardToOwner). The stream is
+    // always served by the instance that OWNS the repo, so the run and the bus are in the same
+    // process and there is exactly one delivery path.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    let unsubscribe = () => {};
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (event: string, data: unknown) => {
+          try { controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { unsubscribe(); }
+        };
+        send("ready", { branch });
+        // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
+        const keepAlive = setInterval(() => { try { controller.enqueue(": keep-alive\n\n"); } catch { unsubscribe(); } }, 25_000);
+        const off = bus.subscribe((e) => {
+          if (e.repo !== repo.name || e.branch !== branch) return;
+          if (e.kind === "step") send("step", { runId: e.runId, steps: e.steps });
+          else send("turn", { runId: e.runId });
+        });
+        unsubscribe = () => {
+          clearInterval(keepAlive);
+          off();
+          try { controller.close(); } catch { /* already closed */ }
+        };
+        req.signal.addEventListener("abort", unsubscribe); // client navigated away / closed the modal
+      },
+      cancel() { unsubscribe(); },
+    });
+    return new Response(stream, {
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+    });
+  }
   if (req.method === "GET" && p === "/api/turns/steps") {
-    // The chat's live tail: steps recorded since the cursor the client already holds.
-    //
-    // A poll, deliberately. This was Server-Sent Events pushed from an in-process bus, which is
-    // genuinely faster — but only for a run executing on THIS instance. A run on another machine had
-    // to be tailed from Postgres and forwarded, so there were two delivery paths and the remote one
-    // was a poll wearing a stream's costume. One indexed query a second behaves identically wherever
-    // the agent runs, and costs a bus, a ReadableStream, keep-alives, reconnect handling and a
-    // subscriber registry less.
+    // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The
+    // live path is the stream above; this exists so a reconnect resumes rather than refetching a
+    // whole conversation, and it reads Postgres so any instance can answer it.
     const branch = url.searchParams.get("branch");
     const runId = url.searchParams.get("runId");
     if (!branch || !runId) return json({ error: "branch and runId required" }, 400);

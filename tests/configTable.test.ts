@@ -280,3 +280,30 @@ test("a repo names the instance that executes it; unset means whichever instance
   expect(parseConfigDocument(doc({ repos: [{ ...base, runsOn: "" }] })).errors)
     .toContain("repos[0].runsOn must be an instance name");
 });
+
+test("a repo owned by another instance is reachable only if that instance has an address", () => {
+  // The forwarding rule's two halves: what may be answered anywhere, and what must run where the
+  // repo lives. Reads backed purely by Postgres stay local so history is readable even when the
+  // machine that produced it is asleep; anything touching a worktree goes to its owner.
+  const { config, errors } = parseConfigDocument(doc({
+    repos: [
+      { name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", runsOn: "cloud" },
+      { name: "here", repoPath: "/r2", worktreeRoot: "/w2", baseBranch: "main" },
+    ],
+    instances: { cloud: "http://orca.tail1234.ts.net:8787" },
+  }));
+  expect(errors).toEqual([]);
+  expect(config!.instances).toEqual({ cloud: "http://orca.tail1234.ts.net:8787" });
+
+  // A repo with no runsOn is run by whichever instance reads it — today's single-machine behaviour.
+  expect(runsHere(config!.repos[1]!, "laptop")).toBe(true);
+  expect(runsHere(config!.repos[0]!, "laptop")).toBe(false);
+  expect(runsHere(config!.repos[0]!, "cloud")).toBe(true);
+
+  // An address that isn't a URL is rejected — otherwise the failure surfaces later as an opaque
+  // fetch error on the first action against that repo.
+  expect(parseConfigDocument(doc({ instances: { cloud: "orca-box" } })).errors)
+    .toContain("instances must map an instance name to its base URL");
+  expect(parseConfigDocument(doc({ instances: ["cloud"] })).errors)
+    .toContain("instances must map an instance name to its base URL");
+});

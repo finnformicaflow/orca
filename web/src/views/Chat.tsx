@@ -17,10 +17,6 @@ import { ChatComposer } from "@/components/ChatComposer";
 // rounding and the composer resizing, so following doesn't switch off on its own.
 const FOLLOW_SLACK = 48;
 
-// How often the in-flight turn is tailed. Fast enough to read as live; an idle modal makes no
-// request at all, because there is nothing running to ask about.
-const TAIL_MS = 1_000;
-
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
  *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. */
@@ -137,35 +133,47 @@ export function ChatPanel({ row }: { row: Row }) {
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
   const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
-  const cursors = useRef(new Map<string, number>()); // per-run high-water mark of steps we hold
+  const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
+  const opened = useRef(false); // first `ready` is this stream opening, not a reconnect
   const running = row.agentStatus === "running";
 
-  // The conversation loads once, then the in-flight turn is TAILED: one small request a second for
-  // whatever steps have been recorded since the cursor we hold. (History: this was Server-Sent
-  // Events over an in-process bus. That was a true push, but only for a run executing on this
-  // instance — a run on another machine had to be tailed from the database and forwarded, so there
-  // were two delivery paths and the remote one was a poll in a stream's clothing. One path that
-  // behaves identically wherever the agent runs is worth the second of latency.)
+  // The conversation loads once, then steps are PUSHED as the agent records them — that's the
+  // terminal-like feel. The stream is served by the instance that owns the repo (the bridge proxies
+  // there if it isn't this one), so there is one delivery path whether the agent runs on this
+  // machine or in the cloud. A dropped connection resumes from the cursor rather than refetching the
+  // whole conversation.
   useEffect(() => {
     let live = true;
     const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
     void load();
-    const timer = setInterval(async () => {
-      if (!live) return;
-      const pending = turnsRef.current?.find((t) => !t.finishedAt);
-      if (!pending) return; // nothing running — the poll costs nothing until something is
-      try {
-        const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
-        const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
-        if (!live) return;
-        if (steps.length) {
-          cursors.current.set(pending.id, seq);
-          setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
-        }
-        if (finished) await load(); // the outcome landed — swap "working…" for it
-      } catch { /* a blip; the next tick retries */ }
-    }, TAIL_MS);
-    return () => { live = false; clearInterval(timer); };
+
+    const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
+    source.addEventListener("turn", () => void load());
+    source.addEventListener("step", (e) => {
+      const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
+      setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+    });
+    // `ready` fires on open AND on every automatic reconnect. The first is this stream opening; a
+    // later one means we were disconnected, so catch up from the cursor — anything recorded while we
+    // were away would otherwise be silently missing.
+    source.addEventListener("ready", () => {
+      if (!opened.current) { opened.current = true; return; }
+      void (async () => {
+        const pending = turnsRef.current?.find((t) => !t.finishedAt);
+        if (!pending) return void load();
+        try {
+          const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
+          const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
+          if (!live) return;
+          if (steps.length) {
+            cursors.current.set(pending.id, seq);
+            setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+          }
+          if (finished) await load();
+        } catch { void load(); }
+      })();
+    });
+    return () => { live = false; source.close(); };
   }, [row.repo, row.branch]);
 
   useEffect(() => { turnsRef.current = turns; }, [turns]);
