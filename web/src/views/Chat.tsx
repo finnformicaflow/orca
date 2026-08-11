@@ -47,19 +47,21 @@ function Step({ step }: { step: AgentStep }) {
   );
 }
 
-/** The agent's recorded steps for a turn, collapsed behind a toggle once the turn is done — a
- *  finished exchange leads with its outcome, and the reasoning is one click away. While the run is
- *  in flight the steps are always shown: that IS the live view. */
+/** The agent's recorded steps for a turn. Shown in FULL by default, live or finished — the whole
+ *  point is reading the conversation the way you would in the terminal, so hiding it behind a toggle
+ *  (as this first did) defeats it. The toggle stays, to fold a long run away once you're done with
+ *  it. */
 function Steps({ steps, live }: { steps: AgentStep[]; live: boolean }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   if (!steps.length) return null;
-  if (live) return <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} />)}</div>;
+  const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} />)}</div>;
+  if (live) return body;
   return (
     <div className="mb-1.5">
       <button type="button" onClick={() => setOpen((v) => !v)} className="text-[10px] tracking-widest text-neutral-500 uppercase hover:text-neutral-300">
         {open ? "⏷" : "⏵"} {steps.length} step{steps.length === 1 ? "" : "s"}
       </button>
-      {open && <div className="mt-1 space-y-1 border-l border-neutral-800 pl-2">{steps.map((s, i) => <Step key={i} step={s} />)}</div>}
+      {open && <div className="mt-1 border-l border-neutral-800 pl-2">{body}</div>}
     </div>
   );
 }

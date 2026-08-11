@@ -428,10 +428,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!branch) return json({ error: "branch required" }, 400);
     const turns = db.turns(repo.name, branch);
     // Decorate every turn with its recorded steps (the agent's thought process), read from the run's
-    // transcript — so it's there for finished turns too, and survives a bridge restart. The tail is
-    // bounded per turn so opening a long conversation can't ship megabytes; `?steps=` overrides it,
-    // and the per-run SSE stream carries the rest.
-    const tail = Number(url.searchParams.get("steps")) || 40;
+    // transcript — so it's there for finished turns too, and survives a bridge restart. The WHOLE
+    // transcript is sent: a tail was the point of "I can't see the depth of the conversation", and
+    // the steps are already bounded per field and per file when they're recorded. `?steps=N` still
+    // asks for just the last N.
+    const tail = Number(url.searchParams.get("steps")) || undefined;
     for (const t of turns) {
       const steps = agent.runSteps(t.id, tail);
       if (steps.length) t.steps = steps;

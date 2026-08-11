@@ -15,11 +15,13 @@ import { statePath } from "./state";
 import * as bus from "./bus";
 
 // Per-step caps keep one runaway tool result (a `cat` of a lockfile, a 10k-line test log) from
-// dominating the file; the file cap bounds a pathological run overall. Both are generous enough that
-// a normal run is recorded in full.
-const MAX_TEXT = 2_000;
-const MAX_OUTPUT = 4_000;
-const MAX_FILE = 8 * 1024 * 1024;
+// dominating the file; the file cap bounds a pathological run overall. Sized from real runs: at
+// 4k the output cap was clipping ~19 results in a 220-step run, which is exactly the "depth" the
+// chat exists to show. A 220-step run is ~200KB, so there is ample headroom — the caps are a safety
+// valve against one pathological step, not a budget.
+const MAX_TEXT = 16_000;
+const MAX_OUTPUT = 32_000;
+const MAX_FILE = 64 * 1024 * 1024;
 
 export const transcriptPath = (runId: string): string => statePath("transcripts", `${runId}.jsonl`);
 

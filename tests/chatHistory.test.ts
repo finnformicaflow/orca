@@ -202,8 +202,8 @@ test("a run's steps are persisted as they stream and readable after it finishes"
 
 test("one runaway tool result can't dominate a transcript, and a missing one is not an error", () => {
   // Bounding is per-field so a `cat` of a lockfile costs a clipped step, never the whole file.
-  const big = transcript.boundStep({ at: 1, kind: "tool", name: "Bash", output: "x".repeat(50_000) });
-  expect(big.output!.length).toBeLessThan(5_000);
+  const big = transcript.boundStep({ at: 1, kind: "tool", name: "Bash", output: "x".repeat(500_000) });
+  expect(big.output!.length).toBeLessThan(40_000);
   expect(big.output).toContain("truncated");
   // Advisory, like the lease and ledger: no transcript degrades to "no steps", never a throw.
   expect(transcript.read("no-such-run")).toEqual([]);
