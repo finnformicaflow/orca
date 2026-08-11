@@ -11,7 +11,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
-import * as bus from "./bus";
+import * as transcript from "./transcript";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
@@ -488,43 +488,34 @@ async function api(req: Request, url: URL): Promise<Response> {
     // asks for just the last N.
     const tail = Number(url.searchParams.get("steps")) || undefined;
     for (const t of turns) {
-      const steps = agent.runSteps(t.id, tail);
-      if (steps.length) t.steps = steps;
+      const numbered = await transcript.numbered(t.id, { tail });
+      if (numbered.length) {
+        t.steps = numbered.map((n) => n.step);
+        t.stepSeq = numbered[numbered.length - 1]!.seq; // where the live tail resumes from
+      }
     }
     return json(turns);
   }
-  if (req.method === "GET" && p === "/api/turns/stream") {
-    // The chat's live feed. Server-Sent Events, not a WebSocket: it's one-way, EventSource reconnects
-    // by itself, and it survives a reverse proxy — which matters the day this runs on a remote host.
-    // Steps are pushed as they're recorded (in-process bus, no self-polling); `turn` just tells the
-    // client to refetch /api/turns, which stays the source of truth for a turn's durable outcome.
+  if (req.method === "GET" && p === "/api/turns/steps") {
+    // The chat's live tail: steps recorded since the cursor the client already holds.
+    //
+    // A poll, deliberately. This was Server-Sent Events pushed from an in-process bus, which is
+    // genuinely faster — but only for a run executing on THIS instance. A run on another machine had
+    // to be tailed from Postgres and forwarded, so there were two delivery paths and the remote one
+    // was a poll wearing a stream's costume. One indexed query a second behaves identically wherever
+    // the agent runs, and costs a bus, a ReadableStream, keep-alives, reconnect handling and a
+    // subscriber registry less.
     const branch = url.searchParams.get("branch");
-    if (!branch) return json({ error: "branch required" }, 400);
-    let unsubscribe = () => {};
-    const stream = new ReadableStream({
-      start(controller) {
-        const send = (event: string, data: unknown) => {
-          try { controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { unsubscribe(); }
-        };
-        send("ready", { branch });
-        // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
-        const keepAlive = setInterval(() => { try { controller.enqueue(": keep-alive\n\n"); } catch { unsubscribe(); } }, 25_000);
-        const off = bus.subscribe((e) => {
-          if (e.repo !== repo.name || e.branch !== branch) return;
-          if (e.kind === "step") send("step", { runId: e.runId, steps: e.steps });
-          else send("turn", { runId: e.runId });
-        });
-        unsubscribe = () => {
-          clearInterval(keepAlive);
-          off();
-          try { controller.close(); } catch { /* already closed */ }
-        };
-        req.signal.addEventListener("abort", unsubscribe); // client navigated away / closed the modal
-      },
-      cancel() { unsubscribe(); },
-    });
-    return new Response(stream, {
-      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+    const runId = url.searchParams.get("runId");
+    if (!branch || !runId) return json({ error: "branch and runId required" }, 400);
+    const since = Number(url.searchParams.get("since")) || 0;
+    const fresh = await transcript.numbered(runId, { afterSeq: since });
+    const turn = (await db.turns(repo.name, branch)).find((t) => t.id === runId);
+    return json({
+      steps: fresh.map((f) => f.step),
+      seq: fresh.length ? fresh[fresh.length - 1]!.seq : since,
+      // The client stops polling and refetches the conversation once the turn has its outcome.
+      finished: Boolean(turn?.finishedAt),
     });
   }
   if (req.method === "POST" && p === "/api/agent/stop") {

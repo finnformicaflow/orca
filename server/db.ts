@@ -26,7 +26,6 @@
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
-import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
 
@@ -190,6 +189,27 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 5,
+    // The agent's recorded steps. These lived as JSONL files under the state dir, which is right for
+    // one machine and wrong for two: a transcript on the cloud box's disk cannot be read by a board
+    // open on the laptop, so opening that conversation showed nothing. Making the database the source
+    // of truth has to include the steps, or "the same conversation from either machine" isn't true.
+    //
+    // `seq` is per run and unique, which also makes ingestion idempotent — a retried write cannot
+    // duplicate a step.
+    sql: `
+      CREATE TABLE turn_step (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        seq INT NOT NULL,
+        step JSONB NOT NULL,
+        at BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX turn_step_key ON turn_step (run_id, seq);
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -308,7 +328,6 @@ export async function startTurn(input: {
     VALUES (${id}, ${currentUser()}, ${input.runId}, ${input.provider}, 'running', ${input.prompt},
             ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
     ON CONFLICT (run_id) DO NOTHING`;
-  bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
 }
 
 /** Complete the turn started by `startTurn`. The session id is re-supplied because Codex and Cursor
@@ -333,8 +352,6 @@ export async function finishTurn(runId: string, input: {
       RETURNING workstream_id
     )
     SELECT w.repo, w.branch FROM updated JOIN workstream w ON w.id = updated.workstream_id`;
-  const owner = rows[0] as { repo: string; branch: string | null } | undefined;
-  if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
 }
 
 /** Close out turns left `running` by a process that is no longer alive — a bridge killed mid-run
@@ -472,4 +489,47 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
   const sql = await open();
   const rows = await sql`SELECT name, seen_at FROM instance WHERE user_id = ${currentUser()} ORDER BY name`;
   return (rows as { name: string; seen_at: string }[]).map((r) => ({ name: r.name, seenAt: Number(r.seen_at) }));
+}
+
+
+// ---- steps (the agent's thought process) ----
+
+/** Append steps to a run, numbered from `startSeq`. The unique (run_id, seq) index makes this
+ *  idempotent: a retried write collides rather than duplicating. Returns how many landed. */
+export async function appendSteps(runId: string, startSeq: number, steps: Fields[]): Promise<number> {
+  if (!steps.length) return 0;
+  const sql = await open();
+  const user = currentUser();
+  const now = Date.now();
+  let written = 0;
+  for (const [i, step] of steps.entries()) {
+    const rows = await sql`
+      INSERT INTO turn_step (user_id, run_id, seq, step, at)
+      VALUES (${user}, ${runId}, ${startSeq + i}, ${step}, ${now})
+      ON CONFLICT (run_id, seq) DO NOTHING
+      RETURNING id`;
+    if (rows.length) written++;
+  }
+  return written;
+}
+
+/** The next sequence number for a run — read once per run, then tracked in memory by the caller. */
+export async function nextStepSeq(runId: string): Promise<number> {
+  const sql = await open();
+  const rows = await sql`SELECT COALESCE(MAX(seq), 0) AS max FROM turn_step WHERE run_id = ${runId}`;
+  return Number(rows[0]?.max ?? 0) + 1;
+}
+
+/** A run's steps, oldest first. `tail` returns only the last N; `afterSeq` only what's newer, which
+ *  is how a chat stream watching a run on ANOTHER instance catches up without refetching. */
+export async function steps(runId: string, opts: { tail?: number; afterSeq?: number } = {}): Promise<{ seq: number; step: Fields }[]> {
+  const sql = await open();
+  const rows = opts.afterSeq !== undefined
+    ? await sql`SELECT seq, step FROM turn_step WHERE run_id = ${runId} AND seq > ${opts.afterSeq} ORDER BY seq`
+    : opts.tail !== undefined
+      ? await sql`SELECT seq, step FROM (
+            SELECT seq, step FROM turn_step WHERE run_id = ${runId} ORDER BY seq DESC LIMIT ${opts.tail}
+          ) t ORDER BY seq`
+      : await sql`SELECT seq, step FROM turn_step WHERE run_id = ${runId} ORDER BY seq`;
+  return (rows as { seq: number; step: Fields }[]).map((r) => ({ seq: Number(r.seq), step: r.step }));
 }

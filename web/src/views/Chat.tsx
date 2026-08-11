@@ -17,6 +17,10 @@ import { ChatComposer } from "@/components/ChatComposer";
 // rounding and the composer resizing, so following doesn't switch off on its own.
 const FOLLOW_SLACK = 48;
 
+// How often the in-flight turn is tailed. Fast enough to read as live; an idle modal makes no
+// request at all, because there is nothing running to ask about.
+const TAIL_MS = 1_000;
+
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
  *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. */
@@ -132,28 +136,39 @@ export function ChatPanel({ row }: { row: Row }) {
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
-  const turnsLoaded = useRef(false); // first `ready` is this stream's own open, not a reconnect
+  const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
+  const cursors = useRef(new Map<string, number>()); // per-run high-water mark of steps we hold
   const running = row.agentStatus === "running";
 
-  // The conversation loads once, then the SSE stream keeps it current: steps are appended to the
-  // in-flight turn as the agent records them (that's the live, terminal-like feel), and a `turn`
-  // event triggers one refetch so the durable outcome replaces "working…". (History: this polled
-  // /api/turns every 4s, which both lagged the agent and refetched the whole conversation each time.)
+  // The conversation loads once, then the in-flight turn is TAILED: one small request a second for
+  // whatever steps have been recorded since the cursor we hold. (History: this was Server-Sent
+  // Events over an in-process bus. That was a true push, but only for a run executing on this
+  // instance — a run on another machine had to be tailed from the database and forwarded, so there
+  // were two delivery paths and the remote one was a poll in a stream's clothing. One path that
+  // behaves identically wherever the agent runs is worth the second of latency.)
   useEffect(() => {
     let live = true;
-    const load = () => void api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
-    load();
-    const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
-    source.addEventListener("turn", load);
-    source.addEventListener("step", (e) => {
-      const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
-      setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
-    });
-    // A dropped stream (bridge restart, sleep/wake) reconnects on its own; refetch on recovery so
-    // anything recorded while it was down is picked up rather than silently missing.
-    source.addEventListener("ready", () => { if (turnsLoaded.current) load(); else turnsLoaded.current = true; });
-    return () => { live = false; source.close(); };
+    const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
+    void load();
+    const timer = setInterval(async () => {
+      if (!live) return;
+      const pending = turnsRef.current?.find((t) => !t.finishedAt);
+      if (!pending) return; // nothing running — the poll costs nothing until something is
+      try {
+        const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
+        const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
+        if (!live) return;
+        if (steps.length) {
+          cursors.current.set(pending.id, seq);
+          setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+        }
+        if (finished) await load(); // the outcome landed — swap "working…" for it
+      } catch { /* a blip; the next tick retries */ }
+    }, TAIL_MS);
+    return () => { live = false; clearInterval(timer); };
   }, [row.repo, row.branch]);
+
+  useEffect(() => { turnsRef.current = turns; }, [turns]);
 
   // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you

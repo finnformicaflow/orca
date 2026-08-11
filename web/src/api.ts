@@ -2,7 +2,7 @@ import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, MergedPr, PrDetail, PrSummary, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
-import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn } from "../../shared/agent";
 import type { SyncResult } from "./workstream";
 
 export type LiveAgent = {
@@ -65,11 +65,10 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
-  /** URL for the chat's SSE feed — a URL, not a fetch, because EventSource opens it itself (and
-   *  reconnects on its own when the bridge restarts). Relative, so Vite's dev proxy forwards it;
-   *  unlike a WS upgrade, the proxy handles SSE fine. */
-  turnsStreamUrl: (repo: string, branch: string): string =>
-    `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
+  /** The chat's live tail: steps recorded since `since` for one run. A poll rather than a stream —
+   *  see /api/turns/steps for why. */
+  turnSteps: (repo: string, branch: string, runId: string, since: number): Promise<{ steps: AgentStep[]; seq: number; finished: boolean }> =>
+    fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
