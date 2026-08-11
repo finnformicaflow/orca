@@ -1,5 +1,8 @@
 import { tmpdir } from "os";
-import { API_PORT, configDocument, invalidateConfig, loadConfig, parseConfigDocument, repoOf, saveConfigDocument } from "./config";
+import {
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
+  providerAllowed, providersFor, repoOf, saveConfigDocument, type RepoConfig,
+} from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
@@ -72,6 +75,11 @@ const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
+/** Refuse an action a repo hasn't opted into. The bridge is the authority, not the client: a stale
+ *  tab must not be able to post to Slack or start a preview a repo has since turned off. */
+const notEnabled = (repo: RepoConfig, feature: string) =>
+  json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
+
 async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname;
   // Read per request, not once at startup: the configuration lives in the database now, so adding a
@@ -125,11 +133,16 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "GET" && p === "/api/config") {
+    const available = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
       hasRemote: await git.hasRemote(r.repoPath),
+      // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
+      // enforces, because a tab open since before a change would otherwise offer the old actions.
+      features: featuresOf(r),
+      providers: providersFor(r, available),
     })));
-    const agentProviders = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
+    const agentProviders = available;
     // apiPort lets the browser open the terminal WebSocket straight at the bridge — the Vite dev proxy
     // (Bun runtime) can't forward a WS upgrade. In the built app this equals the page's own port.
     return json({ repos, staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT });
@@ -139,7 +152,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     // (à la Claude Code branch names) keeps names collision-resistant.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
-    const title = (await agent.summarize(provider, body.prompt)) ?? titleFromPrompt(body.prompt);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
+    const title = (featuresOf(repo).aiTitles ? await agent.summarize(provider, body.prompt) : undefined)
+      ?? titleFromPrompt(body.prompt);
     const branch = `${slugifyBranch(title)}-${crypto.randomUUID().slice(0, 6)}`;
     const wt = await git.createWorktree(repo.repoPath, repo.worktreeRoot, branch, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
@@ -159,14 +174,20 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/promote") {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     // No body from the UI → resume the implementation agent to fill the repo template (or Orca's
     // default) from its full task context and the final diff. Invalid output blocks PR creation.
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
+    // With AI descriptions off, Promote costs nothing and blocks on nothing: the body is the repo's
+    // template or its commit list. That's the difference between a ~60s Promote and an instant one.
+    const describe = featuresOf(repo).aiPrDescription
+      ? resolvePrDescription(provider, body.worktreePath, base, {
+          provided: body.body, outcome: body.outcome, sessionId: body.sessionId, task: body.task,
+        })
+      : git.resolvePrBody(body.worktreePath, base, body.body);
     const [, prBody] = await Promise.all([
       git.pushBranch(body.worktreePath, body.branch), // the branch must exist on origin for `gh pr create`
-      resolvePrDescription(provider, body.worktreePath, base, {
-        provided: body.body, outcome: body.outcome, sessionId: body.sessionId, task: body.task,
-      }),
+      describe,
     ]);
     const pr = await gh.createPr(body.worktreePath, {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
@@ -227,6 +248,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/preview") {
+    if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
     // Gitignored config (backend/.env) is only copied at worktree create/adopt, so a worktree made
     // before the config listed it boots without one and the preview dies on "Error: .env not found".
     // Re-copy what's missing here, leaving any worktree-local edit intact.
@@ -235,6 +257,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await preview.status(body.key));
   }
   if (req.method === "POST" && p === "/api/preview/master") {
+    if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
     // "Test master": spin up a preview of the base branch itself, in a detached worktree of the
     // latest base. Same machinery as a branch preview (copy env, link node_modules, start services),
     // keyed by the worktree path — so status/stop go through the existing /api/preview endpoints.
@@ -260,6 +283,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // chat.postMessage (SLACK_TOKEN). No model, no per-agent branching — deterministic and instant.
     // A failure surfaces as an error rather than silently degrading, so a post that didn't land is
     // never mistaken for one that did.
+    if (!featuresOf(repo).slack) return notEnabled(repo, "Slack posting");
     if (!repo.slackChannel) return json({ error: "no Slack channel configured for this repo" }, 400);
     const r = await slackPost(repo.slackChannel, String(body.text ?? ""));
     if (!r.ok) return json({ error: `Slack post failed: ${r.error ?? "unknown error"}` }, 502);
@@ -276,6 +300,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!tmux.available()) return json({ error: "tmux is not installed on this host" }, 501);
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     if (!body.branch || !body.worktreePath) return json({ error: "branch and worktreePath required" }, 400);
     const name = sessionName(repo.name, body.branch);
     const command = attachCommand({ worktreePath: body.worktreePath, provider, sessionId: body.sessionId, fresh: body.fresh, seedFile: body.seedFile });
@@ -353,6 +378,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/prs/auto-merge") {
+    if (!featuresOf(repo).autoMerge) return notEnabled(repo, "Auto-merge");
     await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
     return json({ ok: true });
   }
@@ -373,10 +399,12 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/agents/run") {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
+      permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
@@ -387,10 +415,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // compatibility alias for older clients; it always selects Claude unless provider is explicit.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     if (agent.isRunning(body.key)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = await agent.launch(body.key, body.worktree || repo.repoPath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
+      permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
@@ -407,10 +437,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/suggest-title") {
+    if (!featuresOf(repo).aiTitles) return notEnabled(repo, "AI titles");
     // AI-name a card for the rename flow. Prefer the original task prompt; for a PR with no Orca
     // prompt (adopted / opened outside Orca — the "broken title" case), summarise its title + body.
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
+    if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     // Name from the best signal available: the original task prompt, else a PR's title+body (adopted
     // PRs), else the branch's own commit subjects (a local card with work but no Orca prompt), and
     // finally the branch name — so a local card can always be named rather than erroring.

@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
 export type PreviewService = {
@@ -10,6 +11,32 @@ export type PreviewService = {
    *  how a per-preview Postgres DB gets dropped. Runs with the worktree as cwd, best-effort. */
   onStop?: string;
 };
+
+/** Per-repo opt-ins. Every one defaults to OFF, because each either spends money, is externally
+ *  visible, or hands an agent more authority than a repo's owner might expect. A repo has to say yes.
+ *
+ *  (Existing repos are backfilled at migration 3 with what they were already doing, so turning this
+ *  on changes nothing about a board that already works — the behaviour just becomes explicit and
+ *  revocable rather than implicit.) */
+export type RepoFeatures = {
+  /** Post the notify/bump message to `slackChannel`. Off → the client copies it to your clipboard. */
+  slack?: boolean;
+  /** Let a PR's new feedback fire agent actions on its own. Spends money while you aren't looking. */
+  followAutomation?: boolean;
+  /** Have the agent write the PR body. Off → the repo's template, or the commit list. */
+  aiPrDescription?: boolean;
+  /** Offer GitHub auto-merge. */
+  autoMerge?: boolean;
+  /** Start preview services. Heavy: database clones, ports, disk. */
+  previews?: boolean;
+  /** Name and rename cards with a model. */
+  aiTitles?: boolean;
+};
+
+/** How much authority a repo's agents get. Orca has always run `--permission-mode bypassPermissions`
+ *  unconditionally; that's fine for your own repo and much less so for a client's, so it becomes a
+ *  per-repo choice. `bypass` preserves today's behaviour. */
+export type AgentPermissionMode = "bypass" | "ask";
 
 export type RepoConfig = {
   /** Short id used in the URL and repo switcher, e.g. "orca". */
@@ -42,6 +69,13 @@ export type RepoConfig = {
    * and PR-description one-shots — those pin haiku/sonnet deliberately (they're short, blocking calls).
    */
   agentModel?: string;
+  /** Per-repo opt-ins; absent means every feature is off. See RepoFeatures. */
+  features?: RepoFeatures;
+  /** Agent providers this repo may use. Absent/empty = none, so a repo opts in to the models it
+   *  wants — a client project need not be reachable by every CLI you happen to have installed. */
+  providers?: AgentProvider[];
+  /** Authority granted to this repo's agents (default `ask`, i.e. NOT bypassPermissions). */
+  agentPermissionMode?: AgentPermissionMode;
   /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
@@ -109,6 +143,28 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     else seen.add(name);
     for (const f of ["repoPath", "worktreeRoot", "baseBranch"] as const) {
       if (typeof r[f] !== "string" || !(r[f] as string).trim()) errors.push(`${where}.${f} is required`);
+    }
+    if (r.providers !== undefined) {
+      const bad = Array.isArray(r.providers)
+        ? (r.providers as unknown[]).filter((v) => !AGENT_PROVIDERS.includes(v as AgentProvider))
+        : ["(not an array)"];
+      if (bad.length) errors.push(`${where}.providers must contain only ${AGENT_PROVIDERS.join(", ")}`);
+    }
+    if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
+      errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
+    }
+    if (r.features !== undefined) {
+      if (!r.features || typeof r.features !== "object" || Array.isArray(r.features)) {
+        errors.push(`${where}.features must be an object`);
+      } else {
+        const known = ["slack", "followAutomation", "aiPrDescription", "autoMerge", "previews", "aiTitles"];
+        for (const [k, v] of Object.entries(r.features as Record<string, unknown>)) {
+          // An unknown key is almost always a typo, and a silently-ignored typo here means a feature
+          // you believe you enabled is off.
+          if (!known.includes(k)) errors.push(`${where}.features.${k} is not a known feature (${known.join(", ")})`);
+          else if (typeof v !== "boolean") errors.push(`${where}.features.${k} must be true or false`);
+        }
+      }
     }
     if (r.previewServices !== undefined && !Array.isArray(r.previewServices)) {
       errors.push(`${where}.previewServices must be an array`);
@@ -247,4 +303,30 @@ export async function configDocument(): Promise<Record<string, unknown>> {
   const rows = await db.repoConfigs();
   const app = await db.appConfig();
   return { repos: rows.map((r) => ({ name: r.name, ...r.config })), ...app };
+}
+
+
+/** A repo's opt-ins with every default applied — the single place "off unless asked" is decided. */
+export function featuresOf(repo: RepoConfig): Required<RepoFeatures> {
+  const f = repo.features ?? {};
+  return {
+    slack: f.slack === true,
+    followAutomation: f.followAutomation === true,
+    aiPrDescription: f.aiPrDescription === true,
+    autoMerge: f.autoMerge === true,
+    previews: f.previews === true,
+    aiTitles: f.aiTitles === true,
+  };
+}
+
+/** The providers a repo may launch, intersected with what's actually installed on THIS machine — a
+ *  repo can opt into Codex without every instance having the binary. */
+export function providersFor(repo: RepoConfig, available: readonly AgentProvider[]): AgentProvider[] {
+  const allowed = repo.providers?.length ? repo.providers : [];
+  return AGENT_PROVIDERS.filter((p) => allowed.includes(p) && available.includes(p));
+}
+
+/** Whether a repo may run this provider — the check every launch path goes through. */
+export function providerAllowed(repo: RepoConfig, provider: AgentProvider): boolean {
+  return (repo.providers ?? []).includes(provider);
 }

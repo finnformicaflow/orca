@@ -6,8 +6,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as db from "../server/db";
 import {
-  configDocument, expandPath, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, templatePath,
+  configDocument, expandPath, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
+  providerAllowed, providersFor, saveConfigDocument, templatePath,
 } from "../server/config";
+import { agentCommand } from "../server/agent";
+import { MIGRATIONS } from "../server/db";
+
+const MIGRATION_3 = MIGRATIONS.find((m) => m.id === 3)!.sql;
 import { freshSchema, type TestDb } from "./pg";
 
 let pg: TestDb;
@@ -145,4 +150,89 @@ test("a PUT body is actually read — the config document arrives, not an empty 
   // A document pasted WITHOUT the `config` wrapper is accepted too — that's the form you'd copy out
   // of /api/config/document and paste straight back.
   expect(parseConfigDocument(document).errors).toEqual([]);
+});
+
+// ---- per-repo opt-ins ----
+
+test("every opt-in defaults to OFF, so a repo has to ask for anything that spends or publishes", () => {
+  const bare = { name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", previewServices: [] };
+  expect(featuresOf(bare as never)).toEqual({
+    slack: false, followAutomation: false, aiPrDescription: false,
+    autoMerge: false, previews: false, aiTitles: false,
+  });
+  // A partial block leaves the rest off — enabling one thing never implies another.
+  expect(featuresOf({ ...bare, features: { slack: true } } as never))
+    .toMatchObject({ slack: true, autoMerge: false, previews: false });
+  // Providers are opt-in too: no list means no agent may run in this repo.
+  expect(providerAllowed(bare as never, "claude")).toBe(false);
+  expect(providerAllowed({ ...bare, providers: ["claude"] } as never, "claude")).toBe(true);
+  expect(providerAllowed({ ...bare, providers: ["claude"] } as never, "codex")).toBe(false);
+  // …and are intersected with what's installed here, so a repo can opt into Codex without every
+  // machine having the binary.
+  expect(providersFor({ ...bare, providers: ["claude", "codex"] } as never, ["claude"])).toEqual(["claude"]);
+});
+
+test("agents are NOT given bypassPermissions unless the repo opts in", () => {
+  // This ran unconditionally before. Fine for your own repo; much less so for a client's.
+  expect(agentCommand("claude", "/wt/x", "go")).toContain("default");
+  expect(agentCommand("claude", "/wt/x", "go")).not.toContain("bypassPermissions");
+  expect(agentCommand("claude", "/wt/x", "go", undefined, "s-1", undefined, "bypass")).toContain("bypassPermissions");
+});
+
+test("a typo'd feature name is rejected rather than silently ignored", () => {
+  // A silently-dropped key means a feature you believe you enabled is off — the worst outcome for a
+  // setting whose whole job is to be explicit.
+  const { errors } = parseConfigDocument(doc({
+    repos: [{
+      name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main",
+      features: { slck: true, autoMerge: "yes" }, providers: ["claude", "gpt"], agentPermissionMode: "root",
+    }],
+  }));
+  const joined = errors.join("\n");
+  expect(joined).toContain("features.slck is not a known feature");
+  expect(joined).toContain("features.autoMerge must be true or false");
+  expect(joined).toContain("providers must contain only");
+  expect(joined).toContain('agentPermissionMode must be "bypass" or "ask"');
+});
+
+test("opt-ins survive the round trip, and existing repos are backfilled with what they already did", async () => {
+  await saveConfigDocument(parseConfigDocument(doc({
+    repos: [{
+      name: "app", repoPath: "${ORCA_DEV_ROOT}/app", worktreeRoot: "${ORCA_DEV_ROOT}/app/.wt",
+      baseBranch: "main", providers: ["claude"], agentPermissionMode: "bypass",
+      features: { slack: true, previews: true },
+    }],
+  })).config!);
+  const repo = (await loadConfig()).repos[0]!;
+  expect(repo.providers).toEqual(["claude"]);
+  expect(repo.agentPermissionMode).toBe("bypass");
+  expect(featuresOf(repo)).toMatchObject({ slack: true, previews: true, autoMerge: false });
+
+  // Migration 3 backfills a repo configured BEFORE opt-ins existed, so a working board doesn't go
+  // dark. Simulate one by stripping the features block the way a pre-migration row looked.
+  const sql = await db.open();
+  await sql`UPDATE repo_config SET config = config - 'features' - 'providers' - 'agentPermissionMode'`;
+  await sql.unsafe(MIGRATION_3);
+  invalidateConfig();
+  const backfilled = (await loadConfig()).repos[0]!;
+  expect(featuresOf(backfilled)).toMatchObject({ autoMerge: true, aiPrDescription: true, aiTitles: true });
+  expect(backfilled.providers).toEqual(["claude", "codex", "cursor"]);
+  expect(backfilled.agentPermissionMode).toBe("bypass"); // preserves today's behaviour, revocably
+  // The backfill grants nothing the repo couldn't already do: no Slack channel means no Slack, and
+  // no preview services means no previews — it records behaviour, it doesn't invent it.
+  expect(featuresOf(backfilled)).toMatchObject({ slack: false, previews: false });
+});
+
+test("the backfill turns Slack and previews on only where the repo was already able to use them", async () => {
+  await saveConfigDocument(parseConfigDocument(doc({
+    repos: [{
+      name: "app", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main",
+      slackChannel: "#eng", previewServices: [{ name: "web", command: "bun dev" }],
+    }],
+  })).config!);
+  const sql = await db.open();
+  await sql`UPDATE repo_config SET config = config - 'features' - 'providers' - 'agentPermissionMode'`;
+  await sql.unsafe(MIGRATION_3);
+  invalidateConfig();
+  expect(featuresOf((await loadConfig()).repos[0]!)).toMatchObject({ slack: true, previews: true });
 });
