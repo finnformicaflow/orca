@@ -20,7 +20,6 @@ export type LiveAgent = {
   agentPrompt?: string;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";
-  tmux?: boolean; // a live interactive tmux terminal exists for this worktree
 };
 
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
@@ -71,8 +70,6 @@ export const api = {
    *  unlike a WS upgrade, the proxy handles SSE fine. */
   turnsStreamUrl: (repo: string, branch: string): string =>
     `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
-  ensureTerminal: (repo: string, b: { branch: string; worktreePath: string; provider: AgentProvider; sessionId?: string; fresh?: boolean; seedFile?: string }): Promise<{ name: string }> =>
-    post("/api/terminal/ensure", { repo, ...b }),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
