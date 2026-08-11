@@ -32,6 +32,10 @@ export function previewDbName(key: string): string {
 // Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
 // only know their port, and reap them via killPort. Owned svcs (started this run) have both.
 type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string; everUp: boolean };
+/** Host the browser should use for preview links (ORCA_PREVIEW_HOST, e.g. the tailnet name of the
+ *  box). Defaults to localhost, which is correct for a laptop instance. */
+export const previewHost = (): string => process.env.ORCA_PREVIEW_HOST || "localhost";
+
 export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
@@ -187,7 +191,10 @@ export async function status(key: string): Promise<SvcStatus[]> {
     // client reaps it; a service that HAS been up is never reaped on a probe blip (see everUp).
     if (up) s.everUp = true;
     const { running, ready } = svcHealth(s.proc ? !s.exited : up, up, s.everUp, s.startedAt, Date.now());
-    return { name: s.name, port: s.port, url: `http://localhost:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
+    // The URL is what the BROWSER opens, so it must name a host the browser can reach: `localhost`
+    // is right when Orca runs on your machine and wrong the moment it runs on a box you reach over a
+    // tailnet. The readiness probe below stays on localhost — that one runs here.
+    return { name: s.name, port: s.port, url: `http://${previewHost()}:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
 

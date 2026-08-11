@@ -196,7 +196,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await gh.listPrs(repo.repoPath)); // source of truth for the PR lanes
   }
   if (req.method === "GET" && p === "/api/prs/merged") {
-    return json(await gh.listMerged(repo.repoPath));
+    // `since` is the client's local midnight in ms — see gh.listMerged.
+    const since = Number(url.searchParams.get("since"));
+    return json(await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined));
   }
   const reviewEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/review-evidence$/);
   if (req.method === "GET" && reviewEvidenceMatch) {
@@ -528,7 +530,10 @@ Bun.serve({
   // Bind to localhost ONLY. (The keystrokes-into-a-shell WebSocket that made this critical is gone,
   // but the bridge still runs agents with repo-granted authority, so it stays off the network until
   // there is a deliberate reason — and an ACL — to expose it.)
-  hostname: "127.0.0.1",
+  // Loopback by default. ORCA_BIND exists for the deployed instance, which is reached over a tailnet
+  // — bind the tailnet interface there, never 0.0.0.0, or the same process is also served to whatever
+  // café wifi the machine is on.
+  hostname: process.env.ORCA_BIND || "127.0.0.1",
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,

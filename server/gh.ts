@@ -364,13 +364,21 @@ async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
   return inflight;
 }
 
-/** The current user's PRs merged today (server-local calendar day) — the Done lane. */
-export async function listMerged(cwd: string): Promise<MergedPr[]> {
+/** The current user's PRs merged since `since` (ms epoch) — the Done lane.
+ *
+ *  The boundary comes from the CLIENT, because "today" is a property of the person looking at the
+ *  board, not of the machine running the bridge. Those were the same thing while Orca ran on your
+ *  laptop; once it runs on a box in another timezone, a server-local midnight silently empties or
+ *  over-fills the lane. Falls back to the server's own day when a caller doesn't say. */
+export async function listMerged(cwd: string, since?: number): Promise<MergedPr[]> {
   const arr = await mergedRows(cwd);
-  const startOfToday = new Date(); // server runs on the user's machine → their locale/timezone
-  startOfToday.setHours(0, 0, 0, 0);
+  const boundary = since ?? (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  })();
   return arr
-    .filter((j) => j.mergedAt && Date.parse(j.mergedAt) >= startOfToday.getTime())
+    .filter((j) => j.mergedAt && Date.parse(j.mergedAt) >= boundary)
     .map((j) => ({ number: j.number, title: j.title, branch: j.headRefName, url: j.url, mergedAt: j.mergedAt }));
 }
 

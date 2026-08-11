@@ -75,7 +75,13 @@ export const api = {
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
-  mergedPrs: (repo: string): Promise<MergedPr[]> => fetch(`/api/prs/merged${q(repo)}`).then(res),
+  // The client sends its own local midnight: "merged today" belongs to the person reading the board,
+  // not to the timezone of whatever machine the bridge runs on.
+  mergedPrs: (repo: string): Promise<MergedPr[]> => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    return fetch(`/api/prs/merged${q(repo, `&since=${midnight.getTime()}`)}`).then(res);
+  },
   prDetail: (repo: string, n: number): Promise<PrDetail> => fetch(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => fetch(`/api/prs/${n}/diff${q(repo)}`).then(res),
   reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => fetch(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),
