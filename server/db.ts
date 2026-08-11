@@ -111,6 +111,31 @@ const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX turn_ws ON turn (workstream_id, started_at);
     `,
   },
+  {
+    id: 2,
+    sql: `
+      -- One row per managed repo, so adding a project is an insert rather than a redeploy. The
+      -- RepoConfig lives as JSONB because its shape is the app's and grows regularly; a column per
+      -- field would mean a migration per field for no query we actually run.
+      CREATE TABLE repo_config (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        config JSONB NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+      CREATE UNIQUE INDEX repo_config_name ON repo_config (user_id, name);
+
+      -- The handful of settings that aren't per-repo (port range, stale hours, run timeout).
+      CREATE TABLE app_config (
+        user_id TEXT PRIMARY KEY,
+        config JSONB NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -300,4 +325,49 @@ export async function archive(repo: string, branch: string): Promise<void> {
   await sql`
     UPDATE workstream SET archived_at = ${Date.now()}
     WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND archived_at IS NULL`;
+}
+
+// ---- config ----
+
+/** Every repo this user manages, in display order. Empty means "not configured yet" — the caller
+ *  seeds from the checked-in file on first boot (see config.ts). */
+export async function repoConfigs(): Promise<{ name: string; config: Fields }[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT name, config FROM repo_config WHERE user_id = ${currentUser()}
+    ORDER BY position, name`;
+  return (rows as { name: string; config: Fields }[]).map((r) => ({ name: r.name, config: r.config ?? {} }));
+}
+
+/** The non-repo settings (port range, stale hours, run timeout). */
+export async function appConfig(): Promise<Fields> {
+  const sql = await open();
+  const rows = await sql`SELECT config FROM app_config WHERE user_id = ${currentUser()}`;
+  return (rows[0]?.config as Fields) ?? {};
+}
+
+/** Replace this user's whole configuration — the document is the unit, the way a wrangler.toml is.
+ *  Repos absent from the document are REMOVED, so the row set always matches what you pasted. Runs in
+ *  one transaction: a half-applied config would leave the board pointing at repos that don't exist. */
+export async function saveConfig(input: { repos: { name: string; config: Fields }[]; app: Fields }): Promise<void> {
+  const sql = await open();
+  const user = currentUser();
+  const now = Date.now();
+  // The document replaces the row set wholesale — repos absent from it are gone — so this is a
+  // delete-then-insert rather than a diff. `created_at` is carried over for repos that survive, so a
+  // paste doesn't rewrite the history of projects it didn't change.
+  await sql.begin(async (tx: Bun.SQL) => {
+    const existing = await tx`SELECT name, created_at FROM repo_config WHERE user_id = ${user}`;
+    const createdAt = new Map((existing as { name: string; created_at: string }[])
+      .map((r) => [r.name, Number(r.created_at)]));
+    await tx`DELETE FROM repo_config WHERE user_id = ${user}`;
+    for (const [position, r] of input.repos.entries()) {
+      await tx`
+        INSERT INTO repo_config (user_id, name, config, position, created_at, updated_at)
+        VALUES (${user}, ${r.name}, ${r.config}, ${position}, ${createdAt.get(r.name) ?? now}, ${now})`;
+    }
+    await tx`
+      INSERT INTO app_config (user_id, config, updated_at) VALUES (${user}, ${input.app}, ${now})
+      ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config, updated_at = ${now}`;
+  });
 }
