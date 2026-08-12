@@ -7,11 +7,11 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, copyToWorktree, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
 import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
-import { freePort, killTree, previewHost } from "../server/preview";
+import { freePort, killTree, orphanPreviewDbs, previewDbName, previewHost } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, bulkActions, canMerge, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
+  addressReviewPrompt, attachCommand, bulkActions, canMerge, chatPrompt, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
   DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -914,4 +914,42 @@ test("P4 deployment shape: preview links name a reachable host, and Done·today 
   expect((await listMerged(merged, now + day)).map((p) => p.number)).toEqual([]);
   // ...and omitting it falls back to the server's own day, so an old client still works.
   expect((await listMerged(merged)).map((p) => p.number)).toEqual([1]);
+});
+
+test("P5 preview GC: a database with no live worktree is an orphan, and a live one never is", () => {
+  // Each preview gets its own database and drops it on teardown — but one whose bridge was killed,
+  // or whose worktree was removed while it wasn't running, is left behind and nothing collects it.
+  // (Nearly 4 GB of them had accumulated here.) The selection is the dangerous part: dropping a
+  // database someone is using is unrecoverable, so it's pure and pinned.
+  const liveA = "/dev/app/.worktrees/feat-a";
+  const liveB = "/dev/app/.worktrees/feat-b";
+  const gone = "/dev/app/.worktrees/removed";
+  const existing = [previewDbName(liveA), previewDbName(liveB), previewDbName(gone), "orca_hand_made"];
+
+  expect(orphanPreviewDbs(existing, [liveA, liveB])).toEqual([previewDbName(gone), "orca_hand_made"]);
+  // Every worktree still live → nothing to reap.
+  expect(orphanPreviewDbs(existing, [liveA, liveB, gone, "/dev/app/.worktrees/hand"])).toEqual(["orca_hand_made"]);
+  // No worktrees at all (a repo never previewed) doesn't make every database an orphan by accident —
+  // it makes them all orphans, which is correct, so the caller's --drop guard is what protects you.
+  expect(orphanPreviewDbs([], [liveA])).toEqual([]);
+});
+
+test("P6 a chat message is a conversation; a board action is still a work order", () => {
+  // Answering "what do you think about X?" by silently rewriting six files and pushing is the wrong
+  // response to it. The chat and the board issue different things, so they get different prompts.
+  const chat = chatPrompt("Should we handle the empty case here?");
+  expect(chat.startsWith("Should we handle the empty case here?")).toBe(true); // the message leads, verbatim
+  expect(chat).toContain("replying in a conversation, not executing a work order");
+  expect(chat).toContain("Do NOT change files");   // for a question
+  expect(chat).toContain("ask, or state the assumption"); // rather than guessing and starting work
+  expect(chat).toContain("commit");                // …but a clear instruction still gets done
+  expect(chat).toContain("Do NOT open a pull request"); // Orca owns Promote either way
+  // The outcome contract is conditional — a discussion answer shouldn't be forced into headings.
+  expect(chat).toContain("If (and only if) you changed something");
+  expect(chat).toContain("## Outcome");
+
+  // A board follow-up is unchanged: autonomous, always reports.
+  const action = followUpPrompt("Fix the failing test");
+  expect(action).toContain("Work autonomously");
+  expect(action).not.toContain("replying in a conversation");
 });

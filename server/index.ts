@@ -12,6 +12,7 @@ import { usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
+import { backfillRun } from "./backfill";
 import * as bus from "./bus";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
@@ -66,9 +67,14 @@ if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
 }
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
-// the authority on what's genuinely still running (they deliberately survive shutdown).
-const orphaned = await db.reconcileRunning(lease.liveRunIds());
-if (orphaned) console.log(`orca: closed ${orphaned} turn(s) left running by a previous bridge`);
+// the authority on what's genuinely still running (they deliberately survive shutdown). Before
+// writing one off, try to recover what it actually did from the provider's own session file — the
+// agent usually kept working after the bridge died, and its answer is on disk.
+const { closed, recovered } = await db.reconcileRunning(lease.liveRunIds(), async ({ runId, sessionId }) => {
+  const found = await backfillRun(runId, sessionId);
+  return found?.response ? { response: found.response, structured: found.outcome } : undefined;
+});
+if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.
@@ -84,6 +90,9 @@ agent.onQueuedMessage(async (message) => {
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   });
 });
+
+// How long shutdown waits for outstanding history writes before leaving anyway.
+const DRAIN_TIMEOUT_MS = 5_000;
 
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
@@ -670,11 +679,29 @@ Bun.serve({
   },
 });
 
-// Preview servers hold ports, so free them on shutdown. Agents are left running so a restart
-// doesn't lose in-progress work — they're re-surfaced via ps (agent.detectRunning) and killed
-// explicitly on discard (agent.killByBranch).
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => { preview.killAll(); process.exit(0); });
+// Shutdown. Agents are deliberately left running — a restart shouldn't lose in-progress work; they're
+// re-surfaced via ps (agent.detectRunning) and killed explicitly on discard (agent.killByBranch).
+//
+// SIGINT and SIGTERM differ on purpose:
+//  - SIGINT is you at a terminal pressing Ctrl-C. You want your ports back, so previews are killed.
+//  - SIGTERM is a service manager stopping the process (a deploy, a reboot). Killing every preview on
+//    every deploy would be gratuitous, and `preview.reattach()` re-adopts them on the way back up.
+//
+// Either way we DRAIN first: an in-flight run's history write is fire-and-forget, so exiting without
+// waiting can lose the turn the database exists to keep.
+let draining = false;
+async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
+  if (draining) return; // a second Ctrl-C shouldn't interrupt the drain
+  draining = true;
+  if (signal === "SIGINT") preview.killAll();
+  try {
+    await Promise.race([
+      agent.flushHistory(),
+      new Promise((r) => setTimeout(r, DRAIN_TIMEOUT_MS)), // never hang a deploy on a wedged write
+    ]);
+  } catch { /* best effort — we are leaving either way */ }
+  process.exit(0);
 }
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { void shutdown(sig); });
 
 console.log(`orca bridge → http://localhost:${API_PORT}`);
