@@ -373,6 +373,9 @@ export type Row = {
   sessionId?: string;
   transcript?: AgentTurn[];
   mergeClean?: "clean" | "conflict";
+  /** This worktree lives on another instance — local-path shortcuts don't apply. */
+  remote?: boolean;
+  instance?: string;
   promoted?: boolean;
   prNumber?: number;
   prUrl?: string;
@@ -434,7 +437,7 @@ export function useWorkstreams(): Row[] {
         preferredProvider: e.preferredProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
-        mergeClean: wt?.mergeClean, promoted: e.promoted,
+        mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps,

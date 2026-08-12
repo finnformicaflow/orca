@@ -205,7 +205,11 @@ function CopyMenu({ row }: { row: Row }) {
       <DropdownMenuContent align="end">
         {row.prUrl && <DropdownMenuItem onSelect={() => copy(row.prUrl!, "PR link")} title="Copy PR link">Copy PR link</DropdownMenuItem>}
         <DropdownMenuItem onSelect={() => copy(row.branch, "worktree name")} title="Copy worktree name">Copy worktree name</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void copyCli()} title="Copy CLI: resume this agent's session in a terminal">Copy CLI</DropdownMenuItem>
+        {/* Local worktrees only: the command cds into a path that exists on the machine that RUNS
+            the repo, so offering it for a session on another instance would hand you a dead path. */}
+        {!row.remote && (
+          <DropdownMenuItem onSelect={() => void copyCli()} title="Copy CLI: resume this agent's session in a terminal">Copy CLI</DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -20,6 +20,10 @@ export type LiveAgent = {
   agentPrompt?: string;
   sessionId?: string;
   mergeClean?: "clean" | "conflict";
+  // Reported by ANOTHER instance (see /api/agents): the worktree is on that machine, so anything
+  // naming a local path — Copy CLI, the worktree path itself — doesn't apply here.
+  remote?: boolean;
+  instance?: string;
 };
 
 export type QueuedMessage = {

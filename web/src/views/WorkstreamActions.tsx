@@ -152,7 +152,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>
+                {/* Local only — see the card's copy menu. */}
+                {!row.remote && <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>}
                 <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
