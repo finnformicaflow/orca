@@ -63,6 +63,8 @@ export const apiFake = {
   stopped: [] as string[],
   // Steps the chat's tail will serve, keyed by runId, and which runs have completed.
   turnStepsData: new Map<string, unknown[]>(),
+  // Instructions held because a run was in flight, keyed by branch.
+  queuedData: new Map<string, unknown[]>(),
   turnFinished: new Set<string>(),
   turnsData: new Map<string, unknown[]>(),
   // When set, importEnrichment rejects — the migration must then KEEP the browser's blob, since it
@@ -83,7 +85,7 @@ export const apiFake = {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -176,6 +178,11 @@ mock.module("@/api", () => ({
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
     // The chat's live stream (stubbed EventSource in happydom.ts) plus its reconnect catch-up.
     turnsStreamUrl: (repo: string, branch: string) => `/api/turns/stream?repo=${repo}&branch=${branch}`,
+    queued: async (_repo: string, branch: string) => apiFake.queuedData.get(branch) ?? [],
+    cancelQueued: async (_repo: string, id: number) => {
+      for (const [b, list] of apiFake.queuedData) apiFake.queuedData.set(b, (list as { id: number }[]).filter((m) => m.id !== id));
+      return { ok: true as const };
+    },
     turnSteps: async (_repo: string, _branch: string, runId: string, since: number) => {
       const all = (apiFake.turnStepsData.get(runId) ?? []) as { seq: number; step: unknown }[];
       const fresh = all.filter((s) => s.seq > since);

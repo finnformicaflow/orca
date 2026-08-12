@@ -159,3 +159,16 @@ describe("swimlane card details", () => {
     expect(container!.textContent).not.toContain("error:");
   });
 });
+
+  test("Copy CLI is offered for a local worktree and withheld for one on another instance", async () => {
+    // Kept deliberately while the chat takes over: it's the escape hatch to a real terminal. But the
+    // command cds into a path on the machine that RUNS the repo, so for a session reported by another
+    // instance it would hand you a directory that doesn't exist here.
+    await mount({ ...base, sessionId: "claude-1" });
+    await openCopyMenu();
+    expect(document.body.querySelector('[role="menuitem"][title^="Copy CLI"]')).not.toBeNull();
+
+    await mount({ ...base, sessionId: "claude-1", remote: true, instance: "cloud" });
+    await openCopyMenu();
+    expect(document.body.querySelector('[role="menuitem"][title^="Copy CLI"]')).toBeNull();
+  });

@@ -147,7 +147,7 @@ function codexSessionId(line: string): string | undefined {
 /** Read Codex JSONL without waiting for the process to finish. Codex chooses its own thread UUID
  *  (there is no Claude-style `--session-id` flag), but emits it first. Publishing it into `runs`
  *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
-async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }): Promise<string> {
+async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
@@ -164,6 +164,41 @@ async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe
       const current = runs.get(key);
       if (sessionId && current?.proc === proc && current.sessionId !== sessionId) {
         runs.set(key, { ...current, sessionId });
+      }
+      if (!runId) continue;
+      let event: unknown;
+      try { event = JSON.parse(line); } catch { continue; }
+      const written = await transcript.append(runId, codexSteps(event));
+      if (written.length && owner?.repo && owner.branch) {
+        bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
+      }
+    }
+  }
+  return raw;
+}
+
+/** Read Cursor's stream-json without waiting for exit, recording each step as it lands. Returns the
+ *  full raw stream so parseCursorOutput can extract the final outcome at exit. */
+async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
+  const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  const state = { thinking: "" };
+  let raw = "";
+  let pending = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    raw += value;
+    holder.raw = raw;
+    pending += value;
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim() || !runId) continue;
+      let event: unknown;
+      try { event = JSON.parse(line); } catch { continue; }
+      const written = await transcript.append(runId, cursorSteps(event, state));
+      if (written.length && owner?.repo && owner.branch) {
+        bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }
     }
   }
@@ -216,6 +251,98 @@ export function claudeSteps(event: unknown): AgentStep[] {
     }
   }
   return steps;
+}
+
+/** The step(s) one Codex `exec --json` event contributes. Codex reports work as items with a
+ *  lifecycle: `item.started` announces a tool call, `item.completed` carries its result (and, for
+ *  `agent_message`, the model's prose). Shapes taken from a real run rather than guessed —
+ *  `command_execution` carries `command` / `aggregated_output` / `exit_code`.
+ *
+ *  Unknown item types still produce a step: a new Codex tool should show up as "Using <type>" rather
+ *  than silently vanishing from the conversation. Pure. */
+export function codexSteps(event: unknown): AgentStep[] {
+  const e = event as { type?: string; item?: Record<string, unknown> };
+  const item = e?.item;
+  if (!item || typeof item !== "object") return [];
+  const at = Date.now();
+  const kind = typeof item.type === "string" ? item.type : "";
+
+  if (kind === "agent_message") {
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    // Only on completion: the started event carries no text yet.
+    return e.type === "item.completed" && text ? [{ at, kind: "text", text }] : [];
+  }
+  if (kind === "reasoning") {
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    return e.type === "item.completed" && text ? [{ at, kind: "thinking", text }] : [];
+  }
+
+  const command = typeof item.command === "string" ? item.command : undefined;
+  const path = typeof item.path === "string" ? item.path : undefined;
+  const query = typeof item.query === "string" ? item.query : undefined;
+  const detail = command ?? path ?? query;
+  const summary = kind === "command_execution" ? `Running: ${(command ?? "a command").replace(/\s+/g, " ").slice(0, 120)}`
+    : kind === "file_change" ? `Editing ${path?.split("/").pop() ?? "a file"}`
+    : kind === "web_search" ? `Searching the web${query ? `: ${query.slice(0, 60)}` : ""}`
+    : kind === "mcp_tool_call" ? `Using ${typeof item.tool === "string" ? item.tool : "an MCP tool"}`
+    : `Using ${kind || "a tool"}`;
+
+  if (e.type === "item.started") return [{ at, kind: "tool", name: kind, text: summary, detail }];
+  if (e.type !== "item.completed") return [];
+  const output = typeof item.aggregated_output === "string" ? item.aggregated_output.trim()
+    : typeof item.output === "string" ? item.output.trim() : "";
+  const failed = typeof item.exit_code === "number" ? item.exit_code !== 0 : item.status === "failed";
+  return output || failed
+    ? [{ at, kind: "tool", name: "result", output: output || `exited ${String(item.exit_code ?? item.status)}`, isError: failed }]
+    : [];
+}
+
+/** The step(s) one Cursor `stream-json` event contributes. Shapes taken from a real run:
+ *  `assistant` carries the model's prose, `thinking` arrives as DELTAS with the text (and a
+ *  `completed` event that carries none), and `tool_call` wraps a named tool object whose `args` and
+ *  `result` shapes vary per tool — `shellToolCall` has command/stdout/exitCode.
+ *
+ *  Cursor is the one provider that exposes real reasoning text, so the deltas are accumulated in
+ *  `state` and emitted as a single thinking step rather than a stutter of fragments. */
+export function cursorSteps(event: unknown, state: { thinking: string }): AgentStep[] {
+  const e = event as Record<string, any>;
+  const at = Date.now();
+  if (e?.type === "thinking") {
+    if (e.subtype === "delta" && typeof e.text === "string") { state.thinking += e.text; return []; }
+    if (e.subtype === "completed") {
+      const text = state.thinking.trim();
+      state.thinking = "";
+      return text ? [{ at, kind: "thinking", text }] : [];
+    }
+    return [];
+  }
+  if (e?.type === "assistant" && Array.isArray(e.message?.content)) {
+    const text = e.message.content
+      .map((b: Record<string, unknown>) => (b?.type === "text" ? String(b.text ?? "") : ""))
+      .join("").trim();
+    return text ? [{ at, kind: "text", text }] : [];
+  }
+  if (e?.type !== "tool_call" || !e.tool_call || typeof e.tool_call !== "object") return [];
+  // One wrapper key names the tool, e.g. { shellToolCall: { args, result } }.
+  const [name, body] = Object.entries(e.tool_call as Record<string, any>)
+    .find(([, v]) => v && typeof v === "object" && !Array.isArray(v)) ?? [];
+  if (!name || !body) return [];
+  const label = name.replace(/ToolCall$/, "");
+  const args = (body.args ?? {}) as Record<string, unknown>;
+  const detail = ["command", "path", "query", "filePath"].map((k) => args[k]).find((v) => typeof v === "string") as string | undefined;
+  if (e.subtype === "started") {
+    const summary = detail ? `${label}: ${detail.replace(/\s+/g, " ").slice(0, 120)}` : `Using ${label}`;
+    return [{ at, kind: "tool", name: label, text: summary, detail }];
+  }
+  if (e.subtype !== "completed") return [];
+  const success = (body.result ?? {}) as Record<string, any>;
+  const ok = success.success ?? success;
+  const output = [ok?.stdout, ok?.stderr, typeof ok === "string" ? ok : undefined]
+    .filter((v) => typeof v === "string" && v.trim()).join("\n").trim();
+  const failed = typeof ok?.exitCode === "number" ? ok.exitCode !== 0 : Boolean(success.error);
+  return output || failed
+    ? [{ at, kind: "tool", name: "result", output: output || "failed", isError: failed }]
+    : [];
 }
 
 /** The tool's own input, verbatim-ish, for the expandable detail line (the full command, the whole
@@ -329,7 +456,13 @@ export function parseCodexOutput(raw: string): { sessionId?: string; result?: st
 export function parseCursorOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta: RunMeta } {
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   try {
-    const j = JSON.parse(raw.trim());
+    // stream-json: the outcome is the last `result` event. A single JSON body (the older buffered
+    // form, and what a crash may leave) still parses, so both shapes are handled.
+    const lines = raw.split("\n").filter((l) => l.trim());
+    const resultLine = [...lines].reverse().find((l) => {
+      try { return (JSON.parse(l) as { type?: string }).type === "result"; } catch { return false; }
+    });
+    const j = JSON.parse((resultLine ?? raw).trim());
     return {
       sessionId: typeof j.session_id === "string" ? j.session_id : undefined,
       result: typeof j.result === "string" ? j.result : undefined,
@@ -358,7 +491,10 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
       : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "--", prompt];
   }
   if (provider === "cursor") {
-    return ["cursor-agent", "-p", ...(resume ? ["--resume", resume] : []), "--output-format", "json", "--force", "--trust", "--", prompt];
+    // stream-json (not json) so the run's steps arrive AS THEY HAPPEN, the same reason claude uses
+    // it. The final `result` event is the same object the buffered form emitted, so
+    // parseCursorOutput still extracts the outcome.
+    return ["cursor-agent", "-p", ...(resume ? ["--resume", resume] : []), "--output-format", "stream-json", "--force", "--trust", "--", prompt];
   }
   // stream-json (not json) so the run's steps arrive AS THEY HAPPEN — read incrementally in
   // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
@@ -405,9 +541,9 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     const outHolder = { raw: "" };
     const errHolder = { raw: "" };
     const reads = Promise.all([
-      provider === "codex" ? readCodexOutput(key, proc, outHolder)
+      provider === "codex" ? readCodexOutput(key, proc, outHolder, runId, { repo: options.repo, branch: options.branch })
         : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch })
-        : new Response(proc.stdout).text().then((t) => (outHolder.raw = t)),
+        : readCursorOutput(proc, outHolder, runId, { repo: options.repo, branch: options.branch }),
       new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
@@ -469,6 +605,9 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     runs.set(key, ok
       ? { status: "done", ...common }
       : { status: "error", ...common, error });
+    // An instruction typed while this run was in flight goes now. Fire-and-forget and after the run
+    // is marked finished, so the queued launch sees a free worktree.
+    if (options.repo && options.branch) void dispatchQueued(options.repo, options.branch, options);
   })();
   return { status: "running", provider, runId, sessionId };
 }
@@ -551,6 +690,28 @@ export async function describePr(provider: AgentProvider, prompt: string, option
 // Runs you stopped deliberately. The exit handler reads this so an interrupted run is recorded as
 // `stopped` rather than `error` — the work it already did stands, and its session stays resumable.
 const stoppedRuns = new Set<string>();
+
+// Set by index.ts, which owns the config a queued launch needs (model, permission mode, timeout).
+// A module-level hook rather than an import, so agent.ts keeps knowing nothing about config or HTTP.
+let queuedLauncher: ((message: db.QueuedMessage) => Promise<void>) | undefined;
+export function onQueuedMessage(fn: (message: db.QueuedMessage) => Promise<void>): void {
+  queuedLauncher = fn;
+}
+
+/** Send the next instruction queued for a branch, if any. Claimed in one statement, so a restart
+ *  racing itself — or a second instance — cannot dispatch the same message twice. */
+async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<void> {
+  if (!queuedLauncher) return;
+  try {
+    const next = await db.claimQueuedMessage(repo, branch);
+    if (!next) return;
+    await queuedLauncher(next);
+  } catch (e) {
+    // Never let a queued send break the run that just finished; the message stays claimed rather
+    // than retrying forever against a worktree that may be gone.
+    console.error("orca: queued message dispatch failed", e);
+  }
+}
 
 /** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
  *  any, so a caller can report what it interrupted. */

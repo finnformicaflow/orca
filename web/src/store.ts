@@ -373,6 +373,9 @@ export type Row = {
   sessionId?: string;
   transcript?: AgentTurn[];
   mergeClean?: "clean" | "conflict";
+  /** This worktree lives on another instance — local-path shortcuts don't apply. */
+  remote?: boolean;
+  instance?: string;
   promoted?: boolean;
   prNumber?: number;
   prUrl?: string;
@@ -434,7 +437,7 @@ export function useWorkstreams(): Row[] {
         preferredProvider: e.preferredProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
-        mergeClean: wt?.mergeClean, promoted: e.promoted,
+        mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
         prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps,
@@ -703,7 +706,10 @@ export async function followUp(
   patchEnrich(row.repo, row.branch, { followUps });
   const paths = images.length ? await api.uploadAttachments(images) : [];
   const wt = await ensureWorktree(row);
-  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup" });
+  // The bridge QUEUES this if a run is already in flight (rather than the 409 it used to answer with)
+  // and sends it when that run finishes — so the composer's invitation to "queue the next
+  // instruction" is now true.
+  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
   await refresh();
 }
 
@@ -712,7 +718,7 @@ const CONTEXT_RESET_PCT = 80;
 // A resumed session the provider can't find — claude "No conversation found…", codex "no rollout
 // found…", cursor "session not found". These mean the id points at nothing, so resuming it loops.
 const SESSION_MISSING = /no conversation found|no rollout found|session (?:id )?[^\n]*not found|unable to (?:find|resume)/i;
-async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, ledger: { action?: string; evidenceChars?: number } = {}) {
+async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, ledger: { action?: string; evidenceChars?: number; attachments?: string[]; instruction?: string } = {}) {
   const current = enrichOf(row.repo, row.branch);
   const from = current.agentProvider ?? row.agentProvider;
   const sessionId = current.sessionId ?? row.sessionId;
@@ -739,10 +745,15 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     branch: row.branch,
     action: ledger.action,
     evidenceChars: ledger.evidenceChars,
+    // Carried so the bridge can queue this verbatim if a run is already in flight.
+    attachments: ledger.attachments,
+    instruction: ledger.instruction,
     resume: sameNativeSession ? sessionId : undefined,
     history: !sameNativeSession ? transcript : undefined,
     handoffFrom: !sameNativeSession ? from : undefined,
   });
+  // Queued rather than launched: nothing started, so the session pointer must not move.
+  if ("status" in receipt && receipt.status === "queued") return receipt;
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.
   patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return receipt;

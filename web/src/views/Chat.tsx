@@ -8,7 +8,7 @@
 // action uses.
 import { useEffect, useRef, useState } from "react";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
-import { api } from "../api";
+import { api, type QueuedMessage } from "../api";
 import { followUp, refresh, type Row } from "../store";
 import { agentLabel, groupSteps } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -95,6 +95,23 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
   </div>
 );
 
+/** An instruction typed while the agent was working. It hasn't been sent yet — shown so it's visibly
+ *  waiting rather than silently in limbo, and cancellable while it still is. */
+function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () => void }) {
+  return (
+    <div className="mb-3 opacity-60">
+      <div className="flex gap-2 text-emerald-400">
+        <span className="shrink-0 select-none">❯</span>
+        <span className="min-w-0 whitespace-pre-wrap break-words">{message.instruction}</span>
+      </div>
+      <div className="mt-1 flex items-center gap-2 pl-4 text-[10px] tracking-widest text-neutral-500 uppercase">
+        <span>queued — sends when the current run finishes</span>
+        <button type="button" onClick={onCancel} className="tracking-normal text-neutral-400 normal-case hover:text-red-400">cancel</button>
+      </div>
+    </div>
+  );
+}
+
 /** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
 function Turn({ turn }: { turn: AgentTurn }) {
   const pending = !turn.finishedAt;
@@ -146,9 +163,11 @@ export function ChatPanel({ row }: { row: Row }) {
     let live = true;
     const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
     void load();
+    void loadQueued();
 
     const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
-    source.addEventListener("turn", () => void load());
+    // A `turn` event means a run started or finished — either way the queue may have moved.
+    source.addEventListener("turn", () => { void load(); void loadQueued(); });
     source.addEventListener("step", (e) => {
       const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
       setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
@@ -185,6 +204,8 @@ export function ChatPanel({ row }: { row: Row }) {
   useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [turns]);
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  const loadQueued = () => api.queued(row.repo, row.branch).then(setQueued).catch(() => {});
   const [stopping, setStopping] = useState(false);
   // Stop, not Discard: kills the process but keeps the worktree, its commits, and the provider
   // session, so the next message resumes the same conversation and steers it somewhere else.
@@ -226,6 +247,13 @@ export function ChatPanel({ row }: { row: Row }) {
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
+        {queued.map((m) => (
+          <Queued
+            key={m.id}
+            message={m}
+            onCancel={() => void api.cancelQueued(row.repo, m.id).then(loadQueued)}
+          />
+        ))}
       </div>
       <ChatComposer
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
@@ -234,6 +262,7 @@ export function ChatPanel({ row }: { row: Row }) {
         onSubmit={async (text, images) => {
           await followUp(row, text, images);
           setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
+          await loadQueued(); // it may have been held rather than launched
         }}
       />
     </div>

@@ -197,3 +197,21 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   await push("back at the bottom");
   expect(scrolled).toEqual([1000]);
 });
+
+test("an instruction held mid-run shows as queued, and can be cancelled", async () => {
+  // Before this, the composer invited "queue the next instruction" and the bridge answered 409 — the
+  // message just vanished. It's now visibly waiting, and revocable while it still is.
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
+  apiFake.queuedData.set("feat", [
+    { id: 7, repo: "r", branch: "feat", instruction: "also update the docs", attachments: [], createdAt: 2 },
+  ]);
+
+  await mount({ ...base, agentStatus: "running" });
+
+  expect(text()).toContain("also update the docs");
+  expect(text()).toContain("sends when the current run finishes"); // not silently pending
+
+  const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel");
+  await act(async () => { cancel!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(text()).not.toContain("also update the docs");
+});
