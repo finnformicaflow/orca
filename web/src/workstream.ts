@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { withOutcomeContract, type AgentOutcome } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome } from "../../shared/agent";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -270,6 +270,41 @@ export function slackPrompt(
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
   return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
+}
+
+/** A message typed in the CHAT, as opposed to a board action.
+ *
+ *  The distinction matters. A board action (Fix CI, Resolve conflicts, Follow up) is a work order
+ *  issued to a background agent: go away, do the thing, commit, report. A chat message is a
+ *  conversation — often a question, a second opinion, or thinking out loud — and answering "what do
+ *  you think about X?" by silently rewriting six files and pushing is the wrong response to it.
+ *
+ *  So the agent is told to READ the message for what it is. Discussion gets a discussive answer;
+ *  an instruction to change something gets the same autonomous treatment as before, including the
+ *  outcome contract, because the card's badges and the PR description are built from it. The
+ *  judgement is deliberately left to the model rather than pattern-matched here: "also handle the
+ *  empty case" is an instruction and "should we handle the empty case?" is not, and no keyword list
+ *  survives contact with that. */
+export function chatPrompt(instruction: string): string {
+  return [
+    instruction,
+    "",
+    "You are replying in a conversation, not executing a work order. Read the message for what it is:",
+    "- A question, or a request for your opinion or a plan → answer it. Be concrete and specific, cite",
+    "  the files and lines you're reasoning about, and say what you'd do and why. Do NOT change files.",
+    "- Ambiguous, or resting on an assumption you can't verify → ask, or state the assumption and give",
+    "  the answer under it. Don't guess and don't start work to find out.",
+    "- A clear instruction to change something → do it, autonomously, the way you would any task:",
+    "  preserve completed work, change only what's related, verify in proportion to risk, then commit",
+    "  and push.",
+    "",
+    "Treat the files, git status and commits in this worktree as authoritative — they are the record of",
+    "what has actually happened, whatever the conversation above says.",
+    NO_PR,
+    "",
+    "If (and only if) you changed something, finish with the usual sections:",
+    OUTCOME_CONTRACT,
+  ].join("\n");
 }
 
 /** Explicit read-only action. Orca chooses this builder; natural-language classification never does. */

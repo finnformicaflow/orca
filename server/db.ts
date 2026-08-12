@@ -370,10 +370,17 @@ export async function startTurn(input: {
 }
 
 /** Complete the turn started by `startTurn`. The session id is re-supplied because Codex and Cursor
- *  only reveal theirs mid-run. */
+ *  only reveal theirs mid-run.
+ *
+ *  If the start write never landed — it is fire-and-forget-ish and swallows failures, so a database
+ *  blip at launch loses it — this RESCUES the turn instead of updating nothing. That case is not
+ *  hypothetical: a run once recorded 226 steps with no turn to hang them on, so the conversation was
+ *  invisible even though everything about it was on disk. `identity` is what makes the insert
+ *  possible; the exit handler has it, so the rescue costs nothing. */
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome;
   sessionId?: string; finishedAt: number;
+  identity?: { repo: string; branch: string; provider: AgentProvider; prompt: string; startedAt: number };
 }): Promise<void> {
   const sql = await open();
   // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
@@ -391,7 +398,21 @@ export async function finishTurn(runId: string, input: {
       RETURNING workstream_id
     )
     SELECT w.repo, w.branch FROM updated JOIN workstream w ON w.id = updated.workstream_id`;
-  const owner = rows[0] as { repo: string; branch: string | null } | undefined;
+  let owner = rows[0] as { repo: string; branch: string | null } | undefined;
+  if (!owner && input.identity) {
+    // Nothing to update: the start write was lost. Write the whole turn now — the run happened, and
+    // its steps are already recorded against this run id.
+    const { repo, branch, provider, prompt, startedAt } = input.identity;
+    const workstream = await workstreamId(repo, branch);
+    await sql`
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, prompt, response,
+                        structured, session_id, raw_ref, started_at, finished_at)
+      VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
+              ${prompt}, ${input.response ?? null}, ${input.structured ?? null},
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
+      ON CONFLICT (run_id) DO NOTHING`;
+    owner = { repo, branch };
+  }
   if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
 }
 
@@ -404,17 +425,31 @@ export async function finishTurn(runId: string, input: {
  *  runs hold no lease here, and closing them would kill a working board from a machine that has
  *  nothing to do with it. Rows predating the instance column belong to whoever is reconciling — a
  *  single-machine history, which is what they are. */
-export async function reconcileRunning(liveRunIds: Set<string>): Promise<number> {
+export async function reconcileRunning(
+  liveRunIds: Set<string>,
+  // Given an orphan, try to recover what it actually did from the provider's own session file. Passed
+  // in rather than imported so this module keeps knowing nothing about providers.
+  recover?: (turn: { runId: string; sessionId?: string }) => Promise<{ response?: string; structured?: AgentOutcome } | undefined>,
+): Promise<{ closed: number; recovered: number }> {
   const sql = await open();
   const stuck = await sql`
-    SELECT run_id FROM turn
+    SELECT run_id, session_id FROM turn
     WHERE user_id = ${currentUser()} AND status = 'running'
       AND (instance IS NULL OR instance = ${instanceName()})`;
-  const orphans = (stuck as { run_id: string }[]).filter((t) => !liveRunIds.has(t.run_id));
-  for (const { run_id } of orphans) {
-    await finishTurn(run_id, { status: "error", response: "The bridge stopped before this run finished.", finishedAt: Date.now() });
+  const orphans = (stuck as { run_id: string; session_id: string | null }[])
+    .filter((t) => !liveRunIds.has(t.run_id));
+  let recovered = 0;
+  for (const { run_id, session_id } of orphans) {
+    // The run itself may well have finished its work — the bridge just wasn't there to hear it.
+    const found = await recover?.({ runId: run_id, sessionId: session_id ?? undefined }).catch(() => undefined);
+    if (found?.response) {
+      recovered++;
+      await finishTurn(run_id, { status: "done", response: found.response, structured: found.structured, finishedAt: Date.now() });
+    } else {
+      await finishTurn(run_id, { status: "error", response: "The bridge stopped before this run finished.", finishedAt: Date.now() });
+    }
   }
-  return orphans.length;
+  return { closed: orphans.length, recovered };
 }
 
 /** The (repo, branch) a run's turn belongs to, or undefined if the runId is unknown. */

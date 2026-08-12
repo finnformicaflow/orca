@@ -3,18 +3,20 @@
 // tab, or a follow-up landing faster than the 8s poll destroyed the turn permanently. These cases
 // pin the properties that fix: written at launch, keyed by runId, and archived rather than deleted.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as transcript from "../server/transcript";
+import { backfillRun, projectDir, readSession } from "../server/backfill";
 import { freshSchema, type TestDb } from "./pg";
 
 let dir: string;
 let prevStateDir: string | undefined;
 let prevDbUrl: string | undefined;
+let prevClaudeDir: string | undefined;
 let pg: TestDb;
 
 // A real Postgres in an isolated schema — the same engine the app runs on. The state dir still holds
@@ -22,6 +24,7 @@ let pg: TestDb;
 beforeEach(async () => {
   prevStateDir = process.env.ORCA_STATE_DIR;
   prevDbUrl = process.env.ORCA_DATABASE_URL;
+  prevClaudeDir = process.env.CLAUDE_CONFIG_DIR;
   dir = await mkdtemp(join(tmpdir(), "orca-db-"));
   process.env.ORCA_STATE_DIR = dir;
   pg = await freshSchema("chathistory");
@@ -34,6 +37,7 @@ afterEach(async () => {
   await pg.drop();
   if (prevStateDir === undefined) delete process.env.ORCA_STATE_DIR; else process.env.ORCA_STATE_DIR = prevStateDir;
   if (prevDbUrl === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDbUrl;
+  if (prevClaudeDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevClaudeDir;
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -162,6 +166,7 @@ test("a real agent run records its own turn, with no client polling it", async (
     expect((await db.turns("r", "feat"))[0]?.prompt).toBe("do the work");
 
     while (agent.status(dir).status === "running") await new Promise((r) => setTimeout(r, 25));
+    await settled(); // the finish write is fire-and-forget; the run must never wait on the database
 
     const [turn] = await db.turns("r", "feat");
     expect(turn?.response).toContain("Shipped it.");
@@ -261,7 +266,7 @@ test("turns orphaned by a dead bridge are closed at startup; genuinely live ones
   await db.finishTurn("run-done", { status: "done", response: "ok", finishedAt: Date.now() });
 
   // The lease is the authority on what's still running — it deliberately survives shutdown.
-  const closed = await db.reconcileRunning(new Set(["run-live"]));
+  const { closed } = await db.reconcileRunning(new Set(["run-live"]));
   expect(closed).toBe(1);
 
   const byPrompt = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
@@ -271,7 +276,7 @@ test("turns orphaned by a dead bridge are closed at startup; genuinely live ones
   expect(byPrompt["still going"]?.finishedAt).toBeUndefined(); // untouched — its process is alive
   expect(byPrompt.finished?.response).toBe("ok"); // already-closed turns aren't rewritten
 
-  expect(await db.reconcileRunning(new Set(["run-live"]))).toBe(0); // idempotent
+  expect((await db.reconcileRunning(new Set(["run-live"]))).closed).toBe(0); // idempotent
 });
 
 // Stop is not Discard: the process dies, everything else survives. The turn must record that
@@ -320,7 +325,7 @@ test("startup reconciliation never closes another instance's live runs", async (
     // The cloud instance starts up. It holds no lease for the laptop's run, and must leave it alone.
     process.env.ORCA_INSTANCE = "cloud";
     await start("run-cloud", "running on the cloud");
-    expect(await db.reconcileRunning(new Set(["run-cloud"]))).toBe(0);
+    expect((await db.reconcileRunning(new Set(["run-cloud"]))).closed).toBe(0);
 
     const byPrompt = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
     expect(byPrompt["running on the laptop"]?.finishedAt).toBeUndefined(); // untouched
@@ -328,7 +333,7 @@ test("startup reconciliation never closes another instance's live runs", async (
 
     // It still closes its OWN orphan — the case reconciliation exists for.
     await start("run-cloud-dead", "died with the cloud bridge");
-    expect(await db.reconcileRunning(new Set(["run-cloud"]))).toBe(1);
+    expect((await db.reconcileRunning(new Set(["run-cloud"]))).closed).toBe(1);
     const after = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
     expect(after["died with the cloud bridge"]?.failed).toBe(true);
     expect(after["running on the laptop"]?.finishedAt).toBeUndefined(); // still untouched
@@ -368,4 +373,74 @@ test("an instruction typed mid-run is queued, claimed once, and cancellable", as
   const third = await db.queueMessage({ repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "never mind", attachments: [] });
   await db.cancelQueuedMessage(third.id);
   expect(await db.queuedMessages("r", "feat")).toEqual([]);
+});
+
+// A run whose bridge died mid-flight kept working — the agent outlives the bridge by design — but
+// the reader transcribing it and the handler recording its outcome both died with the process. The
+// provider kept everything, and turn.raw_ref holds the session id, so the turn can be reconstructed
+// rather than written off as an error.
+test("an interrupted run is recovered from the provider's session file, not written off", async () => {
+  process.env.CLAUDE_CONFIG_DIR = dir; // look for sessions in this test's sandbox, not ~/.claude
+  const sessionDir = projectDir("/wt/feat");
+  await mkdir(sessionDir, { recursive: true });
+  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  // The same event shapes the live stream emits, so the same mapping applies.
+  await writeFile(join(sessionDir, `${sessionId}.jsonl`), [
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", content: "2 pass" }] } },
+    { type: "assistant", message: { content: [{ type: "text", text: "## Outcome\nFixed the tests." }] } },
+  ].map((e) => JSON.stringify(e)).join("\n"));
+
+  expect(readSession(join(sessionDir, `${sessionId}.jsonl`)).steps.map((s) => s.kind))
+    .toEqual(["tool", "tool", "text"]);
+  expect(readSession(join(sessionDir, `${sessionId}.jsonl`)).response).toContain("Fixed the tests.");
+
+  // Nothing was recorded live — the bridge died before reading any of it.
+  await db.startTurn({ repo: "r", branch: "feat", runId: "run-int", provider: "claude", prompt: "fix the tests", sessionId, startedAt: Date.now() });
+  expect(await transcript.read("run-int")).toEqual([]);
+
+  const found = await backfillRun("run-int", sessionId, "/wt/feat");
+  expect(found?.steps).toBe(3);
+  expect(found?.outcome?.outcome).toBe("Fixed the tests."); // the answer, recovered
+  expect((await transcript.read("run-int")).length).toBe(3); // and its reasoning
+
+  // Re-running adds nothing: the session is authoritative and we already have all of it.
+  expect(await backfillRun("run-int", sessionId, "/wt/feat")).toMatchObject({ steps: 0 });
+
+  // A run with no session, or an unknown one, is simply not recoverable — never fabricated.
+  expect(await backfillRun("run-int", undefined)).toBeUndefined();
+  expect(await backfillRun("run-int", "11111111-2222-3333-4444-555555555555", "/wt/feat")).toBeUndefined();
+});
+
+// Not hypothetical: a live run once recorded 226 steps with no turn to hang them on, because the
+// start write was lost to a bridge reload and `recordTurn` swallows failures by design. The exit
+// handler knows everything about the run, so it can write the turn from scratch rather than
+// updating nothing and leaving the conversation invisible.
+test("a turn whose start write was lost is rescued when the run finishes", async () => {
+  const runId = "run-lost-start";
+  // Steps land regardless — they only need a run id.
+  await transcript.append(runId, [{ at: 1, kind: "text", text: "did the work" }]);
+  expect((await db.turns("r", "feat")).length).toBe(0); // …and there is no turn for them
+
+  await db.finishTurn(runId, {
+    status: "done", response: "## Outcome\nShipped it.", finishedAt: Date.now(),
+    structured: { outcome: "Shipped it.", verification: [], decisions: [], remaining: [], commits: [] },
+    identity: { repo: "r", branch: "feat", provider: "claude", prompt: "do the work", startedAt: 1 },
+  });
+
+  const [turn] = await db.turns("r", "feat");
+  expect(turn?.prompt).toBe("do the work");           // recovered, not lost
+  expect(turn?.structured?.outcome).toBe("Shipped it.");
+  expect(turn?.id).toBe(runId);                        // and keyed to its steps
+  expect((await transcript.read(runId)).map((s) => s.text)).toEqual(["did the work"]);
+
+  // The normal path is untouched: an existing turn is updated, never duplicated.
+  await start("run-normal", "already recorded");
+  await db.finishTurn("run-normal", {
+    status: "done", response: "fine", finishedAt: Date.now(),
+    identity: { repo: "r", branch: "feat", provider: "claude", prompt: "should not overwrite", startedAt: 1 },
+  });
+  const normal = (await db.turns("r", "feat")).find((t) => t.id === "run-normal");
+  expect(normal?.prompt).toBe("already recorded"); // the identity is a fallback, not an overwrite
+  expect((await db.turns("r", "feat")).length).toBe(2);
 });

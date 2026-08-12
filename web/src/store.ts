@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  addressReviewPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
+  addressReviewPrompt, chatPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
@@ -709,7 +709,9 @@ export async function followUp(
   // The bridge QUEUES this if a run is already in flight (rather than the 409 it used to answer with)
   // and sends it when that run finishes — so the composer's invitation to "queue the next
   // instruction" is now true.
-  await launchOnRow(row, wt, withAttachments(followUpPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
+  // chatPrompt, not followUpPrompt: a message typed in the chat is a conversation. Board actions
+  // (Fix CI, Resolve conflicts, Follow up) still issue a work order.
+  await launchOnRow(row, wt, withAttachments(chatPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
   await refresh();
 }
 

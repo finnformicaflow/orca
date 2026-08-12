@@ -591,6 +591,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       // A failed run still has something worth keeping — the error is the turn's outcome.
       response: wasStopped ? (result ?? "Stopped. The work so far stands; reply to redirect.") : (result ?? error),
       structured, sessionId: resolvedSessionId, finishedAt,
+      // Everything needed to write the turn from scratch if its start write was lost.
+      identity: { repo: options.repo!, branch: options.branch!, provider, prompt, startedAt },
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)

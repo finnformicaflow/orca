@@ -36,6 +36,13 @@ type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; l
  *  box). Defaults to localhost, which is correct for a laptop instance. */
 export const previewHost = (): string => process.env.ORCA_PREVIEW_HOST || "localhost";
 
+/** Which preview databases belong to no live worktree. Pure, so the selection — the part whose
+ *  failure mode is dropping a database someone is using — is testable without a Postgres. */
+export function orphanPreviewDbs(existing: string[], liveWorktreePaths: string[]): string[] {
+  const keep = new Set(liveWorktreePaths.map(previewDbName));
+  return existing.filter((name) => !keep.has(name));
+}
+
 export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
