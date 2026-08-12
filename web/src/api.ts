@@ -60,6 +60,7 @@ export const api = {
   disableAutoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/disable-auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
+  handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
   // The durable enrichment + chat history (server/db.ts) — what localStorage used to hold.
   enrichment: (repo: string): Promise<Record<string, Record<string, unknown>>> => fetch(`/api/enrichment${q(repo)}`).then(res),
   patchEnrichment: (repo: string, branch: string, fields: Record<string, unknown>): Promise<{ ok: true }> =>

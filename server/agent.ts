@@ -1,5 +1,5 @@
 // Launches Claude, Codex, or Cursor headlessly and tracks status + provider-native
-// session id, so the UI can show done/error and a follow-up can resume the exact conversation.
+// session id, so the UI can show done/error and "Copy CLI" can resume the exact conversation.
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";

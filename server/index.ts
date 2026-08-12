@@ -14,11 +14,12 @@ import * as db from "./db";
 import * as transcript from "./transcript";
 import * as bus from "./bus";
 import * as lease from "./lease";
+import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import { followUpPrompt, mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
-import { AGENT_PROVIDERS, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
+import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -355,6 +356,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     const r = await slackPost(repo.slackChannel, String(body.text ?? ""));
     if (!r.ok) return json({ error: `Slack post failed: ${r.error ?? "unknown error"}` }, 502);
     return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/handoff") {
+    // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.
+    return json({ path: writeHandoffFile(repo.name, String(body.branch), String(body.content ?? "")) });
   }
   if (req.method === "POST" && p === "/api/worktrees/adopt") {
     const wt = await git.adoptWorktree(repo.repoPath, repo.worktreeRoot, body.branch);

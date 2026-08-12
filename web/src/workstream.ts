@@ -3,6 +3,7 @@
 
 import type { CiFailureEvidence, CiStatus, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { withOutcomeContract, type AgentOutcome } from "../../shared/agent";
+export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
 // are conditions shown as badges on the card, never lanes — so an approval moves a PR

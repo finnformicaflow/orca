@@ -13,7 +13,7 @@ import {
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
-import { handoffPrompt } from "../../shared/agent";
+import { attachCommand, handoffPrompt } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -531,7 +531,7 @@ export async function rename(row: Row, title: string): Promise<void> {
  *  session id to another. Three outcomes: a known session id → resume it; no id but the pinned agent
  *  HAS run in this worktree → continue its latest; `fresh` → the pinned agent has never run here (e.g.
  *  right after switching the pin), so start a new session rather than emit a `--continue` that errors
- *  with "no conversation to continue". Used by follow-ups and Promote's PR-description writer. */
+ *  with "no conversation to continue". Used by Copy CLI and Promote's PR-description writer. */
 export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: string; fresh: boolean } {
   const provider = providerFor(row);
   // The active session pointer belongs to whoever ran last; an id stored with no provider is Claude's.
@@ -547,6 +547,37 @@ export function resumeTarget(row: Row): { provider: AgentProvider; sessionId?: s
   const ranHere = row.agentProvider === provider || (row.transcript ?? []).some((t) => t.provider === provider);
   return { provider, fresh: !ranHere };
 }
+
+// Opening instruction for a handed-off interactive session: orient from the transcript + live worktree
+// without doing work, then wait — so you carry on prompting the new model in-context.
+const HANDOFF_SEED_INSTRUCTION =
+  "Get up to speed from the transcript above and the current worktree (files, git status, recent commits, test results). Then wait for my next instruction — don't make changes yet.";
+
+/** Resolve everything attachCommand needs to (re)enter this row's pinned agent: its worktree (adopted
+ *  if missing), the native-resume target, and — when the pinned agent has never run here but there IS
+ *  prior context (a model switch / handoff) — a seed file written from the portable transcript, so a
+ *  NEW session is primed with it and a maxed-out/previous model is never resumed. Shared by Copy CLI
+ *  and Open terminal so the two lanes launch identically. */
+async function resolveAttach(row: Row): Promise<{ worktreePath: string; provider: AgentProvider; sessionId?: string; fresh: boolean; seedFile?: string }> {
+  const worktreePath = row.worktreePath ?? (await ensureWorktree(row));
+  const target = resumeTarget(row);
+  const e = enrichOf(row.repo, row.branch);
+  const transcript = e.transcript ?? row.transcript ?? [];
+  let seedFile: string | undefined;
+  if (target.fresh && transcript.length) {
+    const from = e.agentProvider ?? row.agentProvider;
+    const seed = handoffPrompt(transcript, HANDOFF_SEED_INSTRUCTION, from, target.provider);
+    seedFile = (await api.handoff(row.repo, row.branch, seed)).path;
+  }
+  return { worktreePath, ...target, seedFile };
+}
+
+/** The terminal command to (re)enter this workstream's pinned agent, for Copy CLI. */
+export async function cliCommand(row: Row): Promise<string> {
+  return attachCommand(await resolveAttach(row));
+}
+
+
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
