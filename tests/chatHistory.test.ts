@@ -444,3 +444,37 @@ test("a turn whose start write was lost is rescued when the run finishes", async
   expect(normal?.prompt).toBe("already recorded"); // the identity is a fallback, not an overwrite
   expect((await db.turns("r", "feat")).length).toBe(2);
 });
+
+// The failure that lost a real conversation. Creating a card writes its enrichment and launches an
+// agent at the same moment, so two callers reach workstreamId together, both find nothing, and both
+// insert — one then violated `workstream_live`. Because a history write must never break a run, it
+// was swallowed: the agent worked, its steps were recorded, and the chat had no turn to hang them on.
+test("concurrent writers to the same branch agree on one workstream", async () => {
+  const [a, b, c] = await Promise.all([
+    db.workstreamId("r", "feat"),
+    db.workstreamId("r", "feat"),
+    db.workstreamId("r", "feat"),
+  ]);
+  expect(a).toBe(b);
+  expect(b).toBe(c);
+  const sql = await db.open();
+  expect((await sql`SELECT COUNT(*)::int AS n FROM workstream WHERE branch = ${"feat"}`)[0].n).toBe(1);
+});
+
+test("a card created and launched at once records both its enrichment and its turn", async () => {
+  // The real shape of it: patchEnrichment and startTurn race on a brand-new branch.
+  await Promise.all([
+    db.patchEnrichment("r", "fresh", { title: "Fresh card", prompt: "do the thing" }),
+    db.startTurn({ repo: "r", branch: "fresh", runId: "run-fresh", provider: "claude", prompt: "do the thing", startedAt: Date.now() }),
+  ]);
+  expect((await db.enrichment("r")).fresh?.title).toBe("Fresh card"); // enrichment survived
+  expect((await db.turns("r", "fresh")).map((t) => t.id)).toEqual(["run-fresh"]); // and so did the turn
+});
+
+test("an archived branch can be reused, since only live workstreams are unique", async () => {
+  // The conflict target names the partial index's predicate, so this must still work.
+  await db.startTurn({ repo: "r", branch: "reused", runId: "run-old", provider: "claude", prompt: "old", startedAt: 1 });
+  await db.archive("r", "reused");
+  await db.startTurn({ repo: "r", branch: "reused", runId: "run-new", provider: "claude", prompt: "new", startedAt: 2 });
+  expect((await db.turns("r", "reused")).map((t) => t.id)).toEqual(["run-new"]); // the live one only
+});
