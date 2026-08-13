@@ -307,3 +307,22 @@ test("a repo owned by another instance is reachable only if that instance has an
   expect(parseConfigDocument(doc({ instances: ["cloud"] })).errors)
     .toContain("instances must map an instance name to its base URL");
 });
+
+test("two overlapping publishes don't collide, and a departed branch is still swept", async () => {
+  // The board polls per repo and two polls can overlap — a second tab, or a manual refresh landing on
+  // the interval. Delete-then-insert made the loser of that race violate the unique key and publish
+  // nothing ("duplicate key value violates worktree_inventory_key").
+  const publish = (branches: string[]) =>
+    db.publishInventory("app", branches.map((b) => ({ branch: b, data: { branch: b } })));
+
+  await Promise.all([publish(["feat-a", "feat-b"]), publish(["feat-a", "feat-b"])]);
+  expect((await db.inventory("app")).map((r) => r.branch).sort()).toEqual(["feat-a", "feat-b"]);
+
+  // Publishing is still authoritative: a branch this instance no longer has stops being reported.
+  await publish(["feat-a"]);
+  expect((await db.inventory("app")).map((r) => r.branch)).toEqual(["feat-a"]);
+
+  // And it stays correct under overlap, rather than one publish sweeping the other's rows.
+  await Promise.all([publish(["feat-a", "feat-c"]), publish(["feat-a", "feat-c"]), publish(["feat-a", "feat-c"])]);
+  expect((await db.inventory("app")).map((r) => r.branch).sort()).toEqual(["feat-a", "feat-c"]);
+});
