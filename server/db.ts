@@ -275,10 +275,26 @@ export async function workstreamId(repo: string, branch: string): Promise<number
     SELECT id FROM workstream
     WHERE user_id = ${user} AND repo = ${repo} AND branch = ${branch} AND archived_at IS NULL`;
   if (found.length) return Number(found[0].id);
+  // Let the database resolve the race rather than the gap between SELECT and INSERT. Creating a card
+  // writes its enrichment and launches an agent at the same moment, so two callers arrive here
+  // together, both find nothing, and both insert — one then violated `workstream_live` and, because a
+  // history write must never break a run, was swallowed. The visible symptom was a conversation with
+  // no turns: the agent worked, its steps were recorded, and the chat had nothing to hang them on.
+  //
+  // The conflict target must name the partial index's predicate, since only LIVE workstreams are
+  // unique (an archived branch may be reused).
   const created = await sql`
     INSERT INTO workstream (user_id, repo, branch, created_at)
-    VALUES (${user}, ${repo}, ${branch}, ${Date.now()}) RETURNING id`;
-  return Number(created[0].id);
+    VALUES (${user}, ${repo}, ${branch}, ${Date.now()})
+    ON CONFLICT (user_id, repo, branch) WHERE archived_at IS NULL DO NOTHING
+    RETURNING id`;
+  if (created.length) return Number(created[0].id);
+  // The other caller won; its row is the one to use.
+  const existing = await sql`
+    SELECT id FROM workstream
+    WHERE user_id = ${user} AND repo = ${repo} AND branch = ${branch} AND archived_at IS NULL`;
+  if (existing.length) return Number(existing[0].id);
+  throw new Error(`workstream for ${repo}:${branch} could not be created or found`);
 }
 
 /** The client's enrichment fields, stored as one opaque JSON blob per workstream. Deliberately NOT
