@@ -536,20 +536,35 @@ export function instanceName(): string {
   return process.env.ORCA_INSTANCE || Bun.env.HOSTNAME || "local";
 }
 
-/** Publish what THIS instance can see of a repo, and mark it alive. Replaces the repo's rows for this
- *  instance, so a branch that has gone away stops being reported. */
+/** Publish what THIS instance can see of a repo, and mark it alive.
+ *
+ *  Upsert-then-sweep rather than delete-then-insert. The board polls per repo, and two polls can
+ *  overlap (a second browser tab, a manual refresh landing on the interval): both would DELETE, both
+ *  would INSERT, and the second lost the race to the unique key — "duplicate key value violates
+ *  worktree_inventory_key". It was harmless (publishing is advisory and the error was caught) but it
+ *  meant one of the two polls published nothing.
+ *
+ *  Stamping every row with the same `now` and then deleting anything older sweeps branches that have
+ *  gone away without needing to name them — which also avoids binding an array, since a concurrent
+ *  publish would otherwise have to agree on the list. */
 export async function publishInventory(repo: string, worktrees: { branch: string; data: Fields }[]): Promise<void> {
   const sql = await open();
   const user = currentUser();
   const instance = instanceName();
   const now = Date.now();
   await sql.begin(async (tx: Bun.SQL) => {
-    await tx`DELETE FROM worktree_inventory WHERE user_id = ${user} AND instance = ${instance} AND repo = ${repo}`;
     for (const w of worktrees) {
       await tx`
         INSERT INTO worktree_inventory (user_id, instance, repo, branch, data, seen_at)
-        VALUES (${user}, ${instance}, ${repo}, ${w.branch}, ${w.data}, ${now})`;
+        VALUES (${user}, ${instance}, ${repo}, ${w.branch}, ${w.data}, ${now})
+        ON CONFLICT (user_id, instance, repo, branch)
+        DO UPDATE SET data = EXCLUDED.data, seen_at = EXCLUDED.seen_at`;
     }
+    // Anything this publish didn't touch is a branch this instance no longer has. `<` not `<=`, so a
+    // concurrent publish stamping the same millisecond can't sweep the other's rows.
+    await tx`
+      DELETE FROM worktree_inventory
+      WHERE user_id = ${user} AND instance = ${instance} AND repo = ${repo} AND seen_at < ${now}`;
     await tx`
       INSERT INTO instance (user_id, name, seen_at) VALUES (${user}, ${instance}, ${now})
       ON CONFLICT (user_id, name) DO UPDATE SET seen_at = ${now}`;
