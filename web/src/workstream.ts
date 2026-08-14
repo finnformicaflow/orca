@@ -202,14 +202,45 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
 // Review — so every launch/follow-up prompt explicitly forbids it.
 const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
 
-/** Prompt used to launch the headless agent — Orca already created it from the latest base. */
+// A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
+// tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
+// unavailable — its thinking blocks arrive encrypted and empty — so the only way to see an approach
+// is to ask for it in words. This is that ask, shared by every launch.
+const NARRATE = [
+  "Narrate your work as you go, because someone reads this conversation afterwards to understand your",
+  "approach — not just what you ran:",
+  "- Open with your plan in two or three sentences: what you think the task involves, where you expect",
+  "  the relevant code to be, and anything you're unsure about.",
+  "- Before each significant step, say in a sentence what you're about to do and why.",
+  "- When you learn something that changes the plan — the code isn't structured as you assumed, a test",
+  "  reveals a different cause — say so, and say what you're doing instead.",
+  "Keep it brief and factual. This is a running commentary, not a report; the summary comes at the end.",
+].join("\n");
+
+/** Prompt used to launch the headless agent — Orca already created it from the latest base.
+ *
+ *  Deliberately does NOT assume the request is work to be done. "Investigate why X is slow and report
+ *  back" and "add a rate limit to the upload endpoint" arrive through the same box, and forcing the
+ *  first into "implement and commit" produced an agent that changed code nobody asked it to change.
+ *  The model reads the request instead of a toggle deciding for it — but it must SAY which way it read
+ *  it, first, so the decision is visible in seconds and can be corrected with one message rather than
+ *  discovered in a diff. */
 export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">, base = "main"): string {
   return withOutcomeContract([
     promptFor(ws),
     "",
     `This worktree was created from the latest \`${base}\`. Inspect the repository instructions first.`,
-    "Implement only the requested scope. Treat any existing changes as user-owned. Verify in proportion to risk.",
-    "Work autonomously and commit your changes with clear messages as you go. Do not perform unrelated refactors.",
+    "",
+    "First, decide what is being asked of you and say so in one line before anything else:",
+    "- A request to build, fix or change something → implement it. Only the requested scope, treating",
+    "  any existing changes as user-owned. Verify in proportion to risk, and commit as you go with",
+    "  clear messages. No unrelated refactors.",
+    "- A request to investigate, research, scope, review or explain → do that and report back. Read",
+    "  whatever you need, but do NOT modify, commit or push anything. Findings are the deliverable.",
+    "- Genuinely ambiguous → say which reading you're taking and why, then proceed on it. Don't stop to",
+    "  ask: nobody is watching yet.",
+    "",
+    NARRATE,
     NO_PR,
   ].join("\n"));
 }
@@ -296,7 +327,8 @@ export function chatPrompt(instruction: string): string {
     "  the answer under it. Don't guess and don't start work to find out.",
     "- A clear instruction to change something → do it, autonomously, the way you would any task:",
     "  preserve completed work, change only what's related, verify in proportion to risk, then commit",
-    "  and push.",
+    "  and push. Narrate it as you go — say what you're about to do and why before each significant",
+    "  step, and say so when something you learn changes the plan.",
     "",
     "Treat the files, git status and commits in this worktree as authoritative — they are the record of",
     "what has actually happened, whatever the conversation above says.",
