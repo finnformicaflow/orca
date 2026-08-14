@@ -7,6 +7,8 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, refresh, type Row } from "../store";
@@ -17,13 +19,28 @@ import { ChatComposer } from "@/components/ChatComposer";
 // rounding and the composer resizing, so following doesn't switch off on its own.
 const FOLLOW_SLACK = 48;
 
+/** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
+ *  to sit in the dark window rather than looking like a pasted document. */
+const ChatMarkdown = ({ children }: { children: string }) => (
+  <div className="prose prose-invert prose-sm max-w-none text-neutral-300
+    prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200
+    prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
+    prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
+    prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
+    <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+  </div>
+);
+
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
  *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. */
 function Step({ step }: { step: AgentStep }) {
   const [open, setOpen] = useState(false);
-  if (step.kind === "text") return <p className="whitespace-pre-wrap break-words text-neutral-300">{step.text}</p>;
-  if (step.kind === "thinking") return <p className="whitespace-pre-wrap break-words italic text-neutral-500">{step.text}</p>;
+  // The agent's narration is prose — headings, lists, the occasional table — and reading a scoping
+  // report in a monospace block is miserable. Tool output below stays monospace, because that one
+  // genuinely is terminal output.
+  if (step.kind === "text") return <ChatMarkdown>{step.text ?? ""}</ChatMarkdown>;
+  if (step.kind === "thinking") return <div className="italic opacity-70"><ChatMarkdown>{step.text ?? ""}</ChatMarkdown></div>;
   // A tool call carries its own result (see groupSteps), so EVERYTHING it produced is behind this
   // one toggle — input and output. Nothing spills into the log unopened; the narration above is the
   // readable thread, and a tool's detail is there when you want it.
@@ -74,10 +91,10 @@ function Output({ turn }: { turn: AgentTurn }) {
   // resumable — replying in the composer redirects it rather than starting over.
   if (turn.stopped) return <pre className="whitespace-pre-wrap break-words text-amber-400">{turn.response || "Stopped."}</pre>;
   const s = turn.structured;
-  if (!s) return <pre className="whitespace-pre-wrap break-words text-neutral-300">{turn.response || "(no output)"}</pre>;
+  if (!s) return <ChatMarkdown>{turn.response || "_(no output)_"}</ChatMarkdown>;
   return (
     <div className="space-y-1.5 text-neutral-300">
-      {s.outcome && <p className="whitespace-pre-wrap break-words">{s.outcome}</p>}
+      {s.outcome && <ChatMarkdown>{s.outcome}</ChatMarkdown>}
       {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-400" />}
       {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} tone="text-neutral-400" />}
       {s.verification.length > 0 && <Facet title="Verification" items={s.verification} tone="text-neutral-400" />}

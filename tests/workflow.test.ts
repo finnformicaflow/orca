@@ -40,13 +40,14 @@ test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt",
   expect(prompt).toContain(branch);
   expect(prompt).toContain("Use CSS vars.");
 
-  // headless launch prompt adds an autonomous-commit instruction, and forbids opening a PR itself
-  // (Orca owns Promote — otherwise the agent proactively opens a PR and the card jumps to In Review)
+  // The headless launch prompt still carries every property this case has always pinned; the wording
+  // moved when the prompt learned to tell work from investigation (see P7), so these assert the
+  // contract rather than the sentence.
   const launch = launchPrompt({ title: "T", branch, prompt: "do it" });
-  expect(launch).toContain("Commit");
-  expect(launch).toContain("Do NOT open a pull request");
+  expect(launch.toLowerCase()).toContain("commit as you go"); // autonomous commits for work
+  expect(launch).toContain("Do NOT open a pull request");     // Orca owns Promote
   expect(launch).toContain("Inspect the repository instructions first");
-  expect(launch).toContain("Treat any existing changes as user-owned");
+  expect(launch.toLowerCase()).toContain("existing changes as user-owned");
   expect(launch).toContain("## Outcome");
   expect(launch.indexOf("do it")).toBeLessThan(launch.indexOf("Inspect the repository instructions"));
   expect(followUpPrompt("tweak the copy")).toContain("Do NOT open a pull request");
@@ -952,4 +953,35 @@ test("P6 a chat message is a conversation; a board action is still a work order"
   const action = followUpPrompt("Fix the failing test");
   expect(action).toContain("Work autonomously");
   expect(action).not.toContain("replying in a conversation");
+});
+
+test("P7 a launch reads what's being asked, says which reading it took, and narrates", () => {
+  // Both arrive through the same box. Forcing the first into "implement and commit" produced an
+  // agent changing code nobody asked it to change.
+  const launch = launchPrompt({ title: "T", branch: "b", prompt: "Investigate why the board is slow" });
+
+  // It decides, rather than a toggle deciding for it — but it must SAY which way, first, so the
+  // decision is visible in seconds instead of discovered in a diff.
+  expect(launch).toContain("decide what is being asked of you and say so in one line before anything else");
+  expect(launch).toContain("investigate, research, scope, review or explain");
+  expect(launch).toContain("do NOT modify, commit or push anything");
+  expect(launch).toContain("build, fix or change something");
+  expect(launch).toContain("commit as you go");
+  // Ambiguity resolves forward: nobody is watching a background run.
+  expect(launch).toContain("Don't stop to");
+
+  // Narration. A headless run produced 11 text blocks against 97 tool calls, so the chat was a list
+  // of commands and nothing about why — and Claude's own thinking is encrypted, so words are the
+  // only way to see an approach.
+  expect(launch).toContain("Open with your plan");
+  expect(launch).toContain("Before each significant step");
+  expect(launch).toContain("changes the plan");
+  expect(launch).toContain("running commentary, not a report");
+
+  // Still Orca's job to open the PR, and the outcome contract still closes it out.
+  expect(launch).toContain("Do NOT open a pull request");
+  expect(launch).toContain("## Outcome");
+
+  // A chat message that IS an instruction narrates too, so the two paths read alike.
+  expect(chatPrompt("Add the rate limit we discussed")).toContain("Narrate it as you go");
 });
