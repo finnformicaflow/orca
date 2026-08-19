@@ -367,6 +367,14 @@ test("W6 slack-notify-and-bump: bump only fires past the stale window", () => {
   expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "notify")).toBe("<https://gh/pr/7|#7 Add X>");
   expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7" }, "bump")).toBe("Bump:\n<https://gh/pr/7|#7 Add X>");
   expect(slackApiText({ title: "Add X", prNumber: 7, prUrl: "" }, "notify")).toBe("#7 Add X"); // no URL → plain label
+
+  // A deploy preview, when the PR has one, rides along as a second link so reviewers can click straight in.
+  const withPreview = { title: "Add X", prNumber: 7, prUrl: "https://gh/pr/7", previewUrl: "https://x.preview.dev" };
+  expect(slackApiText(withPreview, "notify")).toBe("<https://gh/pr/7|#7 Add X> - <https://x.preview.dev|PR Preview>");
+  expect(slackMessage(withPreview, "notify")).toBe("[#7 Add X](https://gh/pr/7) - [PR Preview](https://x.preview.dev)");
+  const previewClip = slackClipboard(withPreview, "notify");
+  expect(previewClip.html).toBe('<a href="https://gh/pr/7">#7 Add X</a> - <a href="https://x.preview.dev">PR Preview</a>');
+  expect(previewClip.text).toBe("#7 Add X\nhttps://gh/pr/7\nPR Preview: https://x.preview.dev");
 });
 
 test("W7 fix-conflicts: conflict blocks merge + yields a rebase prompt; clears once mergeable", async () => {

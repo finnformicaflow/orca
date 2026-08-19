@@ -247,10 +247,11 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
 
 /** Exact provider-neutral Slack message. Copying it never spends another provider's quota. */
 export function slackMessage(
-  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl"> & { previewUrl?: string },
   kind: "notify" | "bump",
 ): string {
-  const link = `[#${ws.prNumber} ${ws.title}](${ws.prUrl ?? ""})`;
+  const link = `[#${ws.prNumber} ${ws.title}](${ws.prUrl ?? ""})`
+    + (ws.previewUrl ? ` - [PR Preview](${ws.previewUrl})` : "");
   return kind === "bump" ? `Bump:\n${link}` : link;
 }
 
@@ -258,11 +259,12 @@ export function slackMessage(
  *  auto-send via a webhook renders identically to the rich-html copy — a hyperlink, not literal
  *  Markdown. Used only when posting through the API; the clipboard path keeps using slackClipboard. */
 export function slackApiText(
-  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl"> & { previewUrl?: string },
   kind: "notify" | "bump",
 ): string {
   const label = `#${ws.prNumber} ${ws.title}`;
-  const link = ws.prUrl ? `<${ws.prUrl}|${label}>` : label;
+  const link = (ws.prUrl ? `<${ws.prUrl}|${label}>` : label)
+    + (ws.previewUrl ? ` - <${ws.previewUrl}|PR Preview>` : "");
   return kind === "bump" ? `Bump:\n${link}` : link;
 }
 
@@ -275,13 +277,15 @@ const escapeHtml = (s: string): string =>
  *  no Cmd+Shift+F). The `text/plain` fallback is for targets that ignore HTML: the title on one line,
  *  the raw URL on the next (which Slack autolinks anyway). */
 export function slackClipboard(
-  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl"> & { previewUrl?: string },
   kind: "notify" | "bump",
 ): { text: string; html: string } {
   const label = `#${ws.prNumber} ${ws.title}`;
   const url = ws.prUrl ?? "";
-  const anchor = url ? `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>` : escapeHtml(label);
-  const plain = url ? `${label}\n${url}` : label;
+  const anchor = (url ? `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>` : escapeHtml(label))
+    + (ws.previewUrl ? ` - <a href="${escapeHtml(ws.previewUrl)}">PR Preview</a>` : "");
+  const plain = (url ? `${label}\n${url}` : label)
+    + (ws.previewUrl ? `\nPR Preview: ${ws.previewUrl}` : "");
   return kind === "bump"
     ? { text: `Bump:\n${plain}`, html: `Bump:<br>${anchor}` }
     : { text: plain, html: anchor };
@@ -289,7 +293,7 @@ export function slackClipboard(
 
 /** Legacy instruction form retained for consumers that explicitly want an agent to post it. */
 export function slackPrompt(
-  ws: Pick<Workstream, "title" | "prNumber" | "prUrl">,
+  ws: Pick<Workstream, "title" | "prNumber" | "prUrl"> & { previewUrl?: string },
   kind: "notify" | "bump",
   channel?: string,
 ): string {

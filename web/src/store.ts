@@ -804,7 +804,7 @@ export async function closePr(row: Row) {
 }
 
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
-  const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl };
+  const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl, previewUrl: row.previewUrl };
   // One path for every provider: post the message VERBATIM from your identity via chat.postMessage
   // (server-side). On failure, copy the message so it isn't lost, then rethrow so the UI shows the
   // error — a post that didn't land must never be stamped as notified.
