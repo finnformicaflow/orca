@@ -583,14 +583,15 @@ export const titleFromPrompt = titleFromText;
 
 // (The model-title parser lives in server/title.ts — it uses zod, kept out of the web bundle.)
 
-/** Slugify a title into a git branch name. */
+/** Slugify a title into a git branch name, namespaced under `orca/`. */
 export function slugifyBranch(title: string): string {
   return (
-    title
+    "orca/" +
+    (title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "workstream"
+      .slice(0, 40) || "workstream")
   );
 }
 

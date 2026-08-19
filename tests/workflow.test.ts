@@ -30,7 +30,7 @@ const fixture = (over: Partial<Parameters<typeof setPrFixture>[0]>) =>
 
 test("W1 create-worktree: branch + worktree on disk, carries a copyable prompt", async () => {
   const branch = slugifyBranch("Add dark mode toggle!");
-  expect(branch).toBe("add-dark-mode-toggle");
+  expect(branch).toBe("orca/add-dark-mode-toggle");
 
   const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), branch, "main");
   expect((await stat(wt)).isDirectory()).toBe(true);
