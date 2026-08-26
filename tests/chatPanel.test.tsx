@@ -9,6 +9,7 @@ import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import { groupSteps, type AgentStep } from "../shared/agent";
+import { chatPrompt, followUpPrompt, promptInstruction } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -110,6 +111,62 @@ test("the composer sends a follow-up through the normal launch path", async () =
 
   // Same headless one-shot every board action uses — the chat view adds no second runtime.
   expect(apiFake.claudePrompts.at(-1)).toContain("and now this");
+});
+
+test("the log shows only what you typed, not the prompt scaffolding wrapped around it", async () => {
+  // A chat message is sent as instruction + a block of conversation rules + the outcome contract.
+  // All of that is for the agent; in the log it buried the one line you actually wrote.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", finishedAt: 2, response: "Sure.",
+    prompt: chatPrompt("what do you think of the cache?"),
+  }]);
+  await mount(base);
+
+  expect(text()).toContain("what do you think of the cache?");
+  expect(text()).not.toContain("You are replying in a conversation");
+  expect(text()).not.toContain("Finish your final response");
+});
+
+test("the composer clears as soon as you send, while the launch is still in flight", async () => {
+  apiFake.turnsData.set("r::feat", []);
+  apiFake.holdClaude = true; // launching an agent takes seconds — the box must not wait for it
+  await mount(base);
+
+  const box = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "and now this");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+
+  expect(box.value).toBe(""); // cleared although the launch hasn't resolved
+  await act(async () => { apiFake.releaseClaude?.(); await flush(); await flush(); });
+  expect(apiFake.claudePrompts.at(-1)).toContain("and now this");
+});
+
+test("a failed send puts the text back in the box", async () => {
+  apiFake.turnsData.set("r::feat", []);
+  apiFake.claudeError = "launch exploded";
+  await mount(base);
+
+  const box = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "retry me");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  expect(box.value).toBe("retry me");
+  expect(text()).toContain("launch exploded");
+});
+
+test("promptInstruction keeps a plain prompt whole", () => {
+  expect(promptInstruction("just this")).toBe("just this");
+  expect(promptInstruction(followUpPrompt("fix the flake"))).toBe("fix the flake");
 });
 
 test("a tool's output stays inside its own accordion instead of spilling into the log", async () => {

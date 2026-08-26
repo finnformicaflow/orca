@@ -87,16 +87,22 @@ export function ChatComposer({
     if (!canSubmit) return;
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
     if (optimistic) return void onSubmit(value.trim(), images);
+    // Clear NOW, not after onSubmit resolves: sending a chat message launches an agent, which takes
+    // seconds, and a box still holding the text you just sent reads as "it didn't go". On failure the
+    // text (and attachments) come back, so nothing is lost.
+    const sent = { text: value.trim(), images };
+    setValue("");
+    setImages([]);
+    setHistIdx(null);
+    if (persistKey) clearDraft(persistKey);
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(value.trim(), images);
-      setValue("");
-      setImages([]);
-      setHistIdx(null);
-      if (persistKey) clearDraft(persistKey);
+      await onSubmit(sent.text, sent.images);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setValue(sent.text);
+      setImages(sent.images);
     } finally { setBusy(false); }
   };
   // Recall a history entry (or clear to empty at idx null) into the box.

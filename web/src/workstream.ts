@@ -343,6 +343,30 @@ export function chatPrompt(instruction: string): string {
   ].join("\n");
 }
 
+/** The user's own words out of a built prompt, for DISPLAY only (the chat log).
+ *
+ *  Every builder above appends its scaffolding AFTER the instruction, so the instruction is the head
+ *  of the prompt and the first scaffolding line is where it ends. Stripping at read time (rather than
+ *  storing the instruction alongside the prompt) also fixes the turns already recorded. If nothing
+ *  matches — an old prompt shape, or a board action that is scaffolding all the way down — the whole
+ *  prompt is shown, which is what happened before. */
+const SCAFFOLDING = [
+  "You are replying in a conversation, not executing a work order.",
+  "This is an incremental follow-up.",
+  "Investigate and report only.",
+  "Attached files (Read these for extra context):",
+  "Avoid unrelated cleanup.",
+  "Finish your final response with these concise sections:",
+  NO_PR,
+];
+export function promptInstruction(prompt: string): string {
+  const cut = SCAFFOLDING.reduce((at, marker) => {
+    const i = prompt.indexOf(marker);
+    return i > 0 && i < at ? i : at;
+  }, prompt.length);
+  return prompt.slice(0, cut).trim() || prompt;
+}
+
 /** Explicit read-only action. Orca chooses this builder; natural-language classification never does. */
 export function investigateReportPrompt(instruction: string): string {
   return withOutcomeContract(`${instruction}\n\nInvestigate and report only. Treat files and git as authoritative. Do not modify files, commit, or push.`);

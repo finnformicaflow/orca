@@ -12,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, refresh, type Row } from "../store";
+import { promptInstruction } from "../workstream";
 import { agentLabel, groupSteps } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 
@@ -136,7 +137,7 @@ function Turn({ turn }: { turn: AgentTurn }) {
     <div className="mb-3">
       <div className="flex gap-2 text-emerald-400">
         <span className="shrink-0 select-none">❯</span>
-        <span className="min-w-0 whitespace-pre-wrap break-words">{turn.prompt}</span>
+        <span className="min-w-0 whitespace-pre-wrap break-words">{promptInstruction(turn.prompt)}</span>
       </div>
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
