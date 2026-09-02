@@ -102,6 +102,12 @@ mock.module("@/api", () => ({
     reviewEvidence: async () => { if (apiFake.reviewEvidenceError) throw new Error(apiFake.reviewEvidenceError); return apiFake.reviewEvidenceData; },
     ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); return { ok: true }; },
+    autoMerge: async (_repo: string, pr: number) => { apiFake.calls.push(`autoMerge:${pr}`); return { ok: true }; },
+    markReady: async (_repo: string, pr: number) => { apiFake.calls.push(`markReady:${pr}`); return { ok: true }; },
+    convertToDraft: async (_repo: string, pr: number) => { apiFake.calls.push(`convertToDraft:${pr}`); return { ok: true }; },
+    disableAutoMerge: async (_repo: string, pr: number) => { apiFake.calls.push(`disableAutoMerge:${pr}`); return { ok: true }; },
+    addPreviewLabel: async (_repo: string, pr: number) => { apiFake.calls.push(`addPreviewLabel:${pr}`); return { ok: true }; },
+    closePr: async (_repo: string, pr: number) => { apiFake.calls.push(`closePr:${pr}`); return { ok: true }; },
     mergeLocal: async (_repo: string, branch: string) => { apiFake.calls.push(`mergeLocal:${branch}`); return { ok: true }; },
     promote: async (_repo: string, input: { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }) => {
       apiFake.promotions.push(input); return { number: 42, url: "https://example.test/42" };
