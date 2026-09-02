@@ -773,23 +773,35 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
   const names = (lane: string, rows: Parameters<typeof bulkActions>[1]) =>
     bulkActions(lane, rows, { nowMs: NOW, staleHours: 24 }).map((g) => `${g.action}:${g.rows.length}`);
 
-  test("Local offers test/promote, and Resolve conflicts only when a branch conflicts with base", () => {
+  test("Local offers test/promote/discard, and Resolve conflicts only when a branch conflicts with base", () => {
     const rows = [{ hasRemote: true }, { hasRemote: true, mergeClean: "conflict" as const }];
-    expect(names("LOCAL", rows)).toEqual(["testLocally:2", "promoteDraft:2", "promoteReady:2", "resolveConflicts:1"]);
-    expect(names("LOCAL", [{ hasRemote: false }])).toEqual(["testLocally:1"]); // no remote → no PR to open
+    expect(names("LOCAL", rows)).toEqual(["testLocally:2", "promoteDraft:2", "promoteReady:2", "resolveConflicts:1", "discard:2"]);
+    // No remote → no PR to open, just the local "promote" (mark promoted).
+    expect(names("LOCAL", [{ hasRemote: false }])).toEqual(["testLocally:1", "promote:1", "discard:1"]);
   });
 
-  test("Draft offers Ready for review for draft PRs only", () => {
-    expect(names("DRAFT", [{ prNumber: 1, isDraft: true }, { prNumber: 2 }])).toEqual(["markReady:1"]);
+  test("Draft offers Mark ready for draft PRs only, and the PR verbs each card can take", () => {
+    expect(names("DRAFT", [{ prNumber: 1, isDraft: true, prUrl: "u" }, { prNumber: 2, prUrl: "u" }]))
+      .toEqual(["markReady:1", "addressReview:2", "follow:2", "addPreview:2", "copyLink:2", "closePr:2"]);
   });
 
-  test("In Review offers Slack + Auto-merge, and the fix actions only where the condition is live", () => {
+  test("In Review offers Slack + the PR/agent verbs, and the fix actions only where the condition is live", () => {
     const rows = [
       { prNumber: 1, ciStatus: "failing" as const },
       { prNumber: 2, mergeable: "CONFLICTING" as const },
-      { prNumber: 3, autoMergeEnabled: true, reviewStatus: "changes_requested" as const },
+      { prNumber: 3, autoMergeEnabled: true, reviewStatus: "changes_requested" as const, following: true },
     ];
-    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:3", "autoMerge:2", "resolveConflicts:1", "fixCi:1", "addressReview:1"]);
+    expect(names("IN_REVIEW", rows)).toEqual([
+      "slackNotify:3", "moveToDraft:3", "autoMerge:2", "disableAutoMerge:1", "follow:2", "unfollow:1",
+      "addPreview:3", "resolveConflicts:1", "fixCi:1", "addressReview:3", "merge:1", "closePr:3",
+    ]);
+  });
+
+  // Address review can't be narrower than the per-card menu: plain review comments (not just
+  // "changes requested") are the common case, so it's offered for every idle open PR.
+  test("Address review covers every open PR, not only changes-requested ones", () => {
+    const rows = [{ prNumber: 1 }, { prNumber: 2, reviewStatus: "changes_requested" as const }];
+    expect(names("DRAFT", rows)).toEqual(["addressReview:2", "follow:2", "addPreview:2", "closePr:2"]);
   });
 
   // The two Slack counts partition the lane: announce what nobody's been told about, bump what's
@@ -800,18 +812,20 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
       { prNumber: 2, slackNotifiedAt: "2025-01-01T00:00:00Z" },                        // announced 24h ago → due
       { prNumber: 3, slackNotifiedAt: "2025-01-01T00:00:00Z", slackLastBumpedAt: "2025-01-01T23:00:00Z" }, // bumped 1h ago
     ];
-    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:1", "slackBump:1", "autoMerge:3"]);
+    expect(names("IN_REVIEW", rows).slice(0, 2)).toEqual(["slackNotify:1", "slackBump:1"]);
   });
 
   test("a running agent is skipped by the agent actions (its run lease would reject a second launch)", () => {
     const rows = [{ prNumber: 1, ciStatus: "failing" as const, agentStatus: "running" as const }];
-    expect(names("IN_REVIEW", rows)).toEqual(["slackNotify:1", "autoMerge:1"]);
+    expect(names("IN_REVIEW", rows).filter((n) => /fixCi|resolveConflicts|addressReview/.test(n))).toEqual([]);
   });
 
-  test("Mergeable merges the cards that can merge; Done offers nothing", () => {
+  test("Mergeable merges the cards that can merge; Done offers only the link copy", () => {
     const rows = [{ prNumber: 1 }, { prNumber: 2, ciStatus: "failing" as const }];
-    expect(names("MERGEABLE", rows)).toEqual(["merge:1", "slackNotify:2", "fixCi:1"]);
+    expect(names("MERGEABLE", rows).slice(0, 3)).toEqual(["merge:1", "slackNotify:2", "autoMerge:2"]);
+    // Nothing left to DO on merged work — but the links are still worth grabbing for a status post.
     expect(names("DONE", rows)).toEqual([]);
+    expect(names("DONE", [{ prNumber: 1, prUrl: "https://x/1" }])).toEqual(["copyLink:1"]);
   });
 });
 

@@ -101,8 +101,10 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
 // runs on is state-gated exactly like the per-card menu, so a bulk "Fix CI" only touches the cards
 // with failing CI and a lane with none doesn't show the item at all.
 export type BulkAction =
-  | "testLocally" | "promoteReady" | "promoteDraft" | "markReady"
-  | "resolveConflicts" | "fixCi" | "addressReview" | "slackNotify" | "slackBump" | "autoMerge" | "merge";
+  | "testLocally" | "promote" | "promoteReady" | "promoteDraft" | "markReady" | "moveToDraft"
+  | "resolveConflicts" | "fixCi" | "addressReview" | "slackNotify" | "slackBump"
+  | "autoMerge" | "disableAutoMerge" | "follow" | "unfollow" | "addPreview"
+  | "copyLink" | "merge" | "closePr" | "discard";
 
 export type BulkRow = PrMenuRow & {
   hasRemote?: boolean;
@@ -111,32 +113,55 @@ export type BulkRow = PrMenuRow & {
   agentStatus?: "idle" | "running" | "done" | "error";
   slackNotifiedAt?: string;
   slackLastBumpedAt?: string;
+  following?: boolean;
 };
 
 export const BULK_LABELS: Record<BulkAction, string> = {
   testLocally: "Test locally",
+  promote: "Promote",
   promoteDraft: "Draft PR",
   promoteReady: "Ready for review",
-  markReady: "Ready for review",
+  markReady: "Mark ready for review",
+  moveToDraft: "Move to draft",
   resolveConflicts: "Resolve conflicts",
   fixCi: "Fix CI",
   addressReview: "Address review",
   slackNotify: "Send message",
   slackBump: "Send bump",
-  autoMerge: "Auto-merge",
+  autoMerge: "Enable auto-merge",
+  disableAutoMerge: "Disable auto-merge",
+  follow: "Follow (auto-fix)",
+  unfollow: "Unfollow",
+  addPreview: "Add preview",
+  copyLink: "Copy PR links",
   merge: "Merge",
+  closePr: "Close PR",
+  discard: "Discard",
 };
 
-/** The two Slack verbs sit behind a "Slack" submenu — they're one concern, and a lane usually needs
- *  both (some PRs never announced, others announced and now stale). */
-export const BULK_SLACK: BulkAction[] = ["slackNotify", "slackBump"];
+/** Related verbs collapse into one submenu, so a lane's menu stays short as the verb list grows.
+ *  Ungrouped actions render flat at the top level. A lane usually needs both halves of a group
+ *  (some PRs never announced, others announced and now stale), which is why they sit side by side. */
+export const BULK_GROUPS: Partial<Record<BulkAction, "PR" | "Agent" | "Slack">> = {
+  markReady: "PR", moveToDraft: "PR", autoMerge: "PR", disableAutoMerge: "PR",
+  follow: "PR", unfollow: "PR", addPreview: "PR", copyLink: "PR",
+  resolveConflicts: "Agent", fixCi: "Agent", addressReview: "Agent",
+  slackNotify: "Slack", slackBump: "Slack",
+};
+
+/** Copy verbs are aggregate, not per-card: N clipboard writes would leave only the last one, so the
+ *  runner writes one text built from every eligible card instead. */
+export const bulkCopyText = (rows: { prUrl?: string }[]) => rows.map((r) => r.prUrl).filter(Boolean).join("\n");
+
+/** Verbs that can't be taken back — the confirm spells that out before a whole lane runs one. */
+export const BULK_IRREVERSIBLE: BulkAction[] = ["merge", "closePr", "discard"];
 
 const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
-  LOCAL: ["testLocally", "promoteDraft", "promoteReady", "resolveConflicts"],
-  DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview"],
-  IN_REVIEW: ["slackNotify", "slackBump", "autoMerge", "resolveConflicts", "fixCi", "addressReview"],
-  MERGEABLE: ["merge", "slackNotify", "slackBump", "resolveConflicts", "fixCi"],
-  DONE: [], // nothing left to do
+  LOCAL: ["testLocally", "promote", "promoteDraft", "promoteReady", "resolveConflicts", "discard"],
+  DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview", "follow", "unfollow", "addPreview", "copyLink", "closePr"],
+  IN_REVIEW: ["slackNotify", "slackBump", "markReady", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "resolveConflicts", "fixCi", "addressReview", "merge", "closePr"],
+  MERGEABLE: ["merge", "slackNotify", "slackBump", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "resolveConflicts", "fixCi", "addressReview", "closePr"],
+  DONE: ["copyLink"], // nothing left to do but grab the links (standup / status posts)
 };
 
 const conflicting = (row: BulkRow) => row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
@@ -148,18 +173,29 @@ export type BulkContext = { nowMs: number; staleHours: number };
 
 const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow, ctx: BulkContext) => boolean> = {
   testLocally: () => true, // adopts a worktree if the branch lacks one, same as the card button
+  promote: (row) => !row.prNumber && !row.hasRemote, // local-only repo: no PR to open, just mark promoted
   promoteDraft: (row) => !row.prNumber && Boolean(row.hasRemote),
   promoteReady: (row) => !row.prNumber && Boolean(row.hasRemote),
   markReady: (row) => Boolean(row.prNumber) && Boolean(row.isDraft),
+  moveToDraft: (row) => Boolean(row.prNumber) && !row.isDraft,
   resolveConflicts: (row) => conflicting(row) && idle(row),
   fixCi: (row) => row.ciStatus === "failing" && idle(row),
-  addressReview: (row) => Boolean(row.prNumber) && row.reviewStatus === "changes_requested" && idle(row),
+  // Same gate as the per-card menu: any open PR. Review feedback isn't only "changes requested" —
+  // plain comments are the common case — so the lane verb can't be narrower than the card's.
+  addressReview: (row) => Boolean(row.prNumber) && idle(row),
+  follow: (row) => Boolean(row.prNumber) && !row.following,
+  unfollow: (row) => Boolean(row.prNumber) && Boolean(row.following),
+  addPreview: (row) => Boolean(row.prNumber) && !row.previewUrl,
+  copyLink: (row) => Boolean(row.prUrl),
+  closePr: (row) => Boolean(row.prNumber),
+  discard: (row) => !row.prNumber,
   // Announce the PRs nobody has been told about; bump only the ones already announced AND gone quiet
   // for staleHours — so the two counts partition the lane into "needs telling" vs "needs chasing"
   // and neither re-pings a PR that was just posted.
   slackNotify: (row) => Boolean(row.prNumber) && !row.slackNotifiedAt,
   slackBump: (row, ctx) => Boolean(row.prNumber) && shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, ctx.nowMs, ctx.staleHours),
   autoMerge: (row) => Boolean(row.prNumber) && !row.isDraft && !row.autoMergeEnabled,
+  disableAutoMerge: (row) => Boolean(row.prNumber) && Boolean(row.autoMergeEnabled),
   merge: (row) => !row.isDraft && !conflicting(row) && row.ciStatus !== "failing",
 };
 

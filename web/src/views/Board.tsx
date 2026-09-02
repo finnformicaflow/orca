@@ -3,11 +3,12 @@ import { useAtom, useAtomValue } from "jotai";
 import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  addressReview, autoMerge, baseBranch, cliCommand, createWorkstream, fixCi, markReady, merge, promote, providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
-  staleHours, summary as fetchSummary, testLocally, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  addPreviewLabel, addressReview, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, fixCi, markReady, merge, promote,
+  providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
+  staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
-import { BULK_LABELS, BULK_SLACK, bulkActions, type BulkAction } from "../workstream";
+import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
 import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -93,18 +94,29 @@ function CopyDone({ cards }: { cards: Row[] }) {
 
 // Every bulk verb is literally the per-card action, applied to each eligible card — no bulk-specific
 // server path, so a lane action behaves exactly like clicking through the cards one by one.
-const BULK_RUN: Record<BulkAction, (row: Row) => Promise<unknown>> = {
+// `copyLink` is the exception: it's aggregate (one clipboard write for the whole lane), so it has no
+// per-card runner and is handled in `run` below.
+const BULK_RUN: Record<Exclude<BulkAction, "copyLink">, (row: Row) => Promise<unknown>> = {
   testLocally,
+  promote: (row) => promote(row),
   promoteDraft: (row) => promote(row, { draft: true }),
   promoteReady: (row) => promote(row, { draft: false }),
   markReady,
+  moveToDraft: convertToDraft,
   resolveConflicts,
   fixCi,
   addressReview: (row) => addressReview(row),
   slackNotify: (row) => sendSlack(row, "notify"),
   slackBump: (row) => sendSlack(row, "bump"),
   autoMerge,
+  disableAutoMerge,
+  // Eligibility already picked the rows facing the right way, so the per-card toggle is the verb.
+  follow: async (row) => toggleFollow(row),
+  unfollow: async (row) => toggleFollow(row),
+  addPreview: async (row) => addPreviewLabel(row),
   merge,
+  closePr,
+  discard: discardDraft,
 };
 
 // The swimlane's ⋯ menu: run one action across every card in the lane that can take it. The menu is
@@ -115,11 +127,17 @@ function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
   const [err, setErr] = useState<string | null>(null);
   const groups = bulkActions(lane, cards, { nowMs: Date.now(), staleHours: staleHours() });
   if (groups.length === 0) return null;
-  const slack = groups.filter((g) => BULK_SLACK.includes(g.action));
 
   const run = async (action: BulkAction, rows: Row[]) => {
     const label = BULK_LABELS[action];
-    if (!window.confirm(`${label} on ${rows.length} card${rows.length === 1 ? "" : "s"} in ${lane.replace("_", " ").toLowerCase()}?`)) return;
+    // Copy is a clipboard read-out, not a fleet of mutations — no confirm, nothing to fail per card.
+    if (action === "copyLink") {
+      const text = bulkCopyText(rows);
+      try { await navigator.clipboard.writeText(text); setErr(null); } catch { window.prompt("Copy the PR links:", text); }
+      return;
+    }
+    const warn = BULK_IRREVERSIBLE.includes(action) ? " This can't be undone." : "";
+    if (!window.confirm(`${label} on ${rows.length} card${rows.length === 1 ? "" : "s"} in ${lane.replace("_", " ").toLowerCase()}?${warn}`)) return;
     setBusy(action); setErr(null);
     // Sequential on purpose: each action shells out to git/gh (and may adopt a worktree or launch an
     // agent), so firing a whole lane at once would race on adoption and hammer the API.
@@ -150,18 +168,20 @@ function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {/* The Slack verbs collapse into one submenu, rendered where the first of them falls in the
-            lane's order; everything else is a flat item. */}
-        {groups.map((group) => (
-          !BULK_SLACK.includes(group.action) ? item(group)
-            : group !== slack[0] ? null
-            : (
-              <DropdownMenuSub key="slack">
-                <DropdownMenuSubTrigger className="normal-case">Slack</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>{slack.map(item)}</DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )
-        ))}
+        {/* Grouped verbs (PR / Agent / Slack) collapse into one submenu, rendered where the first of
+            the group falls in the lane's order; everything else is a flat item. */}
+        {groups.map((group) => {
+          const name = BULK_GROUPS[group.action];
+          if (!name) return item(group);
+          const members = groups.filter((g) => BULK_GROUPS[g.action] === name);
+          if (group !== members[0]) return null;
+          return (
+            <DropdownMenuSub key={name}>
+              <DropdownMenuSubTrigger className="normal-case">{name}</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>{members.map(item)}</DropdownMenuSubContent>
+            </DropdownMenuSub>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );
