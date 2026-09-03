@@ -9,6 +9,7 @@ import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import { groupSteps, type AgentStep } from "../shared/agent";
+import { toolDetail, toolLabel } from "@/steps";
 import { chatPrompt, followUpPrompt, promptInstruction } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -177,15 +178,15 @@ test("a tool's output stays inside its own accordion instead of spilling into th
     id: "run-1", provider: "claude", prompt: "run the tests", response: "Done.", finishedAt: 2,
     steps: [
       { at: 1, kind: "text", text: "Running the suite now." },
-      { at: 2, kind: "tool", name: "Bash", text: "Running: bun test", detail: "bun test" },
-      { at: 3, kind: "tool", name: "result", output: "SECRET_TOOL_OUTPUT 289 pass" },
+      { at: 2, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } },
+      { at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" },
     ],
   }]);
 
   await mount(base);
 
   expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
-  expect(text()).toContain("Running: bun test");      // the call's summary line — visible
+  expect(text()).toContain("Running: bun test");      // the call's label, derived from its input — visible
   expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
   expect(text()).not.toContain("Tool result");        // and NOT a second row of its own
 
@@ -195,28 +196,90 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
 });
 
-test("groupSteps pairs parallel calls with their results in order, and keeps an orphan visible", () => {
-  // Claude emits several tool_use blocks in one event and their results in a later one, so matching
-  // is positional: first call ↔ first result.
+test("a tool call on a live run is open while it works and folds itself when its result lands", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "",
+    steps: [{ at: 2, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } }],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  // In flight: the input is what there is to watch, so it's open without a click.
+  expect(text()).toContain("Running: bun test…");
+  expect(container!.querySelector("pre")?.textContent).toBe("bun test");
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("step"), {
+      data: JSON.stringify({ runId: "run-1", steps: [{ at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" }] }),
+    }));
+    await flush();
+  });
+  // Done: it collapses on its own, output tucked behind the toggle like any finished call.
+  expect(text()).not.toContain("Running: bun test…");
+  expect(text()).not.toContain("SECRET_TOOL_OUTPUT");
+});
+
+test("a finished turn does not repeat its final message as the last step", async () => {
+  // The model's last text IS the response Output renders; showing it in the steps too doubled it.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "All 289 tests pass.", finishedAt: 2,
+    steps: [{ at: 1, kind: "text", text: "Running the suite now." }, { at: 2, kind: "text", text: "All 289 tests pass." }],
+  }]);
+  await mount(base);
+  expect(text().split("All 289 tests pass.")).toHaveLength(2); // exactly once
+  expect(text()).toContain("Running the suite now.");
+});
+
+test("the log shows the recorded instruction when the turn has one, whatever the prompt looks like", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", finishedAt: 2, response: "On it.",
+    instruction: "Fix the failing CI checks", prompt: "Some prompt shape the marker list has never seen.\n\nFinish your final response with these concise sections:",
+  }]);
+  await mount(base);
+  expect(text()).toContain("Fix the failing CI checks");
+  expect(text()).not.toContain("Some prompt shape");
+});
+
+test("groupSteps pairs results with calls by id, by order when there is none, and keeps an orphan visible", () => {
+  // Parallel calls can come back in any order; the id says which is which.
   const grouped = groupSteps([
-    { at: 1, kind: "tool", name: "Read", text: "Reading a.ts" },
-    { at: 1, kind: "tool", name: "Read", text: "Reading b.ts" },
-    { at: 2, kind: "tool", name: "result", output: "contents of a" },
-    { at: 2, kind: "tool", name: "result", output: "contents of b", isError: true },
+    { at: 1, kind: "tool", id: "a", name: "Read", input: { file_path: "a.ts" } },
+    { at: 1, kind: "tool", id: "b", name: "Read", input: { file_path: "b.ts" } },
+    { at: 2, kind: "result", id: "b", output: "contents of b", isError: true },
+    { at: 2, kind: "result", id: "a", output: "contents of a" },
   ]);
   expect(grouped).toHaveLength(2); // two calls, no free-floating result rows
-  expect(grouped[0]).toMatchObject({ text: "Reading a.ts", output: "contents of a" });
-  expect(grouped[1]).toMatchObject({ text: "Reading b.ts", output: "contents of b", isError: true });
+  expect(grouped[0]).toMatchObject({ id: "a", output: "contents of a", done: true });
+  expect(grouped[1]).toMatchObject({ id: "b", output: "contents of b", isError: true, done: true });
+
+  // Rows written before ids (and before `kind: "result"`) still pair positionally.
+  const legacy = groupSteps([
+    { at: 1, kind: "tool", name: "Read", text: "Reading a.ts" },
+    { at: 2, kind: "tool", name: "result", output: "contents of a" },
+  ]);
+  expect(legacy).toMatchObject([{ text: "Reading a.ts", output: "contents of a", done: true }]);
 
   // A result with no call to match (a transcript read mid-run) is kept, with a label so it is still
   // collapsible rather than rendering bare.
-  expect(groupSteps([{ at: 1, kind: "tool", name: "result", output: "orphan" }]))
+  expect(groupSteps([{ at: 1, kind: "result", id: "zzz", output: "orphan" }]))
     .toMatchObject([{ text: "Tool result", output: "orphan" }]);
 
   // Pure: the caller's steps are not mutated (the panel re-groups on every render).
-  const input: AgentStep[] = [{ at: 1, kind: "tool", name: "Bash", text: "Running: x" }, { at: 2, kind: "tool", name: "result", output: "out" }];
+  const input: AgentStep[] = [{ at: 1, kind: "tool", id: "x", name: "Bash", input: {} }, { at: 2, kind: "result", id: "x", output: "out" }];
   groupSteps(input);
   expect(input[0]!.output).toBeUndefined();
+  expect(input[0]!.done).toBeUndefined();
+});
+
+test("a tool's label and detail come from its stored input, not from the row", () => {
+  expect(toolLabel({ at: 1, kind: "tool", name: "Bash", input: { command: "bun   test" } })).toBe("Running: bun test");
+  expect(toolLabel({ at: 1, kind: "tool", name: "Edit", input: { file_path: "/wt/x/src/foo.ts", old_string: "a", new_string: "b" } })).toBe("Editing foo.ts");
+  expect(toolLabel({ at: 1, kind: "tool", name: "command_execution", input: { command: "ls" } })).toBe("Running: ls"); // codex
+  expect(toolLabel({ at: 1, kind: "tool", name: "shell", input: { command: "ls" } })).toBe("Running: ls"); // cursor
+  expect(toolLabel({ at: 1, kind: "tool", name: "mcp__slack__post", input: { channel: "#eng" } })).toBe("Using mcp__slack__post");
+  expect(toolLabel({ at: 1, kind: "tool", name: "Bash", text: "Running: old row" })).toBe("Running: old row"); // legacy
+  // Detail: a lone command reads bare; a richer input shows everything the row kept.
+  expect(toolDetail({ at: 1, kind: "tool", name: "Bash", input: { command: "bun test" } })).toBe("bun test");
+  expect(toolDetail({ at: 1, kind: "tool", name: "Edit", input: { file_path: "f", old_string: "a", new_string: "b" } })).toContain('"new_string": "b"');
+  expect(toolDetail({ at: 1, kind: "tool", name: "Bash", detail: "old detail" })).toBe("old detail"); // legacy
 });
 
 test("the log follows new output, but not while the reader has scrolled up", async () => {

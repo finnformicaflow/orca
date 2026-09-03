@@ -9,37 +9,53 @@ export type AgentOutcome = {
   commits: string[];
 };
 
-/** One step of an agent's run — what it said, thought, or did, as the chat renders it. Persisted per
- *  run by server/transcript.ts, so the reasoning behind a turn survives the process that produced it.
- *  `text` is the human-readable line; `detail`/`output` carry the tool's input and result for the
- *  expandable view (both bounded — see transcript.ts). */
+/** One step of an agent's run — what it said, thought, or did — stored as a content part, the way a
+ *  model message carries it: a tool call keeps its id and FULL input, a result keeps the id of the
+ *  call it answers. Persisted per run by server/transcript.ts (bounded there). Nothing here is
+ *  pre-rendered: the label a call shows in the chat is derived at render time (web/src/steps.ts), so
+ *  the stored row stays faithful and a new tool renders without a migration. */
 export type AgentStep = {
   at: number;
-  kind: "text" | "thinking" | "tool";
+  kind: "text" | "thinking" | "tool" | "result";
+  /** Tool call id (`tool_use.id`, Codex item id, Cursor call id). A result carries the id of the
+   *  call it answers; matching falls back to call order when a provider gives none. */
+  id?: string;
   /** Tool name, when kind is "tool". */
   name?: string;
+  /** Prose, for text/thinking. (Rows written before content parts also carried a pre-rendered tool
+   *  label here — still honoured when rendering.) */
   text?: string;
+  /** The tool's input, verbatim (string fields bounded — see transcript.ts). */
+  input?: unknown;
+  /** @deprecated rows written before `input` existed: one string of the input. Kept for display. */
   detail?: string;
   output?: string;
   isError?: boolean;
+  /** Set by groupSteps once a call's result has landed — the chat auto-folds the call on it. */
+  done?: boolean;
 };
 
+// Rows written before `kind: "result"` existed recorded a result as a tool step named "result".
+const isResult = (s: AgentStep) => s.kind === "result" || (s.kind === "tool" && s.name === "result");
+
 /** Fold each tool RESULT into the call it belongs to, so the chat renders one collapsible unit per
- *  tool use instead of a collapsed call followed by its output spilling down the page. Claude emits
- *  the calls in one assistant event and the results in a later user event, so matching is FIFO —
- *  parallel calls come back in the order they were made. A result with no call left to match (a
- *  transcript that starts mid-run) keeps its own row rather than being dropped. Pure. */
+ *  tool use instead of a collapsed call followed by its output spilling down the page. Matched by
+ *  call id when the provider supplies one (parallel calls may then return in any order); by call
+ *  order otherwise, and for rows written before ids were kept. A result with no call left to match
+ *  (a transcript that starts mid-run) keeps its own row rather than being dropped. Pure. */
 export function groupSteps(steps: AgentStep[]): AgentStep[] {
   const grouped: AgentStep[] = [];
   const awaitingResult: AgentStep[] = [];
   for (const step of steps) {
-    if (step.kind === "tool" && step.name === "result") {
-      const call = awaitingResult.shift();
+    if (isResult(step)) {
+      const at = step.id ? awaitingResult.findIndex((c) => c.id === step.id) : 0;
+      const call = at >= 0 ? awaitingResult.splice(at, 1)[0] : undefined;
       if (call) {
         call.output = step.output;
         call.isError = step.isError;
+        call.done = true;
       } else {
-        grouped.push({ ...step, text: "Tool result" }); // orphan — still collapsible, never bare
+        grouped.push({ ...step, kind: "tool", name: "result", text: "Tool result", done: true }); // orphan — still collapsible, never bare
       }
       continue;
     }
@@ -50,9 +66,19 @@ export function groupSteps(steps: AgentStep[]): AgentStep[] {
   return grouped;
 }
 
+/** A finished turn's steps without the final message: the model's last text IS the turn's response,
+ *  which the chat renders on its own below the steps — leaving it in showed the answer twice. Pure. */
+export function withoutFinalEcho(steps: AgentStep[], response: string): AgentStep[] {
+  const last = steps.at(-1);
+  return last?.kind === "text" && (last.text ?? "").trim() === response.trim() ? steps.slice(0, -1) : steps;
+}
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
+  /** What the user actually typed (or the board action's label). `prompt` is the full text the CLI
+   *  was given — the instruction plus the scenario's scaffolding and the outcome contract. */
+  instruction?: string;
   prompt: string;
   response: string;
   structured?: AgentOutcome;

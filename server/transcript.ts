@@ -28,9 +28,18 @@ const MAX_STEPS = 5_000;
 const clip = (s: string | undefined, n: number): string | undefined =>
   s === undefined ? undefined : s.length > n ? `${s.slice(0, n)}\n…(truncated)…` : s;
 
+// A tool's input is kept whole (it's what makes the step replayable), with each top-level string
+// field capped — a Write's file content, a Bash heredoc. ponytail: one level deep; nested blobs
+// (an MCP call's structured args) are rare and clip at the JSON level if they ever matter.
+const clipInput = (input: unknown): unknown => {
+  if (typeof input === "string") return clip(input, MAX_TEXT);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  return Object.fromEntries(Object.entries(input).map(([k, v]) => [k, typeof v === "string" ? clip(v, MAX_TEXT) : v]));
+};
+
 /** Trim a step to the per-field caps. Pure, so the bounding is testable without touching a database. */
 export function boundStep(step: AgentStep): AgentStep {
-  return { ...step, text: clip(step.text, MAX_TEXT), detail: clip(step.detail, MAX_TEXT), output: clip(step.output, MAX_OUTPUT) };
+  return { ...step, text: clip(step.text, MAX_TEXT), input: clipInput(step.input), detail: clip(step.detail, MAX_TEXT), output: clip(step.output, MAX_OUTPUT) };
 }
 
 // The next sequence number per run, read from the database once and then tracked here — so the common

@@ -248,6 +248,15 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         WHERE dispatched_at IS NULL;
     `,
   },
+  {
+    id: 8,
+    // What the user actually typed, separate from the prompt the CLI was given. `prompt` is the
+    // instruction wrapped in scenario scaffolding and the outcome contract; the chat used to strip
+    // that back out by searching for known marker lines, which failed for any prompt shape the list
+    // didn't know and showed the whole prompt. Nullable: rows from before this keep using the
+    // marker fallback.
+    sql: `ALTER TABLE turn ADD COLUMN instruction TEXT`,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -350,7 +359,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 // ---- turns ----
 
 type TurnRow = {
-  run_id: string; provider: string; status: string; prompt: string; response: string | null;
+  run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
   structured: AgentOutcome | null; session_id: string | null;
   started_at: string | number; finished_at: string | number | null;
 };
@@ -358,6 +367,7 @@ type TurnRow = {
 const toTurn = (r: TurnRow): AgentTurn => ({
   id: r.run_id,
   provider: r.provider as AgentProvider,
+  instruction: r.instruction ?? undefined,
   prompt: r.prompt,
   response: r.response ?? "",
   structured: r.structured ?? undefined,
@@ -373,13 +383,13 @@ const toTurn = (r: TurnRow): AgentTurn => ({
  *  previous turn the way the in-memory map (keyed by worktree path) did. */
 export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
-  prompt: string; sessionId?: string; startedAt: number;
+  instruction?: string; prompt: string; sessionId?: string; startedAt: number;
 }): Promise<void> {
   const sql = await open();
   const id = await workstreamId(input.repo, input.branch);
   await sql`
-    INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, prompt, session_id, raw_ref, started_at)
-    VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.prompt},
+    INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at)
+    VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
             ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
     ON CONFLICT (run_id) DO NOTHING`;
   bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
@@ -396,7 +406,7 @@ export async function startTurn(input: {
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome;
   sessionId?: string; finishedAt: number;
-  identity?: { repo: string; branch: string; provider: AgentProvider; prompt: string; startedAt: number };
+  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
 }): Promise<void> {
   const sql = await open();
   // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
@@ -418,13 +428,13 @@ export async function finishTurn(runId: string, input: {
   if (!owner && input.identity) {
     // Nothing to update: the start write was lost. Write the whole turn now — the run happened, and
     // its steps are already recorded against this run id.
-    const { repo, branch, provider, prompt, startedAt } = input.identity;
+    const { repo, branch, provider, instruction, prompt, startedAt } = input.identity;
     const workstream = await workstreamId(repo, branch);
     await sql`
-      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, prompt, response,
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
                         structured, session_id, raw_ref, started_at, finished_at)
       VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
-              ${prompt}, ${input.response ?? null}, ${input.structured ?? null},
+              ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null},
               ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
       ON CONFLICT (run_id) DO NOTHING`;
     owner = { repo, branch };

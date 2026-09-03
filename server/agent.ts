@@ -78,6 +78,7 @@ export type LaunchOptions = {
   permissionMode?: "bypass" | "ask"; // repo's `agentPermissionMode`; `ask` (the default) is NOT bypass
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
+  instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
 };
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
@@ -212,27 +213,14 @@ export function runSteps(runId: string, tail?: number): Promise<AgentStep[]> {
   return transcript.read(runId, tail);
 }
 
-function toolActivity(name: string, input: unknown): string {
-  const i = (input ?? {}) as Record<string, unknown>;
-  const file = typeof i.file_path === "string" ? i.file_path.split("/").pop() : undefined;
-  const oneLine = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n);
-  switch (name) {
-    case "Read": return file ? `Reading ${file}` : "Reading a file";
-    case "Edit": case "MultiEdit": case "Write": case "NotebookEdit": return file ? `Editing ${file}` : "Editing a file";
-    case "Bash": return typeof i.command === "string" ? `Running: ${oneLine(i.command, 120)}` : "Running a command";
-    case "Grep": return typeof i.pattern === "string" ? `Searching for ${oneLine(i.pattern, 60)}` : "Searching";
-    case "Glob": return "Finding files";
-    case "Task": return "Delegating to a subagent";
-    case "WebFetch": case "WebSearch": return "Searching the web";
-    default: return `Using ${name}`;
-  }
-}
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /** The step(s) one claude stream-json event contributes. Assistant events carry the model's text,
- *  its thinking, and the tools it invokes; `user` events carry the tool RESULTS that come back —
- *  those used to be dropped entirely, which is why the chat could show "Running: bun test" but never
- *  what the tests said. Everything else (init, result) adds no step. Pure, so a test pins the
- *  event→step mapping without a running CLI. */
+ *  its thinking, and the tools it invokes; `user` events carry the tool RESULTS that come back.
+ *  A call is stored as the content part it came in as — id, name, and the whole input — and a result
+ *  with the id of the call it answers; what the chat shows for either is decided at render time.
+ *  Everything else (init, result) adds no step. Pure, so a test pins the event→step mapping without
+ *  a running CLI. */
 export function claudeSteps(event: unknown): AgentStep[] {
   const e = event as { type?: string; message?: { content?: unknown } };
   if (!Array.isArray(e?.message?.content)) return [];
@@ -244,10 +232,10 @@ export function claudeSteps(event: unknown): AgentStep[] {
     } else if (e.type === "assistant" && block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
       steps.push({ at, kind: "thinking", text: block.thinking.trim() });
     } else if (e.type === "assistant" && block?.type === "tool_use" && typeof block.name === "string") {
-      steps.push({ at, kind: "tool", name: block.name, text: toolActivity(block.name, block.input), detail: toolDetail(block.input) });
+      steps.push({ at, kind: "tool", id: str(block.id), name: block.name, input: block.input });
     } else if (e.type === "user" && block?.type === "tool_result") {
-      const out = toolResultText(block.content);
-      if (out) steps.push({ at, kind: "tool", name: "result", output: out, isError: block.is_error === true });
+      // Recorded even when empty: the result is what marks the call finished.
+      steps.push({ at, kind: "result", id: str(block.tool_use_id), output: toolResultText(block.content), isError: block.is_error === true });
     }
   }
   return steps;
@@ -277,24 +265,13 @@ export function codexSteps(event: unknown): AgentStep[] {
     return e.type === "item.completed" && text ? [{ at, kind: "thinking", text }] : [];
   }
 
-  const command = typeof item.command === "string" ? item.command : undefined;
-  const path = typeof item.path === "string" ? item.path : undefined;
-  const query = typeof item.query === "string" ? item.query : undefined;
-  const detail = command ?? path ?? query;
-  const summary = kind === "command_execution" ? `Running: ${(command ?? "a command").replace(/\s+/g, " ").slice(0, 120)}`
-    : kind === "file_change" ? `Editing ${path?.split("/").pop() ?? "a file"}`
-    : kind === "web_search" ? `Searching the web${query ? `: ${query.slice(0, 60)}` : ""}`
-    : kind === "mcp_tool_call" ? `Using ${typeof item.tool === "string" ? item.tool : "an MCP tool"}`
-    : `Using ${kind || "a tool"}`;
-
-  if (e.type === "item.started") return [{ at, kind: "tool", name: kind, text: summary, detail }];
+  // The item IS the call's input (command, path, query, tool, changes…); its lifecycle fields aren't.
+  const { id, type: _type, status: _status, aggregated_output, output: out, exit_code, ...input } = item;
+  if (e.type === "item.started") return [{ at, kind: "tool", id: str(id), name: kind, input }];
   if (e.type !== "item.completed") return [];
-  const output = typeof item.aggregated_output === "string" ? item.aggregated_output.trim()
-    : typeof item.output === "string" ? item.output.trim() : "";
-  const failed = typeof item.exit_code === "number" ? item.exit_code !== 0 : item.status === "failed";
-  return output || failed
-    ? [{ at, kind: "tool", name: "result", output: output || `exited ${String(item.exit_code ?? item.status)}`, isError: failed }]
-    : [];
+  const output = typeof aggregated_output === "string" ? aggregated_output.trim() : typeof out === "string" ? out.trim() : "";
+  const failed = typeof exit_code === "number" ? exit_code !== 0 : item.status === "failed";
+  return [{ at, kind: "result", id: str(id), output: output || (failed ? `exited ${String(exit_code ?? item.status)}` : undefined), isError: failed }];
 }
 
 /** The step(s) one Cursor `stream-json` event contributes. Shapes taken from a real run:
@@ -328,31 +305,15 @@ export function cursorSteps(event: unknown, state: { thinking: string }): AgentS
     .find(([, v]) => v && typeof v === "object" && !Array.isArray(v)) ?? [];
   if (!name || !body) return [];
   const label = name.replace(/ToolCall$/, "");
-  const args = (body.args ?? {}) as Record<string, unknown>;
-  const detail = ["command", "path", "query", "filePath"].map((k) => args[k]).find((v) => typeof v === "string") as string | undefined;
-  if (e.subtype === "started") {
-    const summary = detail ? `${label}: ${detail.replace(/\s+/g, " ").slice(0, 120)}` : `Using ${label}`;
-    return [{ at, kind: "tool", name: label, text: summary, detail }];
-  }
+  const id = str(e.call_id ?? e.tool_call_id ?? e.id);
+  if (e.subtype === "started") return [{ at, kind: "tool", id, name: label, input: body.args ?? {} }];
   if (e.subtype !== "completed") return [];
   const success = (body.result ?? {}) as Record<string, any>;
   const ok = success.success ?? success;
   const output = [ok?.stdout, ok?.stderr, typeof ok === "string" ? ok : undefined]
     .filter((v) => typeof v === "string" && v.trim()).join("\n").trim();
   const failed = typeof ok?.exitCode === "number" ? ok.exitCode !== 0 : Boolean(success.error);
-  return output || failed
-    ? [{ at, kind: "tool", name: "result", output: output || "failed", isError: failed }]
-    : [];
-}
-
-/** The tool's own input, verbatim-ish, for the expandable detail line (the full command, the whole
- *  pattern, the absolute path) — `text` only carries the short summary. */
-function toolDetail(input: unknown): string | undefined {
-  const i = (input ?? {}) as Record<string, unknown>;
-  for (const k of ["command", "pattern", "file_path", "url", "prompt", "query"]) {
-    if (typeof i[k] === "string" && (i[k] as string).trim()) return (i[k] as string).trim();
-  }
-  return undefined;
+  return [{ at, kind: "result", id, output: output || (failed ? "failed" : undefined), isError: failed }];
 }
 
 /** A tool_result's content is either a plain string or an array of typed blocks. */
@@ -529,7 +490,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
   // reason it is written at launch, and an async database must not quietly weaken it.
   const started = recordTurn(options, () => db.startTurn({
-    repo: options.repo!, branch: options.branch!, runId, provider, prompt, sessionId, startedAt,
+    repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt,
   }));
   await started;
   void (async () => {
@@ -592,7 +553,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       response: wasStopped ? (result ?? "Stopped. The work so far stands; reply to redirect.") : (result ?? error),
       structured, sessionId: resolvedSessionId, finishedAt,
       // Everything needed to write the turn from scratch if its start write was lost.
-      identity: { repo: options.repo!, branch: options.branch!, provider, prompt, startedAt },
+      identity: { repo: options.repo!, branch: options.branch!, provider, instruction: options.instruction, prompt, startedAt },
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)

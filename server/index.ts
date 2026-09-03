@@ -84,7 +84,7 @@ agent.onQueuedMessage(async (message) => {
   const provider = isAgentProvider(message.provider) ? message.provider : "claude";
   if (!providerAllowed(repo, provider)) return; // opted out since it was queued
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
-    provider, repo: repo.name, branch: message.branch, action: "followup",
+    provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
     model: repo.agentModel,
     permissionMode: repo.agentPermissionMode ?? "ask",
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
@@ -473,7 +473,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
-      action: body.action, evidenceChars: body.evidenceChars,
+      action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
@@ -501,7 +501,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
-      action: body.action, evidenceChars: body.evidenceChars,
+      action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);

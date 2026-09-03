@@ -116,7 +116,7 @@ export const api = {
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
-  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number } = {}): Promise<LaunchReceipt> =>
+  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; instruction?: string } = {}): Promise<LaunchReceipt> =>
     post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
   // Returns `{ status: "queued" }` instead of a receipt when a run is already in flight and this is a
   // follow-up — the bridge holds it and sends it when that run finishes.
