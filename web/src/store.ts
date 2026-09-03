@@ -479,7 +479,7 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch, action: "launch" })
+        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch, action: "launch", instruction: prompt })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -584,7 +584,7 @@ export async function cliCommand(row: Row): Promise<string> {
 export function rerunAgent(row: Row) {
   if (!row.worktreePath) return Promise.resolve();
   const latest = row.agentOutcome ?? row.transcript?.at(-1)?.structured;
-  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), providerFor(row), { action: "rerun" }).then(refresh);
+  return launchOnRow(row, row.worktreePath, rerunFailedPrompt({ original: row.prompt, error: row.agentError, outcome: latest }), providerFor(row), { action: "rerun", instruction: "Retry the failed run" }).then(refresh);
 }
 
 export async function promote(row: Row, opts?: { draft?: boolean; labels?: string[] }) {
@@ -831,7 +831,7 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
 
 export async function resolveConflicts(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), providerFor(row), { action: "conflict" });
+  await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), providerFor(row), { action: "conflict", instruction: `Resolve merge conflicts with ${baseBranch(row.repo)}` });
   await refresh();
 }
 
@@ -843,7 +843,7 @@ export function addPreviewLabel(row: Row) {
 export async function fixCi(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
   const details = row.prNumber ? await api.ciEvidence(row.repo, row.prNumber).catch(() => []) : [];
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), providerFor(row), { action: "ci", evidenceChars: JSON.stringify(details).length });
+  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), providerFor(row), { action: "ci", evidenceChars: JSON.stringify(details).length, instruction: "Fix the failing CI checks" });
   await refresh();
 }
 
@@ -861,7 +861,7 @@ export async function addressReview(row: Row, manual = true) {
     row, wt,
     addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked),
     providerFor(row),
-    { action: "review", evidenceChars: JSON.stringify(marked).length },
+    { action: "review", evidenceChars: JSON.stringify(marked).length, instruction: "Address the review feedback" },
   );
   if (threads?.length) {
     patchEnrich(row.repo, row.branch, { handedReviewThreadIds: [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100) });

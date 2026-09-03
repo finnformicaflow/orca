@@ -13,7 +13,8 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, refresh, type Row } from "../store";
 import { promptInstruction } from "../workstream";
-import { agentLabel, groupSteps } from "../../../shared/agent";
+import { toolDetail, toolLabel } from "../steps";
+import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
@@ -34,9 +35,12 @@ const ChatMarkdown = ({ children }: { children: string }) => (
 
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
- *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. */
-function Step({ step }: { step: AgentStep }) {
-  const [open, setOpen] = useState(false);
+ *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. The
+ *  one exception is a call still in flight on a live run: it's open while its input is what there is
+ *  to watch, and folds itself the moment its result lands. A click overrides either way. */
+function Step({ step, live }: { step: AgentStep; live: boolean }) {
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const open = toggled ?? (live && !step.done);
   // The agent's narration is prose — headings, lists, the occasional table — and reading a scoping
   // report in a monospace block is miserable. Tool output below stays monospace, because that one
   // genuinely is terminal output.
@@ -45,17 +49,17 @@ function Step({ step }: { step: AgentStep }) {
   // A tool call carries its own result (see groupSteps), so EVERYTHING it produced is behind this
   // one toggle — input and output. Nothing spills into the log unopened; the narration above is the
   // readable thread, and a tool's detail is there when you want it.
-  const body = [step.detail, step.output].filter(Boolean).join("\n\n");
+  const body = [toolDetail(step), step.output].filter(Boolean).join("\n\n");
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setToggled(!open)}
         disabled={!body}
         className={`flex w-full gap-1.5 text-left ${step.isError ? "text-red-400" : "text-sky-400"} ${body ? "hover:text-sky-300" : "cursor-default"}`}
       >
         <span className="shrink-0 select-none">{body ? (open ? "⏷" : "⏵") : "·"}</span>
-        <span className="min-w-0 break-words">{step.text}</span>
+        <span className="min-w-0 break-words">{toolLabel(step)}{live && !step.done ? "…" : ""}</span>
       </button>
       {open && body && (
         <pre className="ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l-2 border-neutral-800 pl-2 text-[11px] text-neutral-500">{body}</pre>
@@ -72,7 +76,7 @@ function Steps({ steps: raw, live }: { steps: AgentStep[]; live: boolean }) {
   const [open, setOpen] = useState(true);
   const steps = groupSteps(raw); // fold each tool result into its call — one toggle per tool use
   if (!steps.length) return null;
-  const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} />)}</div>;
+  const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} live={live} />)}</div>;
   if (live) return body;
   return (
     <div className="mb-1.5">
@@ -137,7 +141,9 @@ function Turn({ turn }: { turn: AgentTurn }) {
     <div className="mb-3">
       <div className="flex gap-2 text-emerald-400">
         <span className="shrink-0 select-none">❯</span>
-        <span className="min-w-0 whitespace-pre-wrap break-words">{promptInstruction(turn.prompt)}</span>
+        {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
+            trimming the scaffolding off the prompt by its known marker lines. */}
+        <span className="min-w-0 whitespace-pre-wrap break-words">{turn.instruction ?? promptInstruction(turn.prompt)}</span>
       </div>
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
@@ -154,7 +160,8 @@ function Turn({ turn }: { turn: AgentTurn }) {
           </div>
         ) : (
           <>
-            <Steps steps={turn.steps ?? []} live={false} />
+            {/* The final message is the turn's response, rendered by Output — not twice. */}
+            <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} />
             <Output turn={turn} />
           </>
         )}

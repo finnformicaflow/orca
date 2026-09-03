@@ -63,6 +63,16 @@ test("a turn is durable from launch, before the run produces any output", async 
   expect(turn?.finishedAt).toBeUndefined();
 });
 
+test("what the user typed is recorded apart from the prompt the CLI was given", async () => {
+  // The chat shows `instruction`; `prompt` (instruction + scaffolding + outcome contract) is what
+  // actually ran. Stripping the scaffolding back out of the prompt at read time was a guess.
+  await db.startTurn({ repo: "r", branch: "feat", runId: "run-1", provider: "claude", instruction: "fix CI", prompt: "fix CI\n\nAvoid unrelated cleanup.\n\n## Outcome…", startedAt: Date.now() });
+  expect((await db.turns("r", "feat"))[0]).toMatchObject({ instruction: "fix CI", prompt: expect.stringContaining("Avoid unrelated cleanup") });
+  // And the rescue path (start write lost) writes it too.
+  await db.finishTurn("run-2", { status: "done", response: "ok", finishedAt: Date.now(), identity: { repo: "r", branch: "feat", provider: "claude", instruction: "then this", prompt: "then this + scaffolding", startedAt: Date.now() } });
+  expect((await db.turns("r", "feat"))[1]?.instruction).toBe("then this");
+});
+
 test("completing a run fills in its response and structured outcome", async () => {
   await start("run-1", "add the thing");
   await db.finishTurn("run-1", {
@@ -204,13 +214,13 @@ test("a run's steps are persisted as they stream and readable after it finishes"
 
     // Readable AFTER the run — the in-memory trail could not do this.
     const steps = await agent.runSteps(receipt.runId);
-    expect(steps.map((s) => s.kind)).toEqual(["thinking", "tool", "tool", "text"]);
+    expect(steps.map((s) => s.kind)).toEqual(["thinking", "tool", "result", "text"]);
     expect(steps[0]?.text).toBe("the lease is stale");
-    expect(steps[1]).toMatchObject({ name: "Bash", text: "Running: bun test", detail: "bun test" });
+    expect(steps[1]).toMatchObject({ name: "Bash", input: { command: "bun test" } }); // the call, input intact
     expect(steps[2]?.output).toBe("2 pass 0 fail"); // the tool RESULT, which used to be dropped
     expect(steps[3]?.text).toBe("Tests pass.");
 
-    expect((await transcript.read(receipt.runId, 2)).map((s) => s.kind)).toEqual(["tool", "text"]); // tail
+    expect((await transcript.read(receipt.runId, 2)).map((s) => s.kind)).toEqual(["result", "text"]); // tail
 
     // The durable turn still carries the final outcome; steps are the reasoning behind it.
     expect((await db.turns("r", "feat"))[0]?.structured?.outcome).toBe("Shipped it.");
@@ -223,9 +233,14 @@ test("a run's steps are persisted as they stream and readable after it finishes"
 
 test("one runaway tool result can't dominate a transcript, and a missing one is not an error", async () => {
   // Bounding is per-field so a `cat` of a lockfile costs a clipped step, never the whole file.
-  const big = transcript.boundStep({ at: 1, kind: "tool", name: "Bash", output: "x".repeat(500_000) });
+  const big = transcript.boundStep({ at: 1, kind: "result", output: "x".repeat(500_000) });
   expect(big.output!.length).toBeLessThan(40_000);
   expect(big.output).toContain("truncated");
+  // A call's input is kept whole — it's what makes the step replayable — but each string field is
+  // capped, so a Write of a huge file costs a clipped step, not a huge row.
+  const write = transcript.boundStep({ at: 1, kind: "tool", name: "Write", input: { file_path: "/x", content: "y".repeat(100_000) } });
+  expect((write.input as { file_path: string; content: string }).file_path).toBe("/x");
+  expect((write.input as { content: string }).content.length).toBeLessThan(20_000);
   // Advisory, like the lease and ledger: no transcript degrades to "no steps", never a throw.
   expect(await transcript.read("no-such-run")).toEqual([]);
 });
@@ -392,7 +407,7 @@ test("an interrupted run is recovered from the provider's session file, not writ
   ].map((e) => JSON.stringify(e)).join("\n"));
 
   expect(readSession(join(sessionDir, `${sessionId}.jsonl`)).steps.map((s) => s.kind))
-    .toEqual(["tool", "tool", "text"]);
+    .toEqual(["tool", "result", "text"]);
   expect(readSession(join(sessionDir, `${sessionId}.jsonl`)).response).toContain("Fixed the tests.");
 
   // Nothing was recorded live — the bridge died before reading any of it.

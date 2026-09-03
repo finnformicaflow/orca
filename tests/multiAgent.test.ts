@@ -166,16 +166,19 @@ describe("provider adapters", () => {
     // Thinking used to be dropped entirely — it's the whole "what was it reasoning about" question.
     expect(claudeSteps({ type: "assistant", message: { content: [{ type: "thinking", thinking: "the lock is held" }] } }))
       .toMatchObject([{ kind: "thinking", text: "the lock is held" }]);
-    // A tool call keeps its summary AND the verbatim input for the expandable detail.
-    expect(claudeSteps({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } }))
-      .toMatchObject([{ kind: "tool", name: "Bash", text: "Running: bun test", detail: "bun test" }]);
-    expect(claudeSteps({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/wt/x/src/foo.ts" } }] } }))
-      .toMatchObject([{ kind: "tool", text: "Reading foo.ts", detail: "/wt/x/src/foo.ts" }]);
-    // Tool RESULTS used to add nothing, so the chat showed "Running: bun test" and never the output.
-    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", content: "2 pass 0 fail" }] } }))
-      .toMatchObject([{ kind: "tool", name: "result", output: "2 pass 0 fail", isError: false }]);
-    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", content: [{ type: "text", text: "boom" }], is_error: true }] } }))
-      .toMatchObject([{ kind: "tool", output: "boom", isError: true }]);
+    // A tool call is stored as the content part it arrived as — id, name, and the WHOLE input — with
+    // no pre-rendered label: an Edit's old/new strings survive, and the chat decides the wording.
+    const call = claudeSteps({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu_1", name: "Edit", input: { file_path: "/wt/x/src/foo.ts", old_string: "a", new_string: "b" } }] } });
+    expect(call).toEqual([{ at: expect.any(Number), kind: "tool", id: "tu_1", name: "Edit", input: { file_path: "/wt/x/src/foo.ts", old_string: "a", new_string: "b" } }]);
+    expect(call[0]).not.toHaveProperty("text");
+    // A result carries the id of the call it answers — even when empty, since it's what marks the
+    // call finished.
+    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_1", content: "2 pass 0 fail" }] } }))
+      .toMatchObject([{ kind: "result", id: "tu_1", output: "2 pass 0 fail", isError: false }]);
+    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_2", content: [{ type: "text", text: "boom" }], is_error: true }] } }))
+      .toMatchObject([{ kind: "result", id: "tu_2", output: "boom", isError: true }]);
+    expect(claudeSteps({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_3", content: "" }] } }))
+      .toMatchObject([{ kind: "result", id: "tu_3", isError: false }]);
     // Bookkeeping events still contribute nothing.
     expect(claudeSteps({ type: "result", result: "done" })).toEqual([]);
     expect(claudeSteps({ type: "system", subtype: "init", session_id: "c-1" })).toEqual([]);
@@ -461,16 +464,17 @@ describe("cross-provider continuation", () => {
   test("maps Codex item events to steps, including a command's output and exit status", () => {
     expect(codexSteps({ type: "item.completed", item: { id: "i0", type: "agent_message", text: "done" } }))
       .toMatchObject([{ kind: "text", text: "done" }]);
-    // A started item is the call; the completed one carries its result.
+    // A started item is the call (the item's own fields are its input, keyed by the item id); the
+    // completed one is its result, carrying the same id.
     expect(codexSteps({ type: "item.started", item: { id: "i1", type: "command_execution", command: "/bin/zsh -lc ls", status: "in_progress" } }))
-      .toMatchObject([{ kind: "tool", name: "command_execution", text: "Running: /bin/zsh -lc ls", detail: "/bin/zsh -lc ls" }]);
+      .toMatchObject([{ kind: "tool", id: "i1", name: "command_execution", input: { command: "/bin/zsh -lc ls" } }]);
     expect(codexSteps({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "ls", aggregated_output: "a.txt\n", exit_code: 0, status: "completed" } }))
-      .toMatchObject([{ kind: "tool", name: "result", output: "a.txt", isError: false }]);
+      .toMatchObject([{ kind: "result", id: "i1", output: "a.txt", isError: false }]);
     expect(codexSteps({ type: "item.completed", item: { type: "command_execution", command: "false", aggregated_output: "", exit_code: 1 } }))
-      .toMatchObject([{ isError: true }]);
+      .toMatchObject([{ kind: "result", output: "exited 1", isError: true }]);
     // An unfamiliar tool still shows up rather than vanishing from the conversation.
     expect(codexSteps({ type: "item.started", item: { type: "web_search", query: "orca" } }))
-      .toMatchObject([{ kind: "tool", text: "Searching the web: orca" }]);
+      .toMatchObject([{ kind: "tool", name: "web_search", input: { query: "orca" } }]);
     expect(codexSteps({ type: "turn.completed", usage: {} })).toEqual([]);
   });
 
@@ -488,10 +492,10 @@ describe("cross-provider continuation", () => {
       .toMatchObject([{ kind: "text", text: "I'll list the files." }]);
 
     const shell = { shellToolCall: { args: { command: "ls" }, result: { success: { command: "ls", exitCode: 0, stdout: "a.txt\n", stderr: "" } } } };
-    expect(cursorSteps({ type: "tool_call", subtype: "started", tool_call: shell }, state))
-      .toMatchObject([{ kind: "tool", name: "shell", text: "shell: ls", detail: "ls" }]);
-    expect(cursorSteps({ type: "tool_call", subtype: "completed", tool_call: shell }, state))
-      .toMatchObject([{ kind: "tool", name: "result", output: "a.txt", isError: false }]);
+    expect(cursorSteps({ type: "tool_call", subtype: "started", call_id: "c1", tool_call: shell }, state))
+      .toMatchObject([{ kind: "tool", id: "c1", name: "shell", input: { command: "ls" } }]);
+    expect(cursorSteps({ type: "tool_call", subtype: "completed", call_id: "c1", tool_call: shell }, state))
+      .toMatchObject([{ kind: "result", id: "c1", output: "a.txt", isError: false }]);
   });
 
   test("Cursor's outcome is the last result event of the stream, and the old buffered body still parses", () => {
