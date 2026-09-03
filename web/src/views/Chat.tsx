@@ -68,12 +68,13 @@ function Step({ step, live }: { step: AgentStep; live: boolean }) {
   );
 }
 
-/** The agent's recorded steps for a turn. Shown in FULL by default, live or finished — the whole
- *  point is reading the conversation the way you would in the terminal, so hiding it behind a toggle
- *  (as this first did) defeats it. The toggle stays, to fold a long run away once you're done with
- *  it. */
+/** The agent's recorded steps for a turn. Shown in FULL while the run is live — that's the terminal
+ *  feel, watching it work — and folded to a `⏵ 127 steps` line once it has answered: the answer is
+ *  what a finished turn is about, and a long run's trail belongs behind a toggle until you go looking
+ *  for how it got there. (It was open by default once; with a hundred-step run above every answer,
+ *  the conversation was unreadable.) */
 function Steps({ steps: raw, live }: { steps: AgentStep[]; live: boolean }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const steps = groupSteps(raw); // fold each tool result into its call — one toggle per tool use
   if (!steps.length) return null;
   const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} live={live} />)}</div>;

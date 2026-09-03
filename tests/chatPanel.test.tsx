@@ -185,6 +185,12 @@ test("a tool's output stays inside its own accordion instead of spilling into th
 
   await mount(base);
 
+  // A finished turn folds its whole trail behind one line; the answer is what's on screen.
+  expect(text()).toContain("⏵ 2 steps");
+  expect(text()).not.toContain("Running the suite now.");
+  const fold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("2 steps"));
+  await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+
   expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
   expect(text()).toContain("Running: bun test");      // the call's label, derived from its input — visible
   expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
@@ -224,7 +230,9 @@ test("a finished turn does not repeat its final message as the last step", async
     steps: [{ at: 1, kind: "text", text: "Running the suite now." }, { at: 2, kind: "text", text: "All 289 tests pass." }],
   }]);
   await mount(base);
-  expect(text().split("All 289 tests pass.")).toHaveLength(2); // exactly once
+  const fold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("1 step"));
+  await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(text().split("All 289 tests pass.")).toHaveLength(2); // exactly once, even with the trail open
   expect(text()).toContain("Running the suite now.");
 });
 
