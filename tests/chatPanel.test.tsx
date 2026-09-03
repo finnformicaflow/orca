@@ -272,3 +272,28 @@ test("an instruction held mid-run shows as queued, and can be cancelled", async 
   await act(async () => { cancel!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(text()).not.toContain("also update the docs");
 });
+
+test("a slow attachment save can't resurrect the message you already sent", async () => {
+  // Attachments persist as data URLs via FileReader, so a save started when the file was attached
+  // can still be in flight when you hit send. It used to land AFTER the clear, rewriting the draft —
+  // so reopening the modal put the sent message (and its file) back in the box.
+  apiFake.turnsData.set("r::feat", []);
+  await mount(base);
+
+  const box = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "here is the spec");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const drop = new Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, "dataTransfer", { value: { files: [new File(["PK"], "spec.docx", { type: "application/octet-stream" })] } });
+  await act(async () => { container!.querySelector("textarea")!.parentElement!.dispatchEvent(drop); });
+
+  // Send WITHOUT waiting for the attachment's save to settle — the race.
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  await act(async () => { await flush(); await flush(); await flush(); });
+
+  expect(box.value).toBe("");
+  expect(localStorage.getItem("orca.chat.r::feat")).toBeNull(); // nothing left to reopen with
+});

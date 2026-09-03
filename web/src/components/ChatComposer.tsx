@@ -60,9 +60,12 @@ export function ChatComposer({
     return () => { live = false; };
   }, [persistKey]);
 
-  // Persist on every edit so a reload mid-compose loses nothing.
+  // Persist on every edit so a reload mid-compose loses nothing. Saves are CHAINED, not fired in
+  // parallel: encoding an attachment is async, so a save started when the file was attached could
+  // otherwise land after the clear-on-send and put the sent message back in the reopened box.
+  const saves = useRef(Promise.resolve());
   useEffect(() => {
-    if (persistKey && hydrated) void saveDraft(persistKey, value, images);
+    if (persistKey && hydrated) saves.current = saves.current.then(() => saveDraft(persistKey, value, images));
   }, [persistKey, hydrated, value, images]);
 
   // Any file type — images, xml, docx, csv… the agent Reads them by path.
