@@ -69,7 +69,14 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   run that produced it (`recordTurn` logs and swallows). The API is async throughout: `launch()`
   **awaits** the start write, because "the turn exists before the run can produce output" is the whole
   point of writing at launch; the finish write is fire-and-forget, tracked so `agent.flushHistory()`
-  can drain it before shutdown closes the pool.
+  can drain it before shutdown closes the pool. A finished turn records **why** it ended as
+  `stop_reason` (`shared/agent.ts` `StopReason`, Managed Agents' vocabulary): `end_turn`,
+  `budget_reached` (the repo's `agentMaxBudgetUsd` → `--max-budget-usd`), `interrupted` (you stopped
+  it; still resumable), `error`; `requires_action` is reserved for a run blocked on a tool
+  confirmation. It is a column so a conversation list can filter on it, never a heuristic over the
+  response text. The agent's process gets the bridge's environment **minus Orca's own secrets**
+  (`agentEnv` in `server/agent.ts`) — a prompt injection that reads the environment must find no
+  Slack token or database URL there.
 - **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) holds the on-disk state.** The
   database is no longer among it (see `ORCA_DATABASE_URL`); the dir holds the per-run **transcripts**
   (`server/transcript.ts`) alongside the *advisory* operational files. It holds run **leases** (`server/lease.ts`: pid/runId/provider/
