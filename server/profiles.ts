@@ -8,45 +8,20 @@
 // directory for subagent transcripts), and the slug is derived from the worktree path alone, so a
 // copy into the other profile's tree resumes there with the full native context. See CLAUDE.md
 // "Handover ladder" for where this sits against the portable-transcript fallback.
-import { createHash } from "crypto";
 import { cp, mkdir, stat } from "fs/promises";
-import { homedir } from "os";
 import { join } from "path";
-import type { ClaudeUsage } from "./usage";
+import type { AgentTurn } from "../shared/agent";
+import type { OrcaConfig } from "./config";
+import * as db from "./db";
+import { DEFAULT_CLAUDE_DIR, usage, type ClaudeUsage } from "./usage";
+export { keychainService, readClaudeToken as readToken } from "./usage";
 
 export type ClaudeProfile = { name: string; configDir: string };
 
 /** The configured profiles, or the CLI's default login when none are configured. A single
  *  profile is "no switching": launches carry no profile name and nothing is copied. */
 export function profilesOf(configured: ClaudeProfile[] | undefined): ClaudeProfile[] {
-  return configured?.length ? configured : [{ name: "default", configDir: join(homedir(), ".claude") }];
-}
-export const isDefaultDir = (configDir: string): boolean => configDir === join(homedir(), ".claude");
-
-/** The macOS Keychain service the CLI stores a profile's OAuth token under. Read out of the CLI
- *  itself (2.1.263): the default directory uses the bare name; any `CLAUDE_CONFIG_DIR` appends a
- *  dash and the first 8 hex chars of the SHA-256 of the directory path (NFC-normalised). The path
- *  must be byte-identical to what the CLI saw in its environment, so Orca always passes the same
- *  expanded absolute path it hashes here. */
-export function keychainService(configDir: string): string {
-  if (isDefaultDir(configDir)) return "Claude Code-credentials";
-  return `Claude Code-credentials-${createHash("sha256").update(configDir.normalize("NFC")).digest("hex").slice(0, 8)}`;
-}
-
-/** The profile's OAuth access token: `.credentials.json` in its directory (Linux, and any platform
- *  where the CLI fell back to the file), else the Keychain. Null when the profile isn't logged in. */
-export async function readToken(configDir: string): Promise<string | null> {
-  const parse = (raw: string): string | null => {
-    try { return JSON.parse(raw)?.claudeAiOauth?.accessToken ?? null; } catch { return null; }
-  };
-  const file = Bun.file(join(configDir, ".credentials.json"));
-  if (await file.exists()) return parse(await file.text());
-  if (process.platform === "darwin") {
-    const proc = Bun.spawn(["security", "find-generic-password", "-s", keychainService(configDir), "-w"], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    if ((await proc.exited) === 0) return parse(out.trim());
-  }
-  return null;
+  return configured?.length ? configured : [{ name: "default", configDir: DEFAULT_CLAUDE_DIR }];
 }
 
 /** The CLI's per-project directory name for a working directory (same rule as backfill.ts). */
@@ -86,4 +61,38 @@ export function pickProfile(
     a.usage!.fiveHour.utilization - b.usage!.fiveHour.utilization
     || a.usage!.sevenDay.utilization - b.usage!.sevenDay.utilization);
   return known[0]!.name;
+}
+
+export type RunRoute = { profile?: string; configDir?: string; resume?: string; history?: AgentTurn[]; handoffFrom?: "claude" };
+
+/** Decide the login for a Claude run and, when a resumed session changes hands, carry it over.
+ *  Returns the launch options to spread: with one login nothing is chosen (env untouched unless that
+ *  one login lives in a custom dir); otherwise the picked profile's dir, and `resume` either kept
+ *  (same owner, or copied across) or DROPPED with the recorded turns as `history` — the bounded
+ *  portable handoff — when the owner's session file couldn't be found to copy. The chosen name is
+ *  recorded on the workstream as `sessionProfile`, the owner of the (possibly new) native session. */
+export async function routeRun(cfg: OrcaConfig, repo: string, branch: string | undefined, cwd: string, resume: string | undefined): Promise<RunRoute> {
+  const profiles = profilesOf(cfg.claudeProfiles);
+  if (profiles.length === 1) {
+    const only = profiles[0]!;
+    return { resume, ...(only.configDir === DEFAULT_CLAUDE_DIR ? {} : { configDir: only.configDir }) };
+  }
+  const recorded = branch ? ((await db.enrichment(repo))[branch]?.sessionProfile as string | undefined) : undefined;
+  // A session that predates profiles was made by the first login.
+  const owner = recorded ?? (resume ? profiles[0]!.name : undefined);
+  const readings = (await usage(profiles))?.profiles ?? profiles.map((p) => ({ name: p.name, usage: null }));
+  const name = pickProfile(readings, owner, cfg.profileSwitchPct ?? 90);
+  const chosen = profiles.find((p) => p.name === name)!;
+  const route: RunRoute = { profile: name, configDir: chosen.configDir, resume };
+  if (resume && owner && owner !== name) {
+    const from = profiles.find((p) => p.name === owner)?.configDir;
+    const carried = from ? await copySession(from, chosen.configDir, cwd, resume).catch(() => false) : false;
+    if (!carried && branch) {
+      route.resume = undefined;
+      route.history = await db.turns(repo, branch);
+      route.handoffFrom = "claude";
+    }
+  }
+  if (branch) await db.patchEnrichment(repo, branch, { sessionProfile: name });
+  return route;
 }

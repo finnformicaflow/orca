@@ -108,7 +108,7 @@ function RepoFilter() {
  *  this poll (a transient failure, or not fetched yet) keeps its previous value instead of blanking
  *  the bar. Pure, so the belt is testable without a timer. */
 export function mergeUsage(prev: Usage | null, next: Usage): Usage {
-  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null };
+  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null, profiles: next.profiles ?? prev?.profiles };
 }
 
 // Provider usage (top-right): two compact terminal-bar groups, side by side.
@@ -146,8 +146,10 @@ function UsageMeter() {
   return (
     <>
       <div className="text-muted-foreground hidden items-center gap-3 font-mono text-[10px] leading-tight sm:flex" aria-label="Agent usage limits">
-        {usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
-        {usage.claude && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
+        {usage.profiles
+          ? usage.profiles.map((p) => p.usage && <ClaudeUsageGroup key={p.name} usage={p.usage} name={p.name} />)
+          : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
+        {(usage.profiles?.some((p) => p.usage) || usage.claude) && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
         {usage.codex && <CodexUsageGroup usage={usage.codex} />}
       </div>
       {/* Full button-height footprint (h-8) but the visible line is inset by py-1 — reads as the
@@ -159,10 +161,11 @@ function UsageMeter() {
   );
 }
 
-function ClaudeUsageGroup({ usage }: { usage: ClaudeUsage }) {
+// `name` is the login's profile name when more than one Claude account is configured.
+function ClaudeUsageGroup({ usage, name }: { usage: ClaudeUsage; name?: string }) {
   return (
-    <div className="flex items-center gap-2" aria-label="Claude usage limits">
-      <span className="opacity-70">claude</span>
+    <div className="flex items-center gap-2" aria-label={name ? `Claude ${name} usage limits` : "Claude usage limits"}>
+      <span className="opacity-70">{name ? `claude·${name}` : "claude"}</span>
       <UsageStat provider="Claude" label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
       <UsageStat provider="Claude" label="1w" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
       {usage.extra && <SpendStat extra={usage.extra} />}

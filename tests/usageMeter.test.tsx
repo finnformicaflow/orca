@@ -134,3 +134,22 @@ test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => 
   });
   expect(shapeCodexUsage(null)).toBeNull();
 });
+
+test("with several Claude logins configured, the meter shows one group per login", async () => {
+  apiFake.usageData = {
+    claude: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null },
+    codex: null,
+    profiles: [
+      { name: "personal", usage: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null } },
+      { name: "work", usage: { fiveHour: { utilization: 12, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null } },
+      { name: "spare", usage: null }, // not logged in — nothing to show, nothing to break
+    ],
+  };
+  await mount();
+  const personal = container!.querySelector("[aria-label='Claude personal usage limits']");
+  const work = container!.querySelector("[aria-label='Claude work usage limits']");
+  expect(personal?.textContent).toContain("claude·personal");
+  expect(personal?.textContent).toContain("95%");
+  expect(work?.textContent).toContain("12%");
+  expect(container!.querySelector("[aria-label='Claude spare usage limits']")).toBeNull();
+});

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { copySession, keychainService, pickProfile, profilesOf, projectSlug } from "../server/profiles";
+import { copySession, keychainService, pickProfile, profilesOf, projectSlug, routeRun } from "../server/profiles";
 import { invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument } from "../server/config";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
@@ -148,5 +148,59 @@ test("a run launched on a profile gets that profile's CLAUDE_CONFIG_DIR and reco
     agent.stop(wt);
     await rm(shim, { recursive: true, force: true });
     await rm(state, { recursive: true, force: true });
+  }
+});
+
+// The whole route, end to end: two logins with canned usage in the real endpoint's shape (served
+// per token from files — the DOM test shim breaks a local HTTP server's Response), a session owned
+// by the exhausted login, and the copy that carries it across.
+test("a run leaves an exhausted login for the freest one, taking its native session along", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orca-route-"));
+  const personal = join(root, "personal"), work = join(root, "work");
+  for (const [dir, token] of [[personal, "tok-personal"], [work, "tok-work"]] as const) {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: token } }));
+  }
+  const readings = join(root, "readings");
+  await mkdir(readings);
+  for (const [token, pct] of [["tok-personal", 95], ["tok-work", 10]] as const) {
+    await writeFile(join(readings, `${token}.json`), JSON.stringify({ five_hour: { utilization: pct, resets_at: null }, seven_day: { utilization: 0, resets_at: null } }));
+  }
+  const prevUrl = process.env.ORCA_CLAUDE_USAGE_URL;
+  process.env.ORCA_CLAUDE_USAGE_URL = `file://${readings}/{token}.json`;
+  const cfg = parseConfigDocument(doc({ claudeProfiles: [{ name: "personal", configDir: personal }, { name: "work", configDir: work }], profileSwitchPct: 90 })).config!;
+  const cwd = join(root, "wt", "feat");
+  try {
+    // The conversation's native session lives with `personal`, which is over the threshold.
+    await db.patchEnrichment("app", "feat", { sessionProfile: "personal" });
+    const src = join(personal, "projects", projectSlug(cwd));
+    await mkdir(src, { recursive: true });
+    await writeFile(join(src, "sess-1.jsonl"), '{"type":"user"}\n');
+
+    const route = await routeRun(cfg, "app", "feat", cwd, "sess-1");
+    expect(route.profile).toBe("work");
+    expect(route.configDir).toBe(work);
+    expect(route.resume).toBe("sess-1"); // still a native resume — lossless
+    expect(route.history).toBeUndefined();
+    expect(await readFile(join(work, "projects", projectSlug(cwd), "sess-1.jsonl"), "utf8")).toBe('{"type":"user"}\n');
+    expect((await db.enrichment("app")).feat?.sessionProfile).toBe("work"); // the new owner
+
+    // A session the owner no longer has on disk can't be carried: fall back to the bounded
+    // portable transcript (the recorded turns) rather than resuming into "No conversation found".
+    await db.patchEnrichment("app", "other", { sessionProfile: "personal" });
+    await db.startTurn({ repo: "app", branch: "other", runId: "run-1", provider: "claude", prompt: "first", startedAt: 1 });
+    await db.finishTurn("run-1", { status: "done", response: "done", finishedAt: 2 });
+    const fallback = await routeRun(cfg, "app", "other", cwd, "sess-gone");
+    expect(fallback.profile).toBe("work");
+    expect(fallback.resume).toBeUndefined();
+    expect(fallback.handoffFrom).toBe("claude");
+    expect(fallback.history?.map((t) => t.prompt)).toEqual(["first"]);
+
+    // One login configured → nothing to choose, nothing copied, the resume passes straight through.
+    const single = await routeRun(parseConfigDocument(doc()).config!, "app", "feat", cwd, "sess-1");
+    expect(single).toEqual({ resume: "sess-1" });
+  } finally {
+    if (prevUrl === undefined) delete process.env.ORCA_CLAUDE_USAGE_URL; else process.env.ORCA_CLAUDE_USAGE_URL = prevUrl;
+    await rm(root, { recursive: true, force: true });
   }
 });
