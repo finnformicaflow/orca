@@ -1,8 +1,12 @@
 // Subscription usage for Claude and Codex, fetched from each installed CLI's existing login.
 // Both paths are read-only: Claude uses its OAuth usage endpoint; Codex uses its local app server.
+import { createHash } from "crypto";
 import { homedir } from "os";
+import { join } from "path";
 
-const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+// Overridable so a test can point at canned readings (`{token}` in the override stands in for the
+// login's token, so each profile gets its own) — the real endpoint otherwise.
+const claudeUsageUrl = (token: string) => (process.env.ORCA_CLAUDE_USAGE_URL || "https://api.anthropic.com/api/oauth/usage").replace("{token}", token);
 
 export type UsageWindow = { utilization: number; resetsAt: string | null };
 // Pay-as-you-go "extra usage" spend (only present when you've enabled it on your plan). Money is
@@ -11,7 +15,9 @@ export type ExtraUsage = { usedMinor: number; limitMinor: number; currency: stri
 export type ClaudeUsage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null };
 export type CodexUsageWindow = UsageWindow & { label: string; durationMinutes: number | null };
 export type CodexUsage = { windows: CodexUsageWindow[] };
-export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null };
+/** `claude` is the first (or only) login's usage; `profiles` carries every configured login when
+ *  there is more than one (server/profiles.ts), so the meter can show each. */
+export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null; profiles?: { name: string; usage: ClaudeUsage | null }[] };
 
 /** Shape the raw Anthropic endpoint payload into the windows + extra-usage spend we surface. Pure. */
 export function shapeUsage(raw: any): ClaudeUsage {
@@ -58,39 +64,54 @@ export function shapeCodexUsage(rateRaw: any): CodexUsage | null {
   return windows.length ? { windows } : null;
 }
 
-// Reads the Claude Code OAuth access token from wherever the CLI stored it: ~/.claude/.credentials.json
-// (Linux/others), else the macOS Keychain. Returns null if not logged in.
-async function readClaudeToken(): Promise<string | null> {
+export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");
+
+/** The macOS Keychain service the CLI stores a login's OAuth token under. Read out of the CLI
+ *  itself (2.1.263): the default directory uses the bare name; any `CLAUDE_CONFIG_DIR` appends a
+ *  dash and the first 8 hex chars of the SHA-256 of the directory path (NFC-normalised). The path
+ *  must be byte-identical to what the CLI saw in its environment, so Orca always passes the same
+ *  expanded absolute path it hashes here. */
+export function keychainService(configDir: string): string {
+  if (configDir === DEFAULT_CLAUDE_DIR) return "Claude Code-credentials";
+  return `Claude Code-credentials-${createHash("sha256").update(configDir.normalize("NFC")).digest("hex").slice(0, 8)}`;
+}
+
+// Reads a login's OAuth access token from wherever the CLI stored it: `.credentials.json` in its
+// config dir (Linux/others), else the macOS Keychain. Returns null if that dir isn't logged in.
+export async function readClaudeToken(configDir = DEFAULT_CLAUDE_DIR): Promise<string | null> {
   const parse = (raw: string): string | null => {
     try { return JSON.parse(raw)?.claudeAiOauth?.accessToken ?? null; } catch { return null; }
   };
-  const file = Bun.file(`${homedir()}/.claude/.credentials.json`);
+  const file = Bun.file(join(configDir, ".credentials.json"));
   if (await file.exists()) return parse(await file.text());
   if (process.platform === "darwin") {
-    const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], { stdout: "pipe", stderr: "ignore" });
+    const proc = Bun.spawn(["security", "find-generic-password", "-s", keychainService(configDir), "-w"], { stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     if ((await proc.exited) === 0) return parse(out.trim());
   }
   return null;
 }
 
-let lastGoodClaude: ClaudeUsage | null = null;
+// Last good reading per login, so a transient endpoint failure keeps the meter (and the profile
+// picker's view of headroom) on the previous value rather than blanking it.
+const lastGoodClaude = new Map<string, ClaudeUsage>();
 let lastGoodCodex: CodexUsage | null = null;
 
-async function claudeUsage(): Promise<ClaudeUsage | null> {
+async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage | null> {
   try {
-    const token = await readClaudeToken();
-    if (!token) return lastGoodClaude;
-    const response = await fetch(CLAUDE_USAGE_URL, {
+    const token = await readClaudeToken(configDir);
+    if (!token) return lastGoodClaude.get(configDir) ?? null;
+    // Bun.fetch, not the global: the test DOM shim swaps global fetch for one without file:// support.
+    const response = await Bun.fetch(claudeUsageUrl(token), {
       headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
       signal: AbortSignal.timeout(8000),
     });
-    if (!response.ok) return lastGoodClaude;
-    lastGoodClaude = shapeUsage(await response.json());
+    if (!response.ok) return lastGoodClaude.get(configDir) ?? null;
+    lastGoodClaude.set(configDir, shapeUsage(await response.json()));
   } catch (error) {
     console.error("[usage] Claude fetch failed:", error instanceof Error ? error.message : error);
   }
-  return lastGoodClaude;
+  return lastGoodClaude.get(configDir) ?? null;
 }
 
 /** Ask the installed Codex CLI for the same percentage limits shown by `/usage`. */
@@ -138,8 +159,14 @@ async function codexUsage(): Promise<CodexUsage | null> {
   return lastGoodCodex;
 }
 
-/** Current usage for every locally authenticated provider. Null only when neither is available. */
-export async function usage(): Promise<Usage | null> {
-  const [claude, codex] = await Promise.all([claudeUsage(), codexUsage()]);
-  return claude || codex ? { claude, codex } : null;
+/** Current usage for every locally authenticated provider — every Claude login in `profiles` (the
+ *  default one when none are given) plus Codex. Null only when nothing is available. */
+export async function usage(profiles: { name: string; configDir: string }[] = [{ name: "default", configDir: DEFAULT_CLAUDE_DIR }]): Promise<Usage | null> {
+  const [perProfile, codex] = await Promise.all([
+    Promise.all(profiles.map(async (p) => ({ name: p.name, usage: await claudeUsage(p.configDir) }))),
+    codexUsage(),
+  ]);
+  const claude = perProfile[0]?.usage ?? null;
+  if (!perProfile.some((p) => p.usage) && !codex) return null;
+  return { claude, codex, ...(profiles.length > 1 ? { profiles: perProfile } : {}) };
 }

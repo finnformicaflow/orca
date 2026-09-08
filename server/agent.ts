@@ -49,6 +49,7 @@ export type RunMeta = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  profile?: string; // the Claude login (server/profiles.ts) this run went to; unset with one login
 };
 export type RunState = {
   status: "idle" | "running" | "done" | "error";
@@ -79,6 +80,8 @@ export type LaunchOptions = {
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
   instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
+  profile?: string; // claude only: the login's name, shown on the card
+  configDir?: string; // claude only: that login's CLAUDE_CONFIG_DIR, set on the process
 };
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
@@ -480,7 +483,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const startedAt = Date.now();
   const proc = Bun.spawn(
     agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode),
-    { cwd, env: process.env, stdout: "pipe", stderr: "pipe" },
+    // A profile is a CLAUDE_CONFIG_DIR: the CLI reads its login, settings and sessions from there.
+    { cwd, env: options.configDir ? { ...process.env, CLAUDE_CONFIG_DIR: options.configDir } : process.env, stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
@@ -539,6 +543,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     transcript.forget(runId); // run finished — the transcript file stays; it IS the history now
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
+    if (options.profile) meta = { ...meta, profile: options.profile };
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;

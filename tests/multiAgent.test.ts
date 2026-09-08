@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { agentCommand, claudeSteps, codexSteps, cursorSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
-import { attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
+import { activityLines, attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 
@@ -210,6 +210,29 @@ describe("provider adapters", () => {
     expect(wrapped.startsWith(instruction)).toBe(true);
     expect(wrapped.match(/## Outcome/g)?.length).toBe(1);
     expect(withOutcomeContract(wrapped)).toBe(wrapped);
+  });
+
+  test("the portable handoff says what each turn touched, and keeps far more than a summary's worth", () => {
+    // Steps → an Activity list: tool and target, newest last, long runs elided from the front.
+    const steps = Array.from({ length: 30 }, (_, i) => ({ at: i, kind: "tool" as const, id: `t${i}`, name: "Edit", input: { file_path: `src/f${i}.ts` } }));
+    const prompt = handoffPrompt([{
+      ...prior[0]!, instruction: "Implement the cache", prompt: "Implement the cache\n\nAvoid unrelated cleanup.\n\n## Outcome…",
+      steps: [...steps, { at: 99, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" }, isError: true }],
+    }], "Now add eviction", "claude", "codex");
+    expect(prompt).toContain("Activity:");
+    expect(prompt).toContain("- Bash: bun test (failed)");
+    expect(prompt).toContain("- Edit: src/f29.ts");
+    expect(prompt).toContain("… 7 earlier"); // 31 calls, newest 24 kept
+    expect(prompt).not.toContain("src/f0.ts");
+    expect(prompt).not.toContain("Avoid unrelated cleanup"); // the instruction, not the scaffolding around it
+    expect(activityLines(undefined)).toEqual([]);
+
+    // The bound: a long conversation keeps its recent turns whole rather than a 3k-token sliver.
+    const many = Array.from({ length: 40 }, (_, i) => ({ id: `t${i}`, provider: "claude" as const, prompt: `Step ${i}`, response: "x".repeat(2_000) }));
+    const long = handoffPrompt(many, "Continue", "claude", "codex");
+    expect(long.length).toBeGreaterThan(30_000);
+    expect(long).toContain("Step 39");
+    expect(long).not.toContain("Step 0\n"); // oldest dropped first
   });
 
   test("structured handoffs prefer compact state and omit the same turn's raw prose", () => {
