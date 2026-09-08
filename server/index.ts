@@ -85,7 +85,7 @@ agent.onQueuedMessage(async (message) => {
   if (!providerAllowed(repo, provider)) return; // opted out since it was queued
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
     provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
-    model: repo.agentModel,
+    model: repo.agentModel, maxBudgetUsd: repo.agentMaxBudgetUsd,
     permissionMode: repo.agentPermissionMode ?? "ask",
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   });
@@ -474,6 +474,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
+      maxBudgetUsd: repo.agentMaxBudgetUsd,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
@@ -502,6 +503,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
+      maxBudgetUsd: repo.agentMaxBudgetUsd,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);

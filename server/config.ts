@@ -76,6 +76,9 @@ export type RepoConfig = {
   providers?: AgentProvider[];
   /** Authority granted to this repo's agents (default `ask`, i.e. NOT bypassPermissions). */
   agentPermissionMode?: AgentPermissionMode;
+  /** Cost ceiling for ONE agent run, in US dollars (Claude's `--max-budget-usd`). The run ends with
+   *  stop reason `budget_reached` — a runaway run can't drain a login. Unset = no cap. */
+  agentMaxBudgetUsd?: number;
   /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
@@ -163,6 +166,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
+    }
+    if (r.agentMaxBudgetUsd !== undefined && (typeof r.agentMaxBudgetUsd !== "number" || !(r.agentMaxBudgetUsd > 0))) {
+      errors.push(`${where}.agentMaxBudgetUsd must be a positive number of dollars`);
     }
     if (r.features !== undefined) {
       if (!r.features || typeof r.features !== "object" || Array.isArray(r.features)) {
