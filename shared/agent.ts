@@ -73,9 +73,18 @@ export function withoutFinalEcho(steps: AgentStep[], response: string): AgentSte
   return last?.kind === "text" && (last.text ?? "").trim() === response.trim() ? steps.slice(0, -1) : steps;
 }
 
+/** Why a turn ended — the Managed Agents vocabulary (session.status_idle.stop_reason), so a
+ *  conversation list can filter on it as a column rather than a heuristic. `end_turn` is the normal
+ *  finish (a question the agent asked you is still end_turn: nobody has a cleaner signal);
+ *  `requires_action` is reserved for a run blocked on a tool confirmation; `budget_reached` is the
+ *  run's cost cap; `interrupted` is you stopping it (kept distinct because the session stays
+ *  resumable); `error` is everything else. */
+export type StopReason = "end_turn" | "requires_action" | "budget_reached" | "interrupted" | "error";
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
+  stopReason?: StopReason;
   /** What the user actually typed (or the board action's label). `prompt` is the full text the CLI
    *  was given — the instruction plus the scenario's scaffolding and the outcome contract. */
   instruction?: string;

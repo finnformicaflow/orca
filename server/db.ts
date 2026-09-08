@@ -25,7 +25,7 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
-import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason } from "../shared/agent";
 import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
@@ -257,6 +257,13 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // marker fallback.
     sql: `ALTER TABLE turn ADD COLUMN instruction TEXT`,
   },
+  {
+    id: 9,
+    // Why the turn ended (shared/agent.ts StopReason). `status` says whether it finished; this says
+    // how — end_turn / budget_reached / interrupted / error — so a list of conversations can be
+    // filtered on it. Nullable: older rows infer it from status at read time.
+    sql: `ALTER TABLE turn ADD COLUMN stop_reason TEXT`,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -360,7 +367,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 
 type TurnRow = {
   run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
-  structured: AgentOutcome | null; session_id: string | null;
+  structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null;
   started_at: string | number; finished_at: string | number | null;
 };
 
@@ -374,6 +381,9 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   sessionId: r.session_id ?? undefined,
   failed: r.status === "error" ? true : undefined,
   stopped: r.status === "stopped" ? true : undefined,
+  // Rows before the column infer it from status; a running turn has none yet.
+  stopReason: (r.stop_reason as StopReason | null)
+    ?? (r.status === "done" ? "end_turn" : r.status === "error" ? "error" : r.status === "stopped" ? "interrupted" : undefined),
   startedAt: Number(r.started_at),
   finishedAt: r.finished_at === null || r.finished_at === undefined ? undefined : Number(r.finished_at),
 });
@@ -404,7 +414,7 @@ export async function startTurn(input: {
  *  invisible even though everything about it was on disk. `identity` is what makes the insert
  *  possible; the exit handler has it, so the rescue costs nothing. */
 export async function finishTurn(runId: string, input: {
-  status: TurnStatus; response?: string; structured?: AgentOutcome;
+  status: TurnStatus; response?: string; structured?: AgentOutcome; stopReason?: StopReason;
   sessionId?: string; finishedAt: number;
   identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
 }): Promise<void> {
@@ -417,6 +427,7 @@ export async function finishTurn(runId: string, input: {
         status = ${input.status},
         response = ${input.response ?? null},
         structured = ${input.structured ?? null},
+        stop_reason = ${input.stopReason ?? null},
         session_id = COALESCE(${input.sessionId ?? null}, session_id),
         raw_ref = COALESCE(${input.sessionId ?? null}, raw_ref),
         finished_at = ${input.finishedAt}
@@ -432,9 +443,9 @@ export async function finishTurn(runId: string, input: {
     const workstream = await workstreamId(repo, branch);
     await sql`
       INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
-                        structured, session_id, raw_ref, started_at, finished_at)
+                        structured, stop_reason, session_id, raw_ref, started_at, finished_at)
       VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
-              ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null},
+              ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
               ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
       ON CONFLICT (run_id) DO NOTHING`;
     owner = { repo, branch };
