@@ -1,11 +1,11 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, fixCi, markReady, merge, promote,
   providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
-  staleHours, startChat, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, type BulkAction } from "../workstream";
@@ -325,14 +325,10 @@ function NewDraft() {
     const t = setTimeout(() => setUndoable(null), 6000);
     return () => clearTimeout(t);
   }, [undoable]);
-  // "New chat": a worktree with no task, whose terminal opens the moment its card lands.
+  // "New chat": a composer opens at once; the worktree, card and first run all start on submit,
+  // optimistically, and the card's terminal opens as soon as its branch exists.
   const openTerminal = useSetAtom(openTerminalAtom);
-  const [starting, setStarting] = useState(false);
-  const newChat = async () => {
-    setStarting(true);
-    try { const { branch } = await startChat(active, provider); openTerminal(`${active}::${branch}`); }
-    finally { setStarting(false); }
-  };
+  const [chatOpen, setChatOpen] = useState(false);
 
   return (
     <ChatComposer
@@ -370,11 +366,43 @@ function NewDraft() {
         </div>
       }
       action={
-        <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" disabled={starting} onClick={() => void newChat()} title="New chat (a conversation without a task)" aria-label="New chat">
-          {starting ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
-        </Button>
+        <>
+          <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" onClick={() => setChatOpen(true)} title="New chat (a conversation, not a task)" aria-label="New chat">
+            <SquareTerminal className="size-4" />
+          </Button>
+          <NewChatDialog
+            open={chatOpen}
+            onClose={() => setChatOpen(false)}
+            repo={active}
+            provider={provider}
+            onSubmit={async (text, images) => {
+              setChatOpen(false);
+              setUndoable(createWorkstream(active, text, images, provider, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
+            }}
+          />
+        </>
       }
     />
+  );
+}
+
+// The blank chat's first message. A native <dialog> like the terminal's; the composer is the same
+// one the terminal uses, so paste/drop attachments and ⌘+Enter work the same.
+function NewChatDialog({ open, onClose, repo, provider, onSubmit }: { open: boolean; onClose: () => void; repo: string; provider: AgentProvider; onSubmit: (text: string, images: File[]) => Promise<void> }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
+      <div className="flex flex-col gap-2 p-3">
+        <div className="text-muted-foreground text-xs">New chat · {repo} · {agentLabel(provider)}</div>
+        {open && <ChatComposer autoFocus persistKey="orca.newChat" placeholder="Ask anything…  (⌘+Enter)" onSubmit={onSubmit} onCancel={onClose} />}
+      </div>
+    </dialog>
   );
 }
 

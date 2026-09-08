@@ -462,7 +462,10 @@ export function useWorkstreams(): Row[] {
 // Optimistic: paint the Local card + Undo affordance immediately, then create the worktree and launch
 // the agent in the background. Returns the draft synchronously so the caller can wire up Undo without
 // waiting on the server. If Undo fires before the worktree exists, we tear it down once it lands.
-export function createWorkstream(repo: string, prompt: string, images: File[] = [], provider: AgentProvider = "claude"): OptimisticDraft {
+/** `chat`: the first message is a conversation (chatPrompt), not a work order (launchPrompt) — the
+ *  "New chat" path. Same optimistic card + background worktree; `onCreated` fires with the branch
+ *  once it exists so the caller can open its terminal. */
+export function createWorkstream(repo: string, prompt: string, images: File[] = [], provider: AgentProvider = "claude", opts: { chat?: boolean; onCreated?: (branch: string) => void } = {}): OptimisticDraft {
   const draft: OptimisticDraft = { id: `opt-${optSeq++}`, repo, prompt, title: titleFromPrompt(prompt) };
   optimistic = [...optimistic, draft];
   notify();
@@ -475,11 +478,13 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
       const { branch, worktreePath, title } = created; // selected provider derives the title
       draft.created = { branch, worktreePath };
       patchEnrich(repo, branch, { prompt, title, agentProvider: provider, createdAt: now() });
+      opts.onCreated?.(branch);
       if (draft.cancelled) { // Undo pressed while creating — discard the worktree we just made.
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
-        void api.runAgent(worktreePath, withAttachments(launchPrompt({ title, branch, prompt }, baseBranch(repo)), paths), provider, { branch, action: "launch", instruction: prompt })
+        const first = opts.chat ? chatPrompt(prompt) : launchPrompt({ title, branch, prompt }, baseBranch(repo));
+        void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -490,16 +495,6 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
     }
   })();
   return draft;
-}
-
-/** Start a conversation with no task: cut the worktree now (so the first message has a cwd and a
- *  branch to record turns against) and launch nothing — the terminal's composer sends the first
- *  message through the ordinary follow-up path. Resolves with the new branch once it exists. */
-export async function startChat(repo: string, provider: AgentProvider = "claude"): Promise<{ branch: string; worktreePath: string }> {
-  const { branch, worktreePath, title } = await api.createWorktree(repo, "", provider);
-  patchEnrich(repo, branch, { title, agentProvider: provider, createdAt: now() });
-  await refresh();
-  return { branch, worktreePath };
 }
 
 /** Undo a just-created draft: kill the run + remove the worktree/branch if it exists yet, else flag

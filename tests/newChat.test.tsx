@@ -1,7 +1,7 @@
-// "New chat": start a conversation without a task. The worktree is cut in the background (so the
-// first message has a cwd + branch to record turns against), no agent is launched, and the new
-// card's terminal opens on its own so you can type the first message straight away — the way a
-// blank chat works in Claude Code web. Against the fake api (tests/apiFake.ts), rendered into a DOM.
+// "New chat": a conversation, not a task. The button opens a composer INSTANTLY (nothing is created
+// yet); submitting paints the optimistic card and, in the background, cuts the worktree and fires the
+// first message through the chat path (chatPrompt, not the launch work-order). The card's terminal
+// opens by itself once its branch exists. Against the fake api (tests/apiFake.ts) in a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,7 +25,9 @@ async function mount(node: React.ReactNode) {
 }
 
 afterEach(async () => {
+  if (apiFake.pending) { const p = apiFake.pending; apiFake.pending = null; await act(async () => { p({ branch: "drain", worktreePath: "/x", title: "x" }); await flush(); await flush(); }); }
   apiFake.reset();
+  localStorage.clear();
   await act(async () => { await store.refresh(); });
   act(() => root?.unmount());
   container?.remove();
@@ -33,36 +35,43 @@ afterEach(async () => {
 });
 
 describe("new chat", () => {
-  test("creates a worktree with no task, launches nothing, and opens the card's terminal", async () => {
+  test("opens a composer instantly, then creates the card + worktree optimistically on submit", async () => {
     await mount(<Board />);
     const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "New chat")!;
     expect(button).toBeTruthy();
     // It takes the attach button's slot beside send, so the repo/provider dropdowns aren't squeezed.
     expect(container!.querySelector('button[title="Attach files"]')).toBeNull();
-    expect(button.nextElementSibling?.getAttribute("title")).toContain("Send");
+
     await click(button);
-
-    // The worktree is being created; the button waits rather than double-firing.
-    expect(apiFake.pending).not.toBeNull();
-    expect(button.disabled).toBe(true);
-    await act(async () => { apiFake.pending!({ branch: "new-chat-ab12", worktreePath: "/wt/new-chat-ab12", title: "New chat" }); apiFake.pending = null; await flush(); await flush(); await flush(); });
-
-    // No run was fired — the first message will come from the terminal's composer.
-    expect(apiFake.agentLaunches).toHaveLength(0);
-    // The card landed, and its terminal is already open with the composer ready.
-    const dialog = [...container!.querySelectorAll("dialog")].find((d) => /Terminal · New chat/.test(d.textContent ?? ""))!;
-    expect(dialog).toBeTruthy();
+    // Instant: a composer is up and NOTHING has been created yet.
+    const dialog = [...container!.querySelectorAll("dialog")].find((d) => /New chat ·/.test(d.textContent ?? ""))!;
     expect(dialog.open).toBe(true);
-    expect(dialog.querySelector("textarea")).toBeTruthy();
-    expect(button.disabled).toBe(false);
+    expect(apiFake.pending).toBeNull();
+    expect(apiFake.titleProviders).toHaveLength(0);
 
-    // The first message is an ordinary chat turn: no "taking over from the transcript" handoff
-    // header over an empty history, just the message with the chat scaffolding.
-    const row: store.Row = { repo: "r", hasRemote: false, branch: "new-chat-ab12", title: "New chat", prompt: "", lane: "LOCAL", worktreePath: "/wt/new-chat-ab12", agentProvider: "claude" };
-    await act(async () => { await store.followUp(row, "what does the auth module do?"); await flush(); });
+    const box = dialog.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "what does the auth module do?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    await click(dialog.querySelector('button[title="Send (⌘+Enter)"]')!);
+
+    // Submitted: the dialog closes, the optimistic card is on the board while the worktree is cut.
+    expect(dialog.open).toBe(false);
+    expect(apiFake.pending).not.toBeNull();
+    expect(container!.textContent).toContain("what does the auth module do?");
+
+    await act(async () => { apiFake.pending!({ branch: "auth-module-ab12", worktreePath: "/wt/auth-module-ab12", title: "Auth module" }); apiFake.pending = null; await flush(); await flush(); await flush(); });
+
+    // The first message went through the chat path: no work-order scaffolding, no handoff header.
     expect(apiFake.agentLaunches).toHaveLength(1);
-    expect(apiFake.agentLaunches[0]!.handoffFrom).toBeUndefined();
     expect(apiFake.agentLaunches[0]!.prompt).toContain("what does the auth module do?");
+    expect(apiFake.agentLaunches[0]!.prompt).toContain("You are replying in a conversation");
     expect(apiFake.agentLaunches[0]!.prompt).not.toContain("portable conversation transcript");
+    // And the new card's terminal opened on its own.
+    const terminal = [...container!.querySelectorAll("dialog")].find((d) => /Terminal · Auth module/.test(d.textContent ?? ""))!;
+    expect(terminal).toBeTruthy();
+    expect(terminal.open).toBe(true);
   });
 });
