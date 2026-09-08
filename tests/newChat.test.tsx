@@ -37,6 +37,9 @@ describe("new chat", () => {
     await mount(<Board />);
     const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "New chat")!;
     expect(button).toBeTruthy();
+    // It takes the attach button's slot beside send, so the repo/provider dropdowns aren't squeezed.
+    expect(container!.querySelector('button[title="Attach files"]')).toBeNull();
+    expect(button.nextElementSibling?.getAttribute("title")).toContain("Send");
     await click(button);
 
     // The worktree is being created; the button waits rather than double-firing.

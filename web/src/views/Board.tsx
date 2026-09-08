@@ -367,10 +367,12 @@ function NewDraft() {
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Button size="sm" variant="ghost" className="text-muted-foreground shrink-0" disabled={starting} onClick={() => void newChat()} title="Start a conversation without a task" aria-label="New chat">
-            {starting ? <Loader2 className="size-3.5 animate-spin" /> : <SquareTerminal className="size-3.5" />} New chat
-          </Button>
         </div>
+      }
+      action={
+        <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" disabled={starting} onClick={() => void newChat()} title="New chat (a conversation without a task)" aria-label="New chat">
+          {starting ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
+        </Button>
       }
     />
   );

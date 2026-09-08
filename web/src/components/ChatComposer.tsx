@@ -17,13 +17,16 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action,
 }: {
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
   placeholder?: string;
   leading?: ReactNode; // e.g. the repo selector, sits bottom-left inside the box
   footer?: ReactNode; // transient line below the box, e.g. a "Sent · Undo" affordance
+  // Replaces the attach button beside send (the new-draft box gives that slot to "New chat" so the
+  // repo/provider dropdowns keep their width). Paste and drag-drop still attach files.
+  action?: ReactNode;
   onCancel?: () => void;
   autoFocus?: boolean;
   // Fire-and-forget: hand the message to onSubmit and return at once (no spinner, no clearing).
@@ -152,9 +155,11 @@ export function ChatComposer({
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => { addImages(e.target.files ?? []); e.target.value = ""; }} />
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
-            <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach files" onClick={() => fileRef.current?.click()}>
-              <Paperclip className="size-4" />
-            </Button>
+            {action ?? (
+              <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach files" onClick={() => fileRef.current?.click()}>
+                <Paperclip className="size-4" />
+              </Button>
+            )}
             <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (⌘+Enter)" onClick={() => void submit()}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
             </Button>
