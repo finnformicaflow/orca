@@ -1,11 +1,11 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { useAtom, useAtomValue } from "jotai";
-import { densityAtom, draftRepoAtom, repoFilterAtom } from "@/lib/atoms";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
   addPreviewLabel, addressReview, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, fixCi, markReady, merge, promote,
   providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
-  staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  staleHours, startChat, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, type BulkAction } from "../workstream";
@@ -325,6 +325,14 @@ function NewDraft() {
     const t = setTimeout(() => setUndoable(null), 6000);
     return () => clearTimeout(t);
   }, [undoable]);
+  // "New chat": a worktree with no task, whose terminal opens the moment its card lands.
+  const openTerminal = useSetAtom(openTerminalAtom);
+  const [starting, setStarting] = useState(false);
+  const newChat = async () => {
+    setStarting(true);
+    try { const { branch } = await startChat(active, provider); openTerminal(`${active}::${branch}`); }
+    finally { setStarting(false); }
+  };
 
   return (
     <ChatComposer
@@ -359,6 +367,9 @@ function NewDraft() {
               {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Button size="sm" variant="ghost" className="text-muted-foreground shrink-0" disabled={starting} onClick={() => void newChat()} title="Start a conversation without a task" aria-label="New chat">
+            {starting ? <Loader2 className="size-3.5 animate-spin" /> : <SquareTerminal className="size-3.5" />} New chat
+          </Button>
         </div>
       }
     />
@@ -396,6 +407,13 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
   // The conversation opens in a terminal-style modal on the board (no navigating to the detail page).
   const [terminalOpen, setTerminalOpen] = useState(false);
+  // A card born from "New chat" opens its terminal on arrival (see openTerminalAtom).
+  const [wanted, setWanted] = useAtom(openTerminalAtom);
+  useEffect(() => {
+    if (wanted !== `${row.repo}::${row.branch}`) return;
+    setTerminalOpen(true);
+    setWanted(null);
+  }, [wanted, row.repo, row.branch, setWanted]);
 
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`

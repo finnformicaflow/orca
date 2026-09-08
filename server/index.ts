@@ -229,8 +229,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    const title = (featuresOf(repo).aiTitles ? await agent.summarize(provider, body.prompt) : undefined)
-      ?? titleFromPrompt(body.prompt);
+    // No prompt = a chat started blank (the first message comes from the terminal), so there is
+    // nothing to summarise; the card is named "New chat" until it's renamed.
+    const title = !body.prompt ? "New chat"
+      : (featuresOf(repo).aiTitles ? await agent.summarize(provider, body.prompt) : undefined) ?? titleFromPrompt(body.prompt);
     const branch = `${slugifyBranch(title)}-${crypto.randomUUID().slice(0, 6)}`;
     const wt = await git.createWorktree(repo.repoPath, repo.worktreeRoot, branch, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);

@@ -1,3 +1,4 @@
+import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
@@ -12,3 +13,8 @@ export const repoFilterAtom = atomWithStorage("orca.repoFilter", "all");
 // preview+actions footer — so many sessions fit on screen. Done cards ignore it (always compact).
 export type Density = "comfortable" | "dense";
 export const densityAtom = atomWithStorage<Density>("orca.density", "comfortable");
+
+// `repo::branch` of a card whose terminal should open as soon as it renders — set by "New chat",
+// which creates the worktree in the background and drops you straight into its conversation.
+// The card clears it once opened, so a later re-render doesn't reopen it.
+export const openTerminalAtom = atom<string | null>(null);

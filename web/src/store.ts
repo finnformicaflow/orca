@@ -492,6 +492,16 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
   return draft;
 }
 
+/** Start a conversation with no task: cut the worktree now (so the first message has a cwd and a
+ *  branch to record turns against) and launch nothing — the terminal's composer sends the first
+ *  message through the ordinary follow-up path. Resolves with the new branch once it exists. */
+export async function startChat(repo: string, provider: AgentProvider = "claude"): Promise<{ branch: string; worktreePath: string }> {
+  const { branch, worktreePath, title } = await api.createWorktree(repo, "", provider);
+  patchEnrich(repo, branch, { title, agentProvider: provider, createdAt: now() });
+  await refresh();
+  return { branch, worktreePath };
+}
+
 /** Undo a just-created draft: kill the run + remove the worktree/branch if it exists yet, else flag
  *  it so createWorkstream discards it the moment the worktree lands. */
 export async function undoDraft(draft: OptimisticDraft) {
@@ -752,7 +762,8 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     instruction: ledger.instruction,
     resume: sameNativeSession ? sessionId : undefined,
     history: !sameNativeSession ? transcript : undefined,
-    handoffFrom: !sameNativeSession ? from : undefined,
+    // No transcript (a chat started blank) → a plain first run, not a handoff over nothing.
+    handoffFrom: !sameNativeSession && transcript.length ? from : undefined,
   });
   // Queued rather than launched: nothing started, so the session pointer must not move.
   if ("status" in receipt && receipt.status === "queued") return receipt;
