@@ -290,6 +290,21 @@ export function ChatPanel({ row }: { row: Row }) {
           setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
           await loadQueued(); // it may have been held rather than launched
         }}
+        // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
+        // next user.message: the run is stopped and the text goes straight after it. If the process
+        // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the
+        // order is the same either way.
+        alt={running && row.worktreePath ? {
+          label: "■ stop & send",
+          title: "Interrupt the run and send this instead. The worktree, its commits, and the session are kept.",
+          onSubmit: async (text, images) => {
+            await api.stopAgent(row.worktreePath!);
+            await followUp(row, text, images);
+            setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
+            await loadQueued();
+            await refresh();
+          },
+        } : undefined}
       />
     </div>
   );

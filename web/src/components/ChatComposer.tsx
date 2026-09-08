@@ -17,7 +17,7 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt,
 }: {
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
@@ -27,6 +27,9 @@ export function ChatComposer({
   // Replaces the attach button beside send (the new-draft box gives that slot to "New chat" so the
   // repo/provider dropdowns keep their width). Paste and drag-drop still attach files.
   action?: ReactNode;
+  // A second way to send the same text, shown as a button beside Send — e.g. the chat's
+  // "stop & send" while a run is in flight. Same clearing/error handling as Send.
+  alt?: { label: string; title?: string; onSubmit: (text: string, images: File[]) => Promise<void> };
   onCancel?: () => void;
   autoFocus?: boolean;
   // Fire-and-forget: hand the message to onSubmit and return at once (no spinner, no clearing).
@@ -89,10 +92,10 @@ export function ChatComposer({
   };
 
   const canSubmit = Boolean(value.trim() || images.length) && !busy;
-  const submit = async () => {
+  const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit) => {
     if (!canSubmit) return;
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
-    if (optimistic) return void onSubmit(value.trim(), images);
+    if (optimistic) return void send(value.trim(), images);
     // Clear NOW, not after onSubmit resolves: sending a chat message launches an agent, which takes
     // seconds, and a box still holding the text you just sent reads as "it didn't go". On failure the
     // text (and attachments) come back, so nothing is lost.
@@ -104,7 +107,7 @@ export function ChatComposer({
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(sent.text, sent.images);
+      await send(sent.text, sent.images);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setValue(sent.text);
@@ -158,6 +161,11 @@ export function ChatComposer({
             {action ?? (
               <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach files" onClick={() => fileRef.current?.click()}>
                 <Paperclip className="size-4" />
+              </Button>
+            )}
+            {alt && (
+              <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} title={alt.title} onClick={() => void submit(alt.onSubmit)}>
+                {alt.label}
               </Button>
             )}
             <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (⌘+Enter)" onClick={() => void submit()}>

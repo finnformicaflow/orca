@@ -97,6 +97,32 @@ test("an empty conversation says so rather than rendering a blank panel", async 
   expect(text()).toContain("No history yet");
 });
 
+test("while a run is in flight, 'stop & send' interrupts it and sends the message as one gesture", async () => {
+  // Managed Agents pairs user.interrupt with the next user.message in one call; this is that gesture.
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "long job", response: "" }]);
+  await mount({ ...base, agentStatus: "running" });
+
+  const alt = container!.querySelector<HTMLButtonElement>('button[title^="Interrupt the run and send this instead"]')!;
+  expect(alt).toBeTruthy();
+  expect(alt.textContent).toContain("stop & send");
+  const box = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "no, do it the other way");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  await act(async () => { alt.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  expect(apiFake.stopped).toEqual(["/wt/feat"]); // the run was interrupted first…
+  expect(apiFake.claudePrompts.at(-1)).toContain("no, do it the other way"); // …then the message went
+  expect(box.value).toBe(""); // and the box cleared like a normal send
+});
+
+test("with nothing running there is no 'stop & send'", async () => {
+  await mount(base);
+  expect(container!.querySelector('button[title^="Interrupt the run and send this instead"]')).toBeNull();
+});
+
 test("the composer sends a follow-up through the normal launch path", async () => {
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "first", response: "done", finishedAt: 2 }]);
   await mount(base);
