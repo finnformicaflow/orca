@@ -44,6 +44,10 @@ describe("provider adapters", () => {
     expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
       "claude", "-p", "--permission-mode", "default", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
     ]);
+    // The repo's per-run cost cap rides along as the CLI's own flag.
+    expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, undefined, "ask", 5)).toEqual([
+      "claude", "-p", "--permission-mode", "default", "--max-budget-usd", "5", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+    ]);
     expect(agentCommand("codex", "/wt/x", "go")).toEqual([
       "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "--", "go",
     ]);

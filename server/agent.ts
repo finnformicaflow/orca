@@ -3,7 +3,7 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
+import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason } from "../shared/agent";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
@@ -80,9 +80,23 @@ export type LaunchOptions = {
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
   instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
+  maxBudgetUsd?: number; // claude only: the repo's per-run cost cap (`--max-budget-usd`)
   profile?: string; // claude only: the login's name, shown on the card
   configDir?: string; // claude only: that login's CLAUDE_CONFIG_DIR, set on the process
 };
+
+// Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
+// CLI's login), not the bridge's Slack token or database URLs — and a prompt injection that reads
+// the environment must find nothing of Orca's there. Provider keys (ANTHROPIC_*, OPENAI_*) are
+// deliberately left alone: they are the CLI's, not ours.
+const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"];
+/** The environment a spawned agent gets: the bridge's, minus Orca's secrets, plus the profile's dir. */
+export function agentEnv(configDir?: string): Record<string, string | undefined> {
+  const env = { ...process.env };
+  for (const key of ORCA_SECRETS) delete env[key];
+  if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
+  return env;
+}
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -363,7 +377,7 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
 /** Extract claude's final outcome from the stream. The last `type:"result"` event is the same object
  *  the old `--output-format json` emitted (result text, is_error, usage/cost/modelUsage), so
  *  parseRunMeta is unchanged; a missing result event (crash) falls back to a bare parse. Pure. */
-export function parseClaudeStreamOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta?: RunMeta } {
+export function parseClaudeStreamOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta?: RunMeta; subtype?: string } {
   let resultEvent: Record<string, unknown> | undefined;
   let sessionId: string | undefined;
   for (const line of raw.split("\n")) {
@@ -377,10 +391,10 @@ export function parseClaudeStreamOutput(raw: string): { sessionId?: string; resu
   if (!resultEvent) {
     try {
       const j = JSON.parse(raw.trim());
-      return { sessionId, result: j.result, isError: Boolean(j.is_error), meta: parseRunMeta(j) };
+      return { sessionId, result: j.result, isError: Boolean(j.is_error), meta: parseRunMeta(j), subtype: typeof j.subtype === "string" ? j.subtype : undefined };
     } catch { return { sessionId, isError: false }; }
   }
-  return { sessionId, result: resultEvent.result as string | undefined, isError: Boolean(resultEvent.is_error), meta: parseRunMeta(resultEvent) };
+  return { sessionId, result: resultEvent.result as string | undefined, isError: Boolean(resultEvent.is_error), meta: parseRunMeta(resultEvent), subtype: typeof resultEvent.subtype === "string" ? resultEvent.subtype : undefined };
 }
 
 /** Parse Codex's `exec --json` JSONL stream into the session id, final response, and card metadata. */
@@ -448,7 +462,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask"): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number): string[] {
   if (provider === "codex") {
     return resume
       ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, "--", prompt]
@@ -467,7 +481,10 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // `model` comes from the repo's `agentModel`; unset → the claude CLI's own default. The permission
   // mode is the repo's: `bypassPermissions` was unconditional, which is fine for your own repo and
   // much less so for a client's, so a repo now opts into it.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
+  // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
+  // the run's spend reaches it and reports a budget result, which the turn records as
+  // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(model ? ["--model", model] : []), ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
@@ -482,9 +499,9 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const proc = Bun.spawn(
-    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode),
+    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd),
     // A profile is a CLAUDE_CONFIG_DIR: the CLI reads its login, settings and sessions from there.
-    { cwd, env: options.configDir ? { ...process.env, CLAUDE_CONFIG_DIR: options.configDir } : process.env, stdout: "pipe", stderr: "pipe" },
+    { cwd, env: agentEnv(options.configDir), stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
@@ -521,6 +538,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     // is exactly the history the old in-memory map lost when a fast follow-up overwrote its key.
     const superseded = runs.get(key)?.proc !== proc;
     let result: string | undefined, isError = false, meta: RunMeta | undefined, resolvedSessionId = sessionId;
+    let budgetReached = false;
     if (provider === "codex") {
       const parsed = parseCodexOutput(out);
       result = parsed.result;
@@ -539,6 +557,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       isError = parsed.isError;
       meta = parsed.meta;
       resolvedSessionId = parsed.sessionId ?? resolvedSessionId;
+      budgetReached = /budget/i.test(parsed.subtype ?? ""); // the CLI's result subtype for --max-budget-usd
     }
     transcript.forget(runId); // run finished — the transcript file stays; it IS the history now
     const finishedAt = Date.now();
@@ -549,11 +568,13 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     const ok = code === 0 && !isError;
     const wasStopped = stoppedRuns.delete(runId);
     const error = ok ? undefined : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => db.finishTurn(runId, {
       // A run you stopped is not a failure: whatever it completed stands, and the session id below
       // keeps it resumable, so a follow-up redirects it rather than starting over.
       status: wasStopped ? "stopped" : ok ? "done" : "error",
+      stopReason,
       // A failed run still has something worth keeping — the error is the turn's outcome.
       response: wasStopped ? (result ?? "Stopped. The work so far stands; reply to redirect.") : (result ?? error),
       structured, sessionId: resolvedSessionId, finishedAt,
