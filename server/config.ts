@@ -103,6 +103,12 @@ export type OrcaConfig = {
   staleHours: number;
   /** Hard ceiling for one headless agent run, preventing abandoned sessions consuming quota. */
   agentTimeoutMinutes?: number;
+  /** Claude logins to spread runs across — each a `CLAUDE_CONFIG_DIR` you ran `claude login` in
+   *  once. Unset = the CLI's default login, no switching. See server/profiles.ts. */
+  claudeProfiles?: { name: string; configDir: string }[];
+  /** Five-hour utilisation (%) at which a conversation leaves its current profile for the one
+   *  with the most headroom. Default 90. */
+  profileSwitchPct?: number;
 };
 
 /** A repo path as STORED. Paths are per-machine — once a laptop and a cloud box share one database,
@@ -205,6 +211,22 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentTimeoutMinutes !== undefined && (typeof d.agentTimeoutMinutes !== "number" || d.agentTimeoutMinutes <= 0)) {
     errors.push("agentTimeoutMinutes must be a positive number");
   }
+  if (d.claudeProfiles !== undefined) {
+    if (!Array.isArray(d.claudeProfiles)) errors.push("claudeProfiles must be an array");
+    const names = new Set<string>();
+    for (const [i, raw] of ((Array.isArray(d.claudeProfiles) ? d.claudeProfiles : []) as unknown[]).entries()) {
+      const p = raw as Record<string, unknown> | null;
+      const where = `claudeProfiles[${i}]`;
+      if (!p || typeof p !== "object") { errors.push(`${where} must be an object`); continue; }
+      if (typeof p.name !== "string" || !p.name.trim()) errors.push(`${where}.name is required`);
+      else if (names.has(p.name)) errors.push(`${where}.name "${p.name}" is duplicated`);
+      else names.add(p.name);
+      if (typeof p.configDir !== "string" || !p.configDir.trim()) errors.push(`${where}.configDir is required`);
+    }
+  }
+  if (d.profileSwitchPct !== undefined && (typeof d.profileSwitchPct !== "number" || d.profileSwitchPct <= 0 || d.profileSwitchPct > 100)) {
+    errors.push("profileSwitchPct must be a percentage between 1 and 100");
+  }
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -214,9 +236,17 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       staleHours: (d.staleHours as number) ?? 24,
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
       instances: d.instances as Record<string, string> | undefined,
+      claudeProfiles: d.claudeProfiles as OrcaConfig["claudeProfiles"],
+      profileSwitchPct: d.profileSwitchPct as number | undefined,
     },
   };
 }
+
+// Profile directories are per-machine paths like repo paths: templated when stored, expanded on read.
+const storeProfiles = (profiles: OrcaConfig["claudeProfiles"]) =>
+  profiles === undefined ? {} : { claudeProfiles: profiles.map((p) => ({ ...p, configDir: templatePath(p.configDir) })) };
+const readProfiles = (raw: unknown): OrcaConfig["claudeProfiles"] =>
+  Array.isArray(raw) ? (raw as { name: string; configDir: string }[]).map((p) => ({ ...p, configDir: expandPath(p.configDir) })) : undefined;
 
 /** Look up a repo by name, defaulting to the first configured repo. */
 export const repoOf = (cfg: OrcaConfig, name?: string): RepoConfig =>
@@ -265,6 +295,8 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       portRange: file.portRange,
       staleHours: file.staleHours,
       ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
+      ...storeProfiles(file.claudeProfiles),
+      ...(file.profileSwitchPct === undefined ? {} : { profileSwitchPct: file.profileSwitchPct }),
     },
   });
 }
@@ -290,6 +322,8 @@ export async function loadConfig(): Promise<OrcaConfig> {
     staleHours: (app.staleHours as number) ?? 24,
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
     instances: app.instances as Record<string, string> | undefined,
+    claudeProfiles: readProfiles(app.claudeProfiles),
+    profileSwitchPct: app.profileSwitchPct as number | undefined,
   };
   cached = config;
   return config;
@@ -312,6 +346,8 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       staleHours: config.staleHours,
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
+      ...storeProfiles(config.claudeProfiles),
+      ...(config.profileSwitchPct === undefined ? {} : { profileSwitchPct: config.profileSwitchPct }),
     },
   });
   invalidateConfig();
