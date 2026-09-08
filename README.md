@@ -51,6 +51,23 @@ createdb orca
 `bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
 throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
 
+**Several Claude accounts** (to keep working when one hits its usage limit): give each its own
+config directory, log in once inside each, and list them. Orca sends each run to whichever login
+has headroom and carries the conversation's session across when it switches (see the handover
+ladder in `CLAUDE.md`). The header meter shows every login.
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-work claude login     # once per extra account
+```
+```ts
+// orca.config.ts (or the settings document)
+claudeProfiles: [
+  { name: "personal", configDir: "~/.claude" },
+  { name: "work", configDir: "~/.claude-work" },
+],
+profileSwitchPct: 90, // leave a login once its 5-hour window is this full
+```
+
 At least one agent CLI (`claude`, `codex`, `cursor-agent`) must be on the **bridge's** `$PATH`. If a CLI
 lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shell you launch
 `bun run dev` from, or you'll see `Executable not found in $PATH`.

@@ -80,6 +80,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
   prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; preferredProvider?: AgentProvider; transcript?: AgentTurn[]; following?: boolean;
+  sessionProfile?: string; // the Claude login that owns the native session (server/profiles.ts)
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
   handedReviewThreadIds?: string[];

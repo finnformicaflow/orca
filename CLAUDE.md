@@ -144,11 +144,35 @@ Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **Resolve conflicts / Fix CI / Follow up** = launch the selected provider headlessly in the branch's
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
-  requires a manual "check out" step or a copied prompt. Follow up resumes the provider-native
-session when possible or uses the portable transcript for a cross-provider handoff.
-Claude sessions at 80% context or higher also reset through that compact handoff rather than
-dragging an almost-full native context into another turn.
+  requires a manual "check out" step or a copied prompt. Follow up continues the conversation by
+  the **handover ladder** below.
   `ensureWorktree` also copies `copyToWorktree` config into the fresh worktree.
+
+**Handover ladder** — how the next turn gets the previous turns' context. Lossless rungs first;
+the lossy one only when nothing above it applies. This is the whole contract; nothing else carries
+context between turns.
+
+1. **Native resume, same login** (lossless). `--resume <session>` on the provider's own session:
+   every message, tool call and result the provider recorded. The default for every follow-up.
+   Changing the *model* keeps this rung — a resumed Claude session accepts a different `--model`.
+2. **Native resume, other Claude login** (lossless). With several `claudeProfiles` configured
+   (`server/profiles.ts`), a conversation stays on the login that owns its session until that
+   login's five-hour window passes `profileSwitchPct` (default 90), then moves to the login with the
+   most headroom. The session file (`<configDir>/projects/<cwd-slug>/<id>.jsonl` + its directory)
+   is **copied** into the new login's tree first, so the resume there sees the full native context.
+   The chosen login is recorded as `sessionProfile` on the workstream and shown on the card.
+3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
+   context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
+   can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)
+   sends the newest ~12k tokens of turns, oldest dropped first: each turn's *instruction* (not the
+   scaffolding), an **Activity** list of the tools it ran and what on (when the turn's steps are
+   available — the server-side fallback loads them), and its structured outcome (Remaining,
+   Decisions, Outcome, Verification, Commits) or, failing that, its final response. The worktree —
+   files, git status, commits — is declared the source of truth over the transcript.
+
+What is *not* carried on rung 3: the provider's reasoning, tool outputs, and anything older than the
+bound. If a handover feels amnesiac, check which rung it took (the run's `mode` in the ledger:
+`resume` / `reset` / `handoff`) before blaming the model.
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 
