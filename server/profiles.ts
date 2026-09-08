@@ -10,7 +10,7 @@
 // "Handover ladder" for where this sits against the portable-transcript fallback.
 import { cp, mkdir, stat } from "fs/promises";
 import { join } from "path";
-import type { AgentTurn } from "../shared/agent";
+import type { AgentStep, AgentTurn } from "../shared/agent";
 import type { OrcaConfig } from "./config";
 import * as db from "./db";
 import { DEFAULT_CLAUDE_DIR, usage, type ClaudeUsage } from "./usage";
@@ -89,7 +89,10 @@ export async function routeRun(cfg: OrcaConfig, repo: string, branch: string | u
     const carried = from ? await copySession(from, chosen.configDir, cwd, resume).catch(() => false) : false;
     if (!carried && branch) {
       route.resume = undefined;
-      route.history = await db.turns(repo, branch);
+      // With their steps, so the handoff can say what each turn touched — not just what it concluded.
+      route.history = await Promise.all((await db.turns(repo, branch)).map(async (t) => ({
+        ...t, steps: (await db.steps(t.id, { tail: 200 })).map((s) => s.step as unknown as AgentStep),
+      })));
       route.handoffFrom = "claude";
     }
   }

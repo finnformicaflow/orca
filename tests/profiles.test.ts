@@ -190,11 +190,13 @@ test("a run leaves an exhausted login for the freest one, taking its native sess
     await db.patchEnrichment("app", "other", { sessionProfile: "personal" });
     await db.startTurn({ repo: "app", branch: "other", runId: "run-1", provider: "claude", prompt: "first", startedAt: 1 });
     await db.finishTurn("run-1", { status: "done", response: "done", finishedAt: 2 });
+    await db.appendSteps("run-1", 0, [{ at: 1, kind: "tool", id: "t1", name: "Edit", input: { file_path: "src/a.ts" } }]);
     const fallback = await routeRun(cfg, "app", "other", cwd, "sess-gone");
     expect(fallback.profile).toBe("work");
     expect(fallback.resume).toBeUndefined();
     expect(fallback.handoffFrom).toBe("claude");
     expect(fallback.history?.map((t) => t.prompt)).toEqual(["first"]);
+    expect(fallback.history?.[0]?.steps?.[0]).toMatchObject({ name: "Edit" }); // what it touched travels too
 
     // One login configured → nothing to choose, nothing copied, the resume passes straight through.
     const single = await routeRun(parseConfigDocument(doc()).config!, "app", "feat", cwd, "sess-1");

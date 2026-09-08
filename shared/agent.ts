@@ -159,10 +159,27 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
 }
 
 // A handoff is intentionally portable prose, not a provider's private session format. The worktree
-// remains the source of truth; the bounded transcript supplies decisions and conversational intent.
-// About 3k tokens in typical code/task prose: enough for recent decisions without making a new
-// provider pay to ingest an ever-growing raw transcript. The worktree remains authoritative.
-const HANDOFF_LIMIT = 12_000;
+// remains the source of truth; the bounded transcript supplies decisions, conversational intent, and
+// — when the turns carry their steps — what the agent actually touched. About 12k tokens in typical
+// code/task prose: the newest turns are kept whole, oldest dropped first. This is the LOSSY rung of
+// the handover ladder (CLAUDE.md); every lossless rung (native resume, session copy) is tried first.
+const HANDOFF_LIMIT = 48_000;
+const ACTIVITY_LINES = 24; // per turn: the tools it ran and what on, newest last
+
+/** One line per tool call: the tool and the file/command/pattern it acted on. Pure. */
+export function activityLines(steps: AgentStep[] | undefined): string[] {
+  if (!steps?.length) return [];
+  const lines = steps
+    .filter((s) => s.kind === "tool" && s.name && s.name !== "result")
+    .map((s) => {
+      const input = (s.input ?? {}) as Record<string, unknown>;
+      const target = [input.file_path, input.path, input.command, input.pattern, input.query, input.url, s.detail]
+        .find((v): v is string => typeof v === "string" && v.trim().length > 0);
+      return `${s.name}${target ? `: ${target.trim().slice(0, 160)}` : ""}${s.isError ? " (failed)" : ""}`;
+    });
+  return lines.length > ACTIVITY_LINES ? [`… ${lines.length - ACTIVITY_LINES} earlier`, ...lines.slice(-ACTIVITY_LINES)] : lines;
+}
+
 export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentProvider | undefined, to: AgentProvider): string {
   const header = [
     from === to
@@ -179,14 +196,18 @@ export function handoffPrompt(turns: AgentTurn[], prompt: string, from: AgentPro
     turn.structured.verification.length ? `Verification:\n${turn.structured.verification.map((v) => `- ${v}`).join("\n")}` : "",
     turn.structured.commits.length ? `Commits:\n${turn.structured.commits.map((v) => `- ${v}`).join("\n")}` : "",
   ].filter(Boolean).join("\n\n") : turn.response;
-  const rendered = turns.map((t) => [
-    `### ${agentLabel(t.provider)} turn`,
-    "User / Orca instruction:",
-    t.prompt,
-    "",
-    `${agentLabel(t.provider)} outcome:`,
-    renderOutcome(t),
-  ].join("\n"));
+  const rendered = turns.map((t) => {
+    const activity = activityLines(t.steps);
+    return [
+      `### ${agentLabel(t.provider)} turn`,
+      "User / Orca instruction:",
+      t.instruction ?? t.prompt,
+      "",
+      ...(activity.length ? ["Activity:", ...activity.map((l) => `- ${l}`), ""] : []),
+      `${agentLabel(t.provider)} outcome:`,
+      renderOutcome(t),
+    ].join("\n");
+  });
   // Preserve the newest decisions when history is large. Add whole turns until the cap is reached.
   const kept: string[] = [];
   let used = header.length + prompt.length + 200;
