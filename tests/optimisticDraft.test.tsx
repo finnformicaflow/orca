@@ -4,7 +4,7 @@
 // stand-in is replaced by it; Undo tears the draft down whether the worktree exists yet or not.
 // Driven against a preloaded fake `api` (tests/apiFake.ts, no network) so we can hold createWorktree
 // pending and observe the pre-response state, rendered into a real DOM. See createWorkstream/undoDraft.
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
@@ -14,6 +14,9 @@ import type { OptimisticDraft } from "@/store";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeAll(() => store.configReady); // cfg populated from the fake config before the first render
+// The store is one module for the whole `bun test` process, and file order is not stable across
+// platforms: start from an empty board rather than whatever the previous file left in `live`.
+beforeEach(async () => { apiFake.reset(); await act(async () => { await store.refresh(); }); });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

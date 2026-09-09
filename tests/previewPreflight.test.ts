@@ -27,7 +27,7 @@ function nestGuard(): string {
  *  now lives in the Orca-hosted preview-deps.sh (referenced by the backend command), not inline. */
 function stagingSweep(): string {
   const src = readFileSync(join(import.meta.dir, "../scripts/preview-deps.sh"), "utf8");
-  const m = src.match(/find -E node_modules[^\n]*rm -rf \{\} \+/);
+  const m = src.match(/find node_modules[^\n]*rm -rf \{\} \+/);
   if (!m) throw new Error("staging-dir sweep not found in preview-deps.sh");
   return m[0];
 }

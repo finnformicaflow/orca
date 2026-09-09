@@ -225,6 +225,9 @@ export async function linkToWorktree(repoPath: string, worktreePath: string, pat
     // APFS CoW directory clone: ~2s for an 82k-file node_modules (vs ~40s for per-file `cp -c`),
     // block-shared with the source until modified, but a fully independent tree per worktree.
     if (cloneTree(src, dest)) return;
+    // Linux: GNU cp's reflink is the same idea (block-shared on btrfs/xfs, a real copy elsewhere);
+    // either way the worktree gets its own tree, which is the property that matters.
+    if (process.platform === "linux" && Bun.spawnSync(["cp", "-a", "--reflink=auto", src, dest]).exitCode === 0) return;
     // Non-APFS / clonefile unavailable → degrade to the old per-entry symlink (keeps .vite local).
     await rm(dest, { recursive: true, force: true }).catch(() => {});
     await mkdir(dest, { recursive: true }).catch(() => {});

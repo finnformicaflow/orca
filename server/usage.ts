@@ -102,10 +102,11 @@ async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage 
     const token = await readClaudeToken(configDir);
     if (!token) return lastGoodClaude.get(configDir) ?? null;
     // Bun.fetch, not the global: the test DOM shim swaps global fetch for one without file:// support.
-    const response = await Bun.fetch(claudeUsageUrl(token), {
-      headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
-      signal: AbortSignal.timeout(8000),
-    });
+    // No AbortSignal: under the test DOM shim the global AbortSignal isn't Bun's, and Bun rejects it.
+    const response = await Promise.race([
+      Bun.fetch(claudeUsageUrl(token), { headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" } }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("usage fetch timed out")), 8000).unref?.()),
+    ]);
     if (!response.ok) return lastGoodClaude.get(configDir) ?? null;
     lastGoodClaude.set(configDir, shapeUsage(await response.json()));
   } catch (error) {

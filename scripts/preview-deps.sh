@@ -36,6 +36,6 @@ fi
 echo "[orca] installing $(pwd) deps (node_modules missing/partial or drifted from $lock)"
 # A partial CoW clone can leave npm's half-written staging dirs (e.g. .package-name-XXXX) that a fresh
 # `npm install` trips over; sweep them first. Harmless when there are none.
-find -E node_modules -type d -regex '.*/\.[^/]+-[A-Za-z0-9_]+$' -prune -exec rm -rf {} + 2>/dev/null || true
+find node_modules -type d -name '.*-*' -prune -exec rm -rf {} + 2>/dev/null || true
 npm install --no-audit --no-fund
 touch "$marker"
