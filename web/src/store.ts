@@ -379,6 +379,8 @@ export type Row = {
   instance?: string;
   promoted?: boolean;
   prNumber?: number;
+  /** The PR's target branch — what its diffstat is measured against. */
+  prBase?: string;
   prUrl?: string;
   previewUrl?: string;
   ciStatus?: CiStatus;
@@ -439,7 +441,7 @@ export function useWorkstreams(): Row[] {
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
-        prNumber: pr?.number, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
+        prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
@@ -878,7 +880,7 @@ export async function addressReview(row: Row, manual = true) {
 
 export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath);
 export const previewStatus = (worktreePath: string) => api.previewStatus(worktreePath);
-export const summary = (repo: string, worktreePath: string) => api.summary(repo, worktreePath);
+export const summary = (repo: string, worktreePath: string, base?: string) => api.summary(repo, worktreePath, base);
 
 export async function discardDraft(row: Row) {
   if (!row.worktreePath) return;

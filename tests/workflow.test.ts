@@ -169,6 +169,32 @@ test("W2 change-summary: commits produce a summary and flip DRAFTING → READY",
   expect(draftState(summary.commits.length)).toBe("READY");
 });
 
+test("W2b stacked-pr diffstat: measured against the PR's base, and gh surfaces that base", async () => {
+  // A branch stacked on another branch: against `main` its diffstat swallows the parent's changes,
+  // against its real PR target it shows only its own — which is what the PR detail page reports.
+  const { worktreePath: parent } = await createWorktree(repo, join(repo, ".worktrees"), "stack-parent", "main");
+  await Bun.write(join(parent, "parent.ts"), "export const p = 1;\n");
+  await run(["git", "-C", parent, "add", "."]);
+  await run(["git", "-C", parent, "commit", "-m", "parent work"]);
+
+  const { worktreePath: child } = await createWorktree(repo, join(repo, ".worktrees"), "stack-child", "stack-parent");
+  await Bun.write(join(child, "child.ts"), "export const c = 1;\n");
+  await run(["git", "-C", child, "add", "."]);
+  await run(["git", "-C", child, "commit", "-m", "child work"]);
+
+  const vsMain = await changeSummary(child, "main");
+  expect(vsMain.files.map((f) => f.path).sort()).toEqual(["child.ts", "parent.ts"]);
+  const vsParent = await changeSummary(child, "stack-parent");
+  expect(vsParent.files.map((f) => f.path)).toEqual(["child.ts"]);
+  expect(vsParent.additions).toBe(1);
+
+  // The card learns that base from the PR list (server/index.ts passes it to changeSummary).
+  await setPrListFixture([{ number: 9, title: "Child", headRefName: "stack-child", baseRefName: "stack-parent", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] }]);
+  const prs = await listPrs(repo);
+  expect(prs[0]?.base).toBe("stack-parent");
+  delete process.env.ORCA_PRLIST_FIXTURE;
+});
+
 test("W3 promote-to-pr: gh pr create returns number + url", async () => {
   const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-pr", "main");
   process.env.ORCA_PR_NUMBER = "42";
