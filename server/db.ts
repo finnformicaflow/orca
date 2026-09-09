@@ -26,7 +26,7 @@
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
 import { hostname } from "os";
-import type { AgentOutcome, AgentProvider, AgentTurn, StopReason } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
 import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
@@ -265,6 +265,13 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // filtered on it. Nullable: older rows infer it from status at read time.
     sql: `ALTER TABLE turn ADD COLUMN stop_reason TEXT`,
   },
+  {
+    id: 10,
+    // Orca's own post-run verification (shared/agent.ts TurnCheck): the repo's check command run in
+    // the worktree after a run that committed, with the output tail as evidence. Nullable: most
+    // turns commit nothing, and repos without a checkCommand never get one.
+    sql: `ALTER TABLE turn ADD COLUMN "check" JSONB`,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -368,7 +375,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 
 type TurnRow = {
   run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
-  structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null;
+  structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null; check: TurnCheck | null;
   started_at: string | number; finished_at: string | number | null;
 };
 
@@ -383,6 +390,7 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   failed: r.status === "error" ? true : undefined,
   stopped: r.status === "stopped" ? true : undefined,
   // Rows before the column infer it from status; a running turn has none yet.
+  check: r.check ?? undefined,
   stopReason: (r.stop_reason as StopReason | null)
     ?? (r.status === "done" ? "end_turn" : r.status === "error" ? "error" : r.status === "stopped" ? "interrupted" : undefined),
   startedAt: Number(r.started_at),
@@ -451,6 +459,16 @@ export async function finishTurn(runId: string, input: {
       ON CONFLICT (run_id) DO NOTHING`;
     owner = { repo, branch };
   }
+  if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
+}
+
+/** Attach Orca's verification to a finished turn, and wake the chat watching its branch. */
+export async function setCheck(runId: string, check: TurnCheck): Promise<void> {
+  const sql = await open();
+  const rows = await sql`
+    WITH updated AS (UPDATE turn SET "check" = ${check} WHERE run_id = ${runId} RETURNING workstream_id)
+    SELECT w.repo, w.branch FROM updated JOIN workstream w ON w.id = updated.workstream_id`;
+  const owner = rows[0] as { repo: string; branch: string | null } | undefined;
   if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
 }
 

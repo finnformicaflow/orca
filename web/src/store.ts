@@ -368,6 +368,7 @@ export type Row = {
   agentResult?: string;
   agentOutcome?: AgentOutcome;
   agentMeta?: LiveAgent["agentMeta"];
+  agentCheck?: LiveAgent["agentCheck"];
   agentStartedAt?: number;
   agentProvider?: AgentProvider;
   preferredProvider?: AgentProvider;
@@ -435,7 +436,7 @@ export function useWorkstreams(): Row[] {
         title: pr?.title ?? e.title ?? branch,
         prompt: e.prompt ?? "",
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
-        agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentStartedAt: wt?.agentStartedAt,
+        agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         preferredProvider: e.preferredProvider,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)

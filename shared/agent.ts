@@ -81,10 +81,24 @@ export function withoutFinalEcho(steps: AgentStep[], response: string): AgentSte
  *  resumable); `error` is everything else. */
 export type StopReason = "end_turn" | "requires_action" | "budget_reached" | "interrupted" | "error";
 
+/** Orca's own verification of a run that committed: the repo's `checkCommand` run in the worktree
+ *  afterwards (server/check.ts). Deterministic evidence, as opposed to the agent's self-reported
+ *  Verification section. Absent when the run made no commit or the repo has no check command. */
+export type TurnCheck = { command: string; ok: boolean; exitCode: number; output: string; durationMs: number };
+
+// The first line of the follow-up Orca itself queues when a check fails. Also the loop guard: a
+// run whose instruction starts with it is already the fix attempt, and a second failure stops there.
+export const AUTOFIX_MARKER = "The repo's check command failed after your last commit.";
+export function autofixInstruction(check: TurnCheck): string {
+  return `${AUTOFIX_MARKER}\n\n\`${check.command}\` exited ${check.exitCode}:\n\n\`\`\`\n${check.output}\n\`\`\`\n\nFix the cause, run the same check until it passes, then commit.`;
+}
+export const isAutofix = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(AUTOFIX_MARKER));
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;
   stopReason?: StopReason;
+  check?: TurnCheck;
   /** What the user actually typed (or the board action's label). `prompt` is the full text the CLI
    *  was given — the instruction plus the scenario's scaffolding and the outcome contract. */
   instruction?: string;

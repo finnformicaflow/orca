@@ -76,6 +76,10 @@ export type RepoConfig = {
   providers?: AgentProvider[];
   /** Authority granted to this repo's agents (default `ask`, i.e. NOT bypassPermissions). */
   agentPermissionMode?: AgentPermissionMode;
+  /** The repo's own verification, e.g. `bun run check` — run by Orca in the worktree after every
+   *  run that committed, and recorded on the turn (server/check.ts). With `followAutomation` on, a
+   *  failure queues one fix follow-up carrying the output. Unset = no gate. */
+  checkCommand?: string;
   /** Cost ceiling for ONE agent run, in US dollars (Claude's `--max-budget-usd`). The run ends with
    *  stop reason `budget_reached` — a runaway run can't drain a login. Unset = no cap. */
   agentMaxBudgetUsd?: number;
@@ -172,6 +176,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
+    }
+    if (r.checkCommand !== undefined && (typeof r.checkCommand !== "string" || !r.checkCommand.trim())) {
+      errors.push(`${where}.checkCommand must be a shell command`);
     }
     if (r.agentMaxBudgetUsd !== undefined && (typeof r.agentMaxBudgetUsd !== "number" || !(r.agentMaxBudgetUsd > 0))) {
       errors.push(`${where}.agentMaxBudgetUsd must be a positive number of dollars`);

@@ -176,6 +176,16 @@ context between turns.
 What is *not* carried on rung 3: the provider's reasoning, tool outputs, and anything older than the
 bound. If a handover feels amnesiac, check which rung it took (the run's `mode` in the ledger:
 `resume` / `reset` / `handoff`) before blaming the model.
+**Verification gate** (`server/check.ts`) — after any run that *committed* (HEAD moved), Orca runs
+the repo's `checkCommand` in the worktree itself and records the result on the turn (`turn.check`:
+command, exit code, output tail). The card says **Verified** or **Check failed**; the chat shows the
+verdict with the output folded under it. This is Orca's evidence, deliberately separate from the
+agent's self-reported Verification section: "looks done" is the only signal a model has without
+it. With `followAutomation` on, a failure queues ONE fix follow-up whose instruction starts with
+`AUTOFIX_MARKER` and carries the output; a fix attempt that fails again stops there (`isAutofix`),
+so the gate can never loop. The conversational prompts also open with a session-start ritual
+(`SESSION_START` in `workstream.ts`: git log, git status, the prior Remaining/Decisions, one thing).
+
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 

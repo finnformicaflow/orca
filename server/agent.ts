@@ -3,7 +3,9 @@
 // Keyed by an arbitrary string: worktree path for
 // feature/fix runs, `slack:…` for repo-level. The subprocess handle is kept so we can kill it.
 import { retryTitle } from "./title";
-import { handoffPrompt, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason } from "../shared/agent";
+import { autofixInstruction, handoffPrompt, isAutofix, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason, type TurnCheck } from "../shared/agent";
+import { runCheck } from "./check";
+import { run } from "./run";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
@@ -61,6 +63,7 @@ export type RunState = {
   result?: string;
   structured?: AgentOutcome;
   meta?: RunMeta;
+  check?: TurnCheck; // Orca's verification of this run's commit, once it has run
   startedAt?: number;
   finishedAt?: number;
 };
@@ -81,6 +84,10 @@ export type LaunchOptions = {
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
   instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
   maxBudgetUsd?: number; // claude only: the repo's per-run cost cap (`--max-budget-usd`)
+  /** The repo's `checkCommand`, run in the worktree after a run that committed (server/check.ts).
+   *  `autofix`: queue a follow-up with the failure as evidence — once; a fix attempt that fails
+   *  again stops there (isAutofix). */
+  check?: { command: string; autofix: boolean };
   profile?: string; // claude only: the login's name, shown on the card
   configDir?: string; // claude only: that login's CLAUDE_CONFIG_DIR, set on the process
 };
@@ -498,6 +505,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     : prompt;
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
+  // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.
+  const headBefore = options.check ? await headOf(cwd) : undefined;
   const proc = Bun.spawn(
     agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd),
     // A profile is a CLAUDE_CONFIG_DIR: the CLI reads its login, settings and sessions from there.
@@ -591,14 +600,35 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       evidenceChars: options.evidenceChars,
       errorKind: ok ? undefined : code !== 0 ? "nonzero-exit" : "agent-error",
     });
+    // The verification gate: a run that committed gets the repo's check command run over it, and
+    // the result lands on the turn as evidence. Only a successful run is checked — a failed one has
+    // its own error, and a stopped one is mid-work by definition.
+    let check: TurnCheck | undefined;
+    if (ok && options.check && headBefore !== undefined && (await headOf(cwd)) !== headBefore) {
+      check = await runCheck(cwd, options.check.command);
+      recordTurn(options, () => db.setCheck(runId, check!));
+      if (!check.ok && options.check.autofix && options.repo && options.branch && !isAutofix(options.instruction)) {
+        // Queued rather than launched: the same path a typed follow-up takes, so it inherits the
+        // session, profile routing, and the run lease. dispatchQueued below sends it.
+        await db.queueMessage({
+          repo: options.repo, branch: options.branch, worktreePath: cwd, provider,
+          instruction: autofixInstruction(check), attachments: [],
+        }).catch((e) => console.error("orca: autofix queue failed", e));
+      }
+    }
     runs.set(key, ok
-      ? { status: "done", ...common }
+      ? { status: "done", ...common, check }
       : { status: "error", ...common, error });
     // An instruction typed while this run was in flight goes now. Fire-and-forget and after the run
     // is marked finished, so the queued launch sees a free worktree.
     if (options.repo && options.branch) void dispatchQueued(options.repo, options.branch, options);
   })();
   return { status: "running", provider, runId, sessionId };
+}
+
+/** The worktree's HEAD, or undefined when it isn't a git checkout. */
+async function headOf(cwd: string): Promise<string | undefined> {
+  try { return (await run(["git", "rev-parse", "HEAD"], cwd)).trim(); } catch { return undefined; }
 }
 
 /** Feature/fix run inside a worktree — keyed by the worktree path. */
@@ -755,6 +785,6 @@ export const status = (key: string): RunState => {
   const r = runs.get(key);
   return r ? {
     status: r.status, error: r.error, provider: r.provider, runId: r.runId, prompt: r.prompt,
-    sessionId: r.sessionId, result: r.result, structured: r.structured, meta: r.meta, startedAt: r.startedAt, finishedAt: r.finishedAt,
+    sessionId: r.sessionId, result: r.result, structured: r.structured, meta: r.meta, check: r.check, startedAt: r.startedAt, finishedAt: r.finishedAt,
   } : { status: "idle" };
 };

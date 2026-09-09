@@ -2,7 +2,7 @@ import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, MergedPr, PrDetail, PrSummary, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
-import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn } from "../../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { SyncResult } from "./workstream";
 
 export type LiveAgent = {
@@ -13,6 +13,7 @@ export type LiveAgent = {
   agentResult?: string;
   agentOutcome?: AgentOutcome;
   agentMeta?: RunMeta;
+  agentCheck?: TurnCheck;
   agentStartedAt?: number;
   agentFinishedAt?: number;
   agentProvider?: AgentProvider;

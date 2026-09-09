@@ -88,11 +88,16 @@ agent.onQueuedMessage(async (message) => {
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
     provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
     profile: route.profile, configDir: route.configDir,
-    model: repo.agentModel, maxBudgetUsd: repo.agentMaxBudgetUsd,
+    model: repo.agentModel, maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
     permissionMode: repo.agentPermissionMode ?? "ask",
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   });
 });
+
+/** The verification gate for a repo's runs: its check command, auto-fixing only where the repo has
+ *  opted into follow automation (an unasked-for agent run is that feature's whole question). */
+const checkGate = (repo: RepoConfig): { command: string; autofix: boolean } | undefined =>
+  repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
 
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;
@@ -435,6 +440,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         agentResult: run.result,
         agentOutcome: run.structured,
         agentMeta: run.meta,
+        agentCheck: run.check,
         agentStartedAt: run.startedAt,
         agentFinishedAt: run.finishedAt,
         agentProvider: run.provider,
@@ -486,7 +492,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
-      maxBudgetUsd: repo.agentMaxBudgetUsd,
+      maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
@@ -519,7 +525,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
-      maxBudgetUsd: repo.agentMaxBudgetUsd,
+      maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);

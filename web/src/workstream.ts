@@ -340,8 +340,12 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
+  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
 }
+
+// Every session starts with no memory of the last one, so it starts by looking: the same three-line
+// ritual Anthropic's long-running-agent harness uses (git log, the progress notes, then one thing).
+const SESSION_START = "Before acting: run `git log --oneline -15` and `git status`, and read the prior turns' Remaining and Decisions above. Do one thing at a time.";
 
 /** A message typed in the CHAT, as opposed to a board action.
  *
@@ -372,6 +376,7 @@ export function chatPrompt(instruction: string): string {
     "",
     "Treat the files, git status and commits in this worktree as authoritative — they are the record of",
     "what has actually happened, whatever the conversation above says.",
+    SESSION_START,
     NO_PR,
     "",
     "If (and only if) you changed something, finish with the usual sections:",

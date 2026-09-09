@@ -164,6 +164,16 @@ function Turn({ turn }: { turn: AgentTurn }) {
             {/* The final message is the turn's response, rendered by Output — not twice. */}
             <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} />
             <Output turn={turn} />
+            {/* Orca's verification of the commit — deterministic evidence, shown apart from the
+                agent's own Verification section. Output folds like a tool result. */}
+            {turn.check && (
+              <details className={`mt-1 ${turn.check.ok ? "text-emerald-400" : "text-red-400"}`} data-slot="turn-check">
+                <summary className="cursor-pointer select-none">
+                  {turn.check.ok ? "✓" : "✗"} {turn.check.command} {turn.check.ok ? "passed" : `failed (exit ${turn.check.exitCode})`}
+                </summary>
+                <pre className="mt-1 whitespace-pre-wrap break-words text-neutral-400">{turn.check.output || "(no output)"}</pre>
+              </details>
+            )}
           </>
         )}
       </div>

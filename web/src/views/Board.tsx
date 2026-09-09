@@ -289,6 +289,12 @@ function elapsed(startedMs?: number): string {
 export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   const s = row.agentStatus ?? "idle";
   if (s === "running") return <Badge variant="secondary">Running {elapsed(row.agentStartedAt)} <Loader2 className="animate-spin" /></Badge>;
+  // Orca's own check over the run's commit beats the agent's word: "Verified" only when it passed.
+  if (s === "done" && row.agentCheck) {
+    return row.agentCheck.ok
+      ? <Badge variant="success" title={`${row.agentCheck.command} passed`}>Verified <Check /></Badge>
+      : <Badge variant="destructive" title={`${row.agentCheck.command} exited ${row.agentCheck.exitCode}`}>Check failed <X /></Badge>;
+  }
   if (s === "done") return <Badge variant="success">Done <Check /></Badge>;
   if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.

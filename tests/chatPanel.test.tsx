@@ -394,3 +394,18 @@ test("a slow attachment save can't resurrect the message you already sent", asyn
   expect(box.value).toBe("");
   expect(localStorage.getItem("orca.chat.r::feat")).toBeNull(); // nothing left to reopen with
 });
+
+test("a turn Orca verified shows the check's verdict apart from the agent's own claims", async () => {
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", prompt: "ship it", response: "## Outcome\nShipped.", finishedAt: 2,
+      check: { command: "bun run check", ok: false, exitCode: 1, output: "1 fail\n(fail) W3 promote", durationMs: 900 } },
+    { id: "run-2", provider: "claude", prompt: "fix it", response: "Fixed.", finishedAt: 4,
+      check: { command: "bun run check", ok: true, exitCode: 0, output: "353 pass", durationMs: 800 } },
+  ]);
+  await mount(base);
+  const checks = [...container!.querySelectorAll('[data-slot="turn-check"]')];
+  expect(checks).toHaveLength(2);
+  expect(checks[0]?.textContent).toContain("✗ bun run check failed (exit 1)");
+  expect(checks[0]?.textContent).toContain("(fail) W3 promote"); // the evidence, foldable
+  expect(checks[1]?.textContent).toContain("✓ bun run check passed");
+});
