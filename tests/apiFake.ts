@@ -132,7 +132,7 @@ mock.module("@/api", () => ({
     previewStop: async (key: string) => { apiFake.calls.push(`previewStop:${key}`); apiFake.previewsData = apiFake.previewsData.filter((p) => p.key !== key); return { ok: true }; },
     previewStatus: async () => apiFake.previewSvcs,
     previews: async () => { if (apiFake.previewsError) throw new Error(apiFake.previewsError); return apiFake.previewsData; },
-    summary: async () => apiFake.summaryData,
+    summary: async (_repo: string, worktree: string, base?: string) => { apiFake.calls.push(`summary:${worktree}:${base ?? ""}`); return apiFake.summaryData; },
     localDiff: async () => ({ diff: apiFake.diffText }),
     prDetail: async (_repo: string, n: number) => ({
       number: n, title: `PR ${n}`, url: `https://example.test/${n}`, head: "sticky-1", base: "main", author: "me",

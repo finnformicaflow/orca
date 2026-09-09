@@ -131,7 +131,7 @@ export async function createPr(
 }
 
 export type PrSummary = PrStatus & {
-  number: number; title: string; branch: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
+  number: number; title: string; branch: string; base?: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
   previewUrl?: string; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
 };
 
@@ -191,6 +191,7 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set()): PrSummary => {
     number: j.number,
     title: j.title,
     branch: j.headRefName,
+    base: j.baseRefName, // the PR's target — diffstats must be measured against it, not the repo default
     url: j.url,
     state: j.state,
     isDraft: Boolean(j.isDraft),

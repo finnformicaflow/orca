@@ -422,12 +422,12 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   useEffect(() => {
     if (isDone || !row.worktreePath) return;
-    const reload = () => void fetchSummary(row.repo, row.worktreePath!).then(setSummary).catch(() => {});
+    const reload = () => void fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
     reload();
     if (row.agentStatus !== "running") return;
     const t = setInterval(reload, 8000);
     return () => clearInterval(t);
-  }, [isDone, row.repo, row.worktreePath, row.agentStatus]);
+  }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows

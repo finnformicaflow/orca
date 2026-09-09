@@ -101,6 +101,13 @@ const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
+/** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
+ *  would read as an option). */
+const baseParam = (url: URL): string | undefined => {
+  const b = url.searchParams.get("base");
+  return b && /^[\w.][\w./-]*$/.test(b) ? b : undefined;
+};
+
 /** Worktrees reported by OTHER instances, read back from Postgres. Tagged with the instance and its
  *  last check-in so the board can mark a sleeping machine's rows as stale rather than presenting them
  *  as current. Advisory: a database hiccup degrades to "just what this machine sees". */
@@ -243,7 +250,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/summary") {
     const wt = url.searchParams.get("worktree");
     if (!wt) return json({ error: "worktree required" }, 400);
-    return json(await git.changeSummary(wt, await git.resolveBase(repo.repoPath, repo.baseBranch)));
+    // A branch with a PR is measured against that PR's target, not the repo default — otherwise a
+    // stacked PR's card diffstat counts the whole stack while its detail page counts only its own.
+    return json(await git.changeSummary(wt, await git.resolveBase(repo.repoPath, baseParam(url) ?? repo.baseBranch)));
   }
   if (req.method === "GET" && p === "/api/diff") {
     const wt = url.searchParams.get("worktree");

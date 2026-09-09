@@ -84,6 +84,17 @@ describe("swimlane card details", () => {
     expect(container!.textContent).toContain("2 files");
   });
 
+  test("the diffstat is measured against the PR's own target, not the repo's default branch", async () => {
+    apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
+    await mount({ ...base, prBase: "orca/stack-parent" });
+    expect(apiFake.calls).toContain("summary:/wt/enrich-cards-1:orca/stack-parent");
+    // No PR (a Local card) → no base, so the server falls back to the repo's default branch.
+    act(() => root?.unmount());
+    apiFake.calls.length = 0;
+    await mount({ ...base, lane: "LOCAL", prNumber: undefined, prBase: undefined });
+    expect(apiFake.calls).toContain("summary:/wt/enrich-cards-1:");
+  });
+
   test("a PR card's copy menu offers Copy PR link, which copies the PR url", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base);

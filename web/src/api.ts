@@ -49,8 +49,8 @@ export const api = {
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
   createWorktree: (repo: string, prompt: string, provider: AgentProvider): Promise<{ branch: string; worktreePath: string; title: string }> =>
     post("/api/workstreams", { repo, prompt, provider }),
-  summary: (repo: string, worktree: string): Promise<ChangeSummary> =>
-    fetch(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
+  summary: (repo: string, worktree: string, base?: string): Promise<ChangeSummary> =>
+    fetch(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}${base ? `&base=${encodeURIComponent(base)}` : ""}`)}`).then(res),
   promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string; draft?: boolean; labels?: string[] }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
