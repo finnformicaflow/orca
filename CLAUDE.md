@@ -37,10 +37,12 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 ## Architecture
 
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
-  a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the interactive
-  terminal WebSocket (`/api/terminal/ws`) — everything else is request/response. The listen socket is
-  **bound to `127.0.0.1` only** (single-user local tool) so the terminal — which sends keystrokes into
-  a live shell — is never network-reachable.
+  a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the SSE turn
+  stream (`/api/turns/stream`) — everything else is request/response. **The API has no auth of its
+  own**, so the listen socket is loopback by default (`ORCA_BIND` overrides it for a deployed
+  instance, which binds its tailnet address and is reached only over Tailscale — never `0.0.0.0`).
+  (History: a keystrokes-into-a-shell terminal WebSocket once made the loopback bind critical; the
+  WebSocket is gone, the bind rule stays because the bridge runs agents with repo-granted authority.)
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
   start a dev server. The bridge does *only* what the browser
   physically can't, plus proxies GitHub so tokens never touch the browser. It is still not a
@@ -78,8 +80,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   (`agentEnv` in `server/agent.ts`) — a prompt injection that reads the environment must find no
   Slack token or database URL there.
 - **Operational state dir (`~/.orca`, override `ORCA_STATE_DIR`) holds the on-disk state.** The
-  database is no longer among it (see `ORCA_DATABASE_URL`); the dir holds the per-run **transcripts**
-  (`server/transcript.ts`) alongside the *advisory* operational files. It holds run **leases** (`server/lease.ts`: pid/runId/provider/
+  database is not among it (see `ORCA_DATABASE_URL`), and neither are the per-run step transcripts
+  any more (`server/transcript.ts` writes them to Postgres, so both instances can read them). The
+  dir holds the *advisory*, per-host operational files: run **leases** (`server/lease.ts`: pid/runId/provider/
   branch/expiry, so a restarted bridge rejects overlapping agent runs and reclaims dead/expired
   ones) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
   `/api/diagnostics` — never prompts, responses, logs, or secrets; it is NOT a transcript backup).
@@ -202,6 +205,21 @@ Conflict / CI / mergeability / "ready for review" are **badges, not lanes**. Age
 the workstream's selected provider; Slack posting uses a lightweight model of that provider (or copy). Previews start N services
 (frontend+backend) on assigned ports via
 `server/preview.ts`.
+
+## Deploying (a cloud box + the laptop, one database)
+
+Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname)
+and executes only the repos whose `runsOn` matches (`runsHere`). A request for a repo owned
+elsewhere is forwarded to that instance's URL from `instances` (`forwardToOwner`), except the
+`DATABASE_ONLY` routes, which any instance answers from Postgres. Each instance publishes the
+worktrees it can see (`worktree_inventory`) so the board shows both. Leases, the ledger, handoff
+files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
+describe the instance that answered, which is right for leases and wrong-but-tolerable for the
+usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is
+the whole deploy. `.github/workflows/check.yml` runs the gate on Linux, which is where a
+macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
+Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
+mode never reads OAuth credentials, which would silently break every subscription-login launch.
 
 ## Conventions (follow these)
 

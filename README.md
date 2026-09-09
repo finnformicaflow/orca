@@ -72,6 +72,34 @@ At least one agent CLI (`claude`, `codex`, `cursor-agent`) must be on the **brid
 lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shell you launch
 `bun run dev` from, or you'll see `Executable not found in $PATH`.
 
+## Deploy (a cloud box, reached over Tailscale)
+
+The bridge is one Bun process plus Postgres; it needs a real disk for worktrees and long-lived
+child processes, so it runs on a plain Linux box (an ARM instance with 4 GB is plenty), not on
+anything serverless. The API has no auth of its own: bind it to the tailnet address and reach it
+from the laptop over Tailscale. Nothing is ever exposed publicly.
+
+```sh
+# on the box, as user `orca`
+git clone <this repo> /opt/orca && cd /opt/orca
+bun install && bun run build
+cp .env.example .env            # set ORCA_DEV_ROOT, ORCA_DATABASE_URL, ORCA_INSTANCE=cloud,
+                                # ORCA_BIND=<tailscale ip>, ORCA_PREVIEW_HOST=<tailscale name>
+claude login                    # paste-the-code flow works over SSH; writes ~/.claude/.credentials.json
+codex login --device-auth       # if you use Codex
+gh auth login                   # or export GH_TOKEN (fine-grained PAT — it is YOUR identity, so
+gh auth setup-git               # `gh pr list --author @me` still means you); setup-git lets worktrees push
+sudo cp deploy/orca.service /etc/systemd/system/ && sudo systemctl enable --now orca
+```
+
+Then in the config (settings page or `orca.config.ts`) name the instance and assign repos to it:
+`instances: { cloud: "http://<tailscale ip>:8787" }` and `runsOn: "cloud"` on each repo the box
+should execute. The laptop keeps running its own bridge against the same database; the board on
+either shows both. Pin the Claude Code version on the box (`claude --version`) and check release
+notes before upgrading: `--bare` is due to become the default for `-p` and does not read OAuth
+logins. `.github/workflows/check.yml` runs the test gate on Linux so a macOS-only path breaks CI
+before it breaks the box.
+
 ## Run
 
 ```sh

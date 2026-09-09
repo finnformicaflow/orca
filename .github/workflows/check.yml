@@ -1,0 +1,38 @@
+# The same gate as `bun run check`, on Linux. The bridge is written on a Mac and deployed to a Linux
+# box; this is the only place Linux-only breakage (a missing tool, a flag that differs, a macOS FFI
+# path) shows up before it is on the server. Real Postgres, like the local run — the tests refuse a
+# stand-in on purpose (tests/pg.ts).
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: orca
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORCA_DEV_ROOT: ${{ github.workspace }}
+      ORCA_TEST_DATABASE_URL: postgres://postgres:orca@localhost:5432/postgres
+      # Git identity for the scratch repos the workflow tests commit in.
+      GIT_AUTHOR_NAME: orca-ci
+      GIT_AUTHOR_EMAIL: ci@orca.test
+      GIT_COMMITTER_NAME: orca-ci
+      GIT_COMMITTER_EMAIL: ci@orca.test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run check

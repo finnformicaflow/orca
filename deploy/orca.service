@@ -1,0 +1,30 @@
+# systemd unit for the deployed bridge. Install:
+#
+#   sudo cp deploy/orca.service /etc/systemd/system/orca.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now orca
+#   journalctl -u orca -f
+#
+# Assumes a checkout at /opt/orca owned by a user `orca` who has run `bun install`, `bun run build`,
+# and signed in each CLI (`claude login`, `codex login --device-auth`, `gh auth login`) — see README
+# "Deploy". Bun auto-loads /opt/orca/.env, so every ORCA_* setting lives there, not here.
+[Unit]
+Description=Orca bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=orca
+WorkingDirectory=/opt/orca
+# The CLIs install under the user's home; the unit's PATH is not the login shell's.
+Environment=PATH=/home/orca/.bun/bin:/home/orca/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/orca
+ExecStart=/home/orca/.bun/bin/bun run server/index.ts
+Restart=always
+RestartSec=3
+# SIGTERM is "a deploy, a reboot": the bridge drains its history writes and leaves preview servers
+# running (server/index.ts). Give it the drain window before systemd escalates.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

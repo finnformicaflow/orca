@@ -25,6 +25,7 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
+import { hostname } from "os";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason } from "../shared/agent";
 import * as bus from "./bus";
 
@@ -568,9 +569,10 @@ export async function saveConfig(input: { repos: { name: string; config: Fields 
 // ---- instances + inventory ----
 
 /** This process's identity. Two Orca instances share one database, so every row they publish says
- *  which machine it came from. Defaults to the hostname, which is right for a laptop. */
+ *  which machine it came from. Defaults to the machine's hostname (os.hostname(), not the HOSTNAME
+ *  shell variable — that one isn't exported under systemd, so every server would have been "local"). */
 export function instanceName(): string {
-  return process.env.ORCA_INSTANCE || Bun.env.HOSTNAME || "local";
+  return process.env.ORCA_INSTANCE || hostname();
 }
 
 /** Publish what THIS instance can see of a repo, and mark it alive.
