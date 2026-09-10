@@ -869,7 +869,7 @@ export async function addressReview(row: Row, manual = true) {
   const marked = (threads ?? []).map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
   await launchOnRow(
     row, wt,
-    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked),
+    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked, !manual),
     providerFor(row),
     { action: "review", evidenceChars: JSON.stringify(marked).length, instruction: "Address the review feedback" },
   );

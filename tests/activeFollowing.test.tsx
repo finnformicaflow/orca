@@ -75,6 +75,11 @@ test("review launch sends unresolved thread evidence and persists IDs only after
   await store.addressReview(row, false);
   expect(apiFake.claudePrompts.at(-1)).toContain("Thread T1");
   expect(apiFake.claudePrompts.at(-1)).toContain("src/a.ts:12");
+  // A followed review run must close the loop on GitHub, not just push: reply + resolve the thread,
+  // and engage the wider conversation.
+  expect(apiFake.claudePrompts.at(-1)).toContain("resolveReviewThread");
+  expect(apiFake.claudePrompts.at(-1)).toContain("addPullRequestReviewThreadReply");
+  expect(apiFake.claudePrompts.at(-1)).toContain("actively followed");
   expect(apiFake.enrichmentData.get("r::feat-threads")?.handedReviewThreadIds).toEqual(["T1"]);
 
   await store.addressReview(row, false);

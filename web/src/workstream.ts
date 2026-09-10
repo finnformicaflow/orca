@@ -570,8 +570,21 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, fai
   ].join(" "));
 }
 
-/** Instruction for Claude to address a PR's requested changes / review comments, then push. */
-export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = []): string {
+// Closing the loop on GitHub is the agent's job, not just pushing a commit: a fix nobody replied to
+// leaves the reviewer's thread open. These are the exact `gh` GraphQL calls (the thread id is the
+// one shown in each thread heading; reply and resolve both take that same node id).
+const REVIEW_INTERACTION = [
+  "Then close the loop on GitHub — a pushed fix with no reply leaves the thread open. For each thread you addressed, reply on it with one line saying what changed (cite the commit sha), then resolve it:",
+  `  gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}' -f t=THREAD_ID -f b="Fixed in <sha>: <what changed>"`,
+  `  gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t=THREAD_ID`,
+  "THREAD_ID is the id in each thread's heading above. For a thread you could NOT address, reply explaining why and leave it unresolved — never resolve a thread you didn't handle.",
+].join("\n");
+const followedReview = (pr: number | undefined): string =>
+  `This PR is actively followed, so keep its conversation current, not just its code: read the wider discussion (\`gh pr view ${pr} --comments\`) and reply to any open question or request directed at the author. Reply substantively; don't post redundant status chatter.`;
+
+/** Instruction for Claude to address a PR's requested changes / review comments, reply to and resolve
+ *  the threads, then push. `followed` = this is an auto-follow run, so also engage the conversation. */
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false): string {
   const evidence = threads.length
     ? `\n\nOrca collected these unresolved inline threads:\n${threads.map((thread) => [
       `### Thread ${thread.id}${thread.alreadyHanded ? " (previously handed; still unresolved)" : ""}`,
@@ -588,8 +601,10 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
     threads.length ? `Address every supplied unresolved thread.` : `Read them (\`gh pr view ${ws.prNumber} --comments\`) and address every point.`,
     `Verify the code around each referenced line because line numbers can drift. Run relevant checks, then commit and push.`,
-    `Report any thread that cannot be resolved and why.${evidence}`,
-  ].join(" "));
+    REVIEW_INTERACTION,
+    followed ? followedReview(ws.prNumber) : "",
+    evidence,
+  ].filter(Boolean).join(" "));
 }
 
 // Active PR following: when a card is "followed", Orca watches its polled status and launches the
