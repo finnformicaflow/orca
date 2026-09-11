@@ -239,6 +239,30 @@ export async function linkToWorktree(repoPath: string, worktreePath: string, pat
 }
 
 /** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). */
+export type ReapReason = "merged" | "closed";
+
+/** Remove the worktrees whose PR is done with. A MERGED PR's branch is deleted too (its commits are
+ *  in base). A CLOSED (unmerged) PR's worktree is removed but its branch is KEPT — those commits
+ *  exist only on it, so we never auto-delete them; the card clears because no worktree/open-PR
+ *  remains. A branch in neither set (a pre-PR local, or a still-open PR) is left alone. `before` runs
+ *  per reaped worktree ahead of removal so the caller can stop the agent/preview and archive it.
+ *  Returns what was reaped. Real git only; the caller owns the non-git side effects. */
+export async function reapWorktrees(
+  repoPath: string, worktreeRoot: string, merged: Set<string>, closed: Set<string>,
+  before?: (w: { branch: string; worktreePath: string }, reason: ReapReason) => void | Promise<void>,
+): Promise<{ branch: string; worktreePath: string; reason: ReapReason }[]> {
+  const reaped: { branch: string; worktreePath: string; reason: ReapReason }[] = [];
+  for (const w of await listWorktrees(repoPath, worktreeRoot)) {
+    const reason: ReapReason | undefined = merged.has(w.branch) ? "merged" : closed.has(w.branch) ? "closed" : undefined;
+    if (!reason) continue;
+    if (before) await before(w, reason);
+    await removeWorktree(repoPath, w.worktreePath).catch(() => {});
+    if (reason === "merged") await deleteBranch(repoPath, w.branch); // closed keeps its branch
+    reaped.push({ ...w, reason });
+  }
+  return reaped;
+}
+
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   await git(repoPath, "worktree", "remove", "--force", worktreePath);
 }

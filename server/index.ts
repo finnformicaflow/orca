@@ -418,16 +418,20 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!runsHere(repo, instance)) return json(await foreignInventory(repo.name));
     let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
-    const merged = await gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()); // empty for local-only repos
-    for (const w of wts.filter((w) => merged.has(w.branch))) {
+    // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,
+    // see git.reapWorktrees). Both lists are cached, so the hot poll pays at most one cheap gh list.
+    const [merged, closed] = await Promise.all([
+      gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()), // empty for local-only repos
+      gh.closedBranches(repo.repoPath).catch(() => new Set<string>()),
+    ]);
+    const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
       agent.stop(w.worktreePath);
       await agent.killByBranch(w.branch);
-      preview.stop(w.worktreePath, true); // merged branch reaped → drop its preview DB too
-      await git.removeWorktree(repo.repoPath, w.worktreePath).catch(() => {});
-      await git.deleteBranch(repo.repoPath, w.branch);
-      await db.archive(repo.name, w.branch); // reaped from disk; its conversation is kept
-    }
-    wts = wts.filter((w) => !merged.has(w.branch));
+      preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
+    });
+    for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
+    const reapedBranches = new Set(reaped.map((r) => r.branch));
+    wts = wts.filter((w) => !reapedBranches.has(w.branch));
     const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
     const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
     const mine = await Promise.all(wts.map(async (w) => {

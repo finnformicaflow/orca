@@ -384,6 +384,25 @@ export async function listMerged(cwd: string, since?: number): Promise<MergedPr[
 }
 
 /** Branch names of the user's merged PRs (not date-filtered) — used to reap their leftover worktrees. */
+// Branches of the user's recently CLOSED (unmerged) PRs — so a PR you closed/deleted gets its
+// worktree reaped, not just merged ones. Cached like merged so the hot agents-poll pays one cheap
+// list at most every TTL. headRefName only (no body/CI), so it stays fast even on a big repo.
+const closedCache = new Map<string, { at: number; branches: Set<string>; inflight?: Promise<Set<string>> }>();
+export async function closedBranches(cwd: string): Promise<Set<string>> {
+  const hit = closedCache.get(cwd);
+  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.branches;
+  if (hit?.inflight) return hit.inflight;
+  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "headRefName")
+    .then((raw) => {
+      const branches = new Set((JSON.parse(raw) as { headRefName: string }[]).map((j) => j.headRefName).filter(Boolean));
+      closedCache.set(cwd, { at: Date.now(), branches });
+      return branches;
+    })
+    .catch((error) => { closedCache.delete(cwd); throw error; });
+  closedCache.set(cwd, { at: hit?.at ?? 0, branches: hit?.branches ?? new Set(), inflight });
+  return inflight;
+}
+
 export async function mergedBranches(cwd: string): Promise<Set<string>> {
   return new Set((await mergedRows(cwd)).map((j) => j.headRefName));
 }
