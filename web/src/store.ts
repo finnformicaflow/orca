@@ -326,9 +326,22 @@ export function toggleFollow(row: Row) {
   patchEnrich(row.repo, row.branch, following ? { following } : { following, followSig: undefined });
 }
 
+// A branch can appear twice in `agents`: the live LOCAL worktree AND a stale row another instance
+// (often just this machine under a previous, drifted hostname) left in the shared inventory. Prefer
+// the local one — a remote duplicate must never shadow it, or the card shows the remote's stale
+// status and hides Copy CLI (whose `cd` path is local). Keyed by branch, local wins over remote.
+function worktreesByBranch(agents: LiveAgent[]): Map<string, LiveAgent> {
+  const byBranch = new Map<string, LiveAgent>();
+  for (const a of agents) {
+    const prev = byBranch.get(a.branch);
+    if (!prev || (prev.remote && !a.remote)) byBranch.set(a.branch, a);
+  }
+  return byBranch;
+}
+
 function runFollowers() {
   for (const rl of live) {
-    const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
+    const wtByBranch = worktreesByBranch(rl.agents);
     for (const pr of rl.prs) {
       const e = enrichOf(rl.repo, pr.branch);
       if (!e.following) continue;
@@ -408,6 +421,12 @@ function laneFor(row: Row, pr?: PrSummary): Lane {
 
 export function useWorkstreams(): Row[] {
   useSyncExternalStore(subscribe, () => version); // re-render on any store change (live, enrichment, optimistic)
+  return assembleRows();
+}
+
+/** Build the board rows from the current live/enrichment/optimistic state. Pure over module state,
+ *  so a non-React test can read assembled rows after a poll (see remoteDuplicate.test.ts). */
+export function assembleRows(): Row[] {
   const snapshot = live;
   const rows: Row[] = [];
   // Optimistic drafts first — they own the top of the Local lane until their real worktree lands.
@@ -421,7 +440,7 @@ export function useWorkstreams(): Row[] {
   }
   for (const rl of snapshot) {
     const prByBranch = new Map(rl.prs.map((p) => [p.branch, p]));
-    const wtByBranch = new Map(rl.agents.map((a) => [a.branch, a]));
+    const wtByBranch = worktreesByBranch(rl.agents);
     const mergedBranches = new Set(rl.merged.map((m) => m.branch));
     for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
       if (optBranches.has(`${rl.repo}::${branch}`)) continue; // its optimistic card is still standing in
