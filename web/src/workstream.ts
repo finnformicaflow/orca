@@ -573,11 +573,15 @@ export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, fai
 // Closing the loop on GitHub is the agent's job, not just pushing a commit: a fix nobody replied to
 // leaves the reviewer's thread open. These are the exact `gh` GraphQL calls (the thread id is the
 // one shown in each thread heading; reply and resolve both take that same node id).
-const REVIEW_INTERACTION = [
-  "Then close the loop on GitHub — a pushed fix with no reply leaves the thread open. For each thread you addressed, reply on it with one line saying what changed (cite the commit sha), then resolve it:",
-  `  gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}' -f t=THREAD_ID -f b="Fixed in <sha>: <what changed>"`,
+// The snapshot Orca passes can be stale or capped, so the agent works from the LIVE thread list and
+// verifies it cleared them. It decides and executes every reply/resolve itself — Orca does not post.
+const reviewInteraction = (pr: number | undefined): string => [
+  "Close the loop on GitHub yourself — a pushed fix with no reply leaves the thread open. Work from the LIVE list of open threads, not just the snapshot above (which may be stale or partial). List every unresolved thread — re-run this any time, including at the end to confirm none remain:",
+  `  gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved path line comments(last:1){nodes{author{login} body}}}}}}}' -F o="$(gh repo view --json owner --jq .owner.login)" -F n="$(gh repo view --json name --jq .name)" -F p=${pr} --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved|not)|"\\(.id)  \\(.path):\\(.line)  \\(.comments.nodes[-1].author.login): \\(.comments.nodes[-1].body)"'`,
+  "Respond to EVERY thread that command lists, one at a time, using its id. Reply on the thread, then resolve it:",
+  `  gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}' -f t=THREAD_ID -f b="<your reply>"`,
   `  gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t=THREAD_ID`,
-  "THREAD_ID is the id in each thread's heading above. For a thread you could NOT address, reply explaining why and leave it unresolved — never resolve a thread you didn't handle.",
+  "If the comment is valid, fix it in code first, then reply citing the commit and resolve. If it is NOT relevant or you won't change it, still reply saying why and resolve it — every thread gets a response. Leave a thread unresolved ONLY when you genuinely need the author's input, and even then post your question as a reply. Before finishing, re-run the list command and confirm it prints nothing.",
 ].join("\n");
 const followedReview = (pr: number | undefined): string =>
   `This PR is actively followed, so keep its conversation current, not just its code: read the wider discussion (\`gh pr view ${pr} --comments\`) and reply to any open question or request directed at the author. Reply substantively; don't post redundant status chatter.`;
@@ -601,7 +605,7 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
     threads.length ? `Address every supplied unresolved thread.` : `Read them (\`gh pr view ${ws.prNumber} --comments\`) and address every point.`,
     `Verify the code around each referenced line because line numbers can drift. Run relevant checks, then commit and push.`,
-    REVIEW_INTERACTION,
+    reviewInteraction(ws.prNumber),
     followed ? followedReview(ws.prNumber) : "",
     evidence,
   ].filter(Boolean).join(" "));
