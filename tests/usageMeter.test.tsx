@@ -135,14 +135,13 @@ test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => 
   expect(shapeCodexUsage(null)).toBeNull();
 });
 
-test("with several Claude logins configured, the meter shows one group per login", async () => {
+test("with hydra's logins, the meter shows one group per login with 5h, 1w AND the Fable window", async () => {
   apiFake.usageData = {
     claude: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null },
     codex: null,
     profiles: [
-      { name: "personal", usage: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null } },
-      { name: "work", usage: { fiveHour: { utilization: 12, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null } },
-      { name: "spare", usage: null }, // not logged in — nothing to show, nothing to break
+      { name: "personal", state: "ok", usage: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null, fable: { utilization: 21, resetsAt: null } } },
+      { name: "work", state: "ok", usage: { fiveHour: { utilization: 12, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } },
     ],
   };
   await mount();
@@ -150,6 +149,57 @@ test("with several Claude logins configured, the meter shows one group per login
   const work = container!.querySelector("[aria-label='Claude work usage limits']");
   expect(personal?.textContent).toContain("claude·personal");
   expect(personal?.textContent).toContain("95%");
+  expect(personal?.textContent).toContain("fable");   // the per-model window, from hydra's limits[] parse
+  expect(personal?.textContent).toContain("21%");
   expect(work?.textContent).toContain("12%");
-  expect(container!.querySelector("[aria-label='Claude spare usage limits']")).toBeNull();
+  expect(work?.textContent).not.toContain("fable");   // an account with no Fable window shows no bar
+  // An ordinary "ok" login carries no state tag.
+  expect(personal?.querySelector("[data-slot='usage-state']")).toBeNull();
+});
+
+test("a login that can't be used says why instead of showing misleading bars", async () => {
+  apiFake.usageData = {
+    claude: null, codex: null,
+    profiles: [
+      { name: "work", state: "exhausted", usage: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 40, resetsAt: null }, extra: null, fable: null } },
+      { name: "spare", state: "not signed in on this machine", usage: null }, // no reading at all…
+      { name: "old", state: "disabled", usage: null },
+    ],
+  };
+  await mount();
+  const work = container!.querySelector("[aria-label='Claude work usage limits']");
+  expect(work?.querySelector("[data-slot='usage-state']")?.textContent).toBe("exhausted");
+  expect(work?.textContent).toContain("95%"); // bars still shown — exhausted is a reading
+  // …but the login still appears, named, with its reason, so the board shows every account hydra knows.
+  const spare = container!.querySelector("[aria-label='Claude spare usage limits']");
+  expect(spare?.textContent).toContain("claude·spare");
+  expect(spare?.querySelector("[data-slot='usage-state']")?.textContent).toBe("not signed in on this machine");
+  expect(spare?.textContent).not.toContain("%");
+  expect(container!.querySelector("[aria-label='Claude old usage limits']")?.querySelector("[data-slot='usage-state']")?.textContent).toBe("disabled");
+});
+
+test("warns when hydra is installed but the bridge's `claude` isn't its shim (runs silently unrouted)", async () => {
+  const one = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null };
+  apiFake.usageData = { claude: one, codex: null, profiles: [{ name: "work", state: "ok", usage: one }], routing: { hydra: true, shim: false } };
+  await mount();
+  const warn = container!.querySelector("[data-slot='routing-warning']");
+  expect(warn?.textContent).toContain("routing off");
+  expect(warn?.getAttribute("title")).toContain("install.sh --shim");
+});
+
+test("no warning when the shim is active, or when hydra isn't installed at all", async () => {
+  const one = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null };
+  apiFake.usageData = { claude: one, codex: null, profiles: [{ name: "work", state: "ok", usage: one }], routing: { hydra: true, shim: true, bin: "/v/2.1.268" } };
+  await mount();
+  expect(container!.querySelector("[data-slot='routing-warning']")).toBeNull();
+  act(() => root?.unmount()); container?.remove();
+  apiFake.usageData = { claude: one, codex: null, routing: { hydra: false, shim: false } }; // no hydra → nothing to warn about
+  await mount();
+  expect(container!.querySelector("[data-slot='routing-warning']")).toBeNull();
+});
+
+test("mergeUsage keeps the last-known routing verdict across a poll that omitted it", () => {
+  const claude = { fiveHour: { utilization: 40, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null }, extra: null };
+  const routing = { hydra: true, shim: true };
+  expect(mergeUsage({ claude, codex: null, routing }, { claude, codex: null })).toEqual({ claude, codex: null, profiles: undefined, routing });
 });

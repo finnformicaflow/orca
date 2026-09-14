@@ -12,12 +12,24 @@ export type UsageWindow = { utilization: number; resetsAt: string | null };
 // Pay-as-you-go "extra usage" spend (only present when you've enabled it on your plan). Money is
 // carried in MINOR units (pence/cents) + exponent so the client formats it exactly, no float drift.
 export type ExtraUsage = { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number };
-export type ClaudeUsage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null };
+/** `fable` is the per-model weekly window (only hydra's `limits[]` parse exposes it); null/absent
+ *  when the account has none or the reading came from the bare endpoint shape. */
+export type ClaudeUsage = { fiveHour: UsageWindow; sevenDay: UsageWindow; extra: ExtraUsage | null; fable?: UsageWindow | null };
 export type CodexUsageWindow = UsageWindow & { label: string; durationMinutes: number | null };
 export type CodexUsage = { windows: CodexUsageWindow[] };
-/** `claude` is the first (or only) login's usage; `profiles` carries every configured login when
- *  there is more than one (server/profiles.ts), so the meter can show each. */
-export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null; profiles?: { name: string; usage: ClaudeUsage | null }[] };
+/** One Claude login as hydra reports it. `usage` is null with no reading yet (not signed in on this
+ *  machine, or never fetched); `state` is hydra's verdict — "ok", "disabled", "exhausted", "locked",
+ *  "token stale — refreshes on next launch", "no usage data yet", "not signed in on this machine". */
+export type ProfileUsage = { name: string; usage: ClaudeUsage | null; state?: string; email?: string };
+/** Whether Claude launches are actually being routed. `hydra`: installed on the bridge's PATH.
+ *  `shim`: the `claude` the bridge resolves is hydra's shim — the thing that routes a headless
+ *  `claude -p`. Claude Code's own updater rewrites `~/.local/bin/claude`, which silently removes the
+ *  shim and sends every run to the default login; this is how that becomes visible. `bin`: the real
+ *  binary hydra would exec (`hydra bin`). */
+export type Routing = { hydra: boolean; shim: boolean; bin?: string };
+/** `claude` is the first login's usage (back-compat for the single-login meter); `profiles` is every
+ *  login hydra knows, present only when hydra is installed. */
+export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null; profiles?: ProfileUsage[]; routing?: Routing };
 
 /** Shape the raw Anthropic endpoint payload into the windows + extra-usage spend we surface. Pure. */
 export function shapeUsage(raw: any): ClaudeUsage {
@@ -62,6 +74,80 @@ export function shapeCodexUsage(rateRaw: any): CodexUsage | null {
     })
     .filter((window): window is CodexUsageWindow => window !== null);
   return windows.length ? { windows } : null;
+}
+
+/** Shape `hydra status --json` into per-profile usage. Pure. hydra's buckets carry `pct` (int or
+ *  null) and `resets` (epoch SECONDS, or null); a null bucket means the account has no such window.
+ *  A profile with no session reading has `usage: null` but keeps its `state`, so the meter can still
+ *  say why (disabled / not signed in here / no data yet). */
+export function shapeHydraStatus(raw: any): ProfileUsage[] {
+  const win = (b: any): UsageWindow | null => b && typeof b === "object" ? {
+    utilization: Math.max(0, Math.min(100, Math.round(Number(b.pct) || 0))),
+    resetsAt: Number.isFinite(Number(b.resets)) && Number(b.resets) > 0 ? new Date(Number(b.resets) * 1000).toISOString() : null,
+  } : null;
+  const zero: UsageWindow = { utilization: 0, resetsAt: null };
+  const profiles = Array.isArray(raw?.profiles) ? raw.profiles : [];
+  return profiles
+    .filter((p: any) => p && typeof p.name === "string")
+    .map((p: any): ProfileUsage => {
+      const session = win(p.session);
+      const usage: ClaudeUsage | null = session
+        ? { fiveHour: session, sevenDay: win(p.weekly) ?? zero, extra: null, fable: win(p.fable) }
+        : null;
+      return { name: p.name, usage, state: typeof p.state === "string" ? p.state : undefined, email: typeof p.email === "string" && p.email ? p.email : undefined };
+    });
+}
+
+/** hydra's shim announces itself with a marker in its header; the real binary has none. Pure. */
+export const isHydraShim = (head: string): boolean => head.includes("hydra-shim");
+
+/** Is Claude routing live on this host? Reads only the first 512 bytes of whatever `claude`
+ *  resolves to (the real binary is large), and asks `hydra bin` for the target. Never throws. */
+export async function routingInfo(): Promise<Routing> {
+  const PATH = process.env.PATH ?? "";
+  const hydra = Bun.which("hydra", { PATH });
+  const claude = Bun.which("claude", { PATH });
+  let shim = false;
+  if (claude) {
+    try { shim = isHydraShim(await Bun.file(claude).slice(0, 512).text()); } catch { shim = false; }
+  }
+  let bin: string | undefined;
+  if (hydra) {
+    try {
+      const proc = Bun.spawn([hydra, "bin"], { env: process.env, stdout: "pipe", stderr: "ignore" });
+      const timer = setTimeout(() => proc.kill(), 5_000);
+      const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      clearTimeout(timer);
+      if (code === 0 && out.trim()) bin = out.trim();
+    } catch { /* advisory */ }
+  }
+  return { hydra: Boolean(hydra), shim, ...(bin ? { bin } : {}) };
+}
+
+// The last good hydra reading, so a slow or failed call (hydra refreshes stale profiles on this
+// call, bounded by its own curl timeout) keeps the meter on the previous numbers rather than blank.
+let lastGoodHydra: ProfileUsage[] | null = null;
+
+/** Every Claude login's usage via hydra (`hydra status --json`), or null when hydra isn't installed
+ *  or the call fails — the caller then falls back to the single default login. Never throws. */
+export async function hydraUsage(): Promise<ProfileUsage[] | null> {
+  // Live PATH, not Bun's startup snapshot — the test PATH shim (a fake `hydra`) relies on it, the same
+  // way run.ts passes env for the fake `gh`.
+  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  if (!hydra) return null;
+  try {
+    const proc = Bun.spawn([hydra, "status", "--json"], { env: process.env, stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), 15_000);
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    if (code !== 0) return lastGoodHydra;
+    const shaped = shapeHydraStatus(JSON.parse(out));
+    if (shaped.length) lastGoodHydra = shaped;
+    return lastGoodHydra;
+  } catch (error) {
+    console.error("[usage] hydra status failed:", error instanceof Error ? error.message : error);
+    return lastGoodHydra;
+  }
 }
 
 export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");
@@ -160,14 +246,12 @@ async function codexUsage(): Promise<CodexUsage | null> {
   return lastGoodCodex;
 }
 
-/** Current usage for every locally authenticated provider — every Claude login in `profiles` (the
- *  default one when none are given) plus Codex. Null only when nothing is available. */
-export async function usage(profiles: { name: string; configDir: string }[] = [{ name: "default", configDir: DEFAULT_CLAUDE_DIR }]): Promise<Usage | null> {
-  const [perProfile, codex] = await Promise.all([
-    Promise.all(profiles.map(async (p) => ({ name: p.name, usage: await claudeUsage(p.configDir) }))),
-    codexUsage(),
-  ]);
-  const claude = perProfile[0]?.usage ?? null;
-  if (!perProfile.some((p) => p.usage) && !codex) return null;
-  return { claude, codex, ...(profiles.length > 1 ? { profiles: perProfile } : {}) };
+/** Current usage for every locally authenticated provider. Claude comes from hydra when it is
+ *  installed (every login, three windows each), else from the default login's endpoint reading;
+ *  Codex from its app server. Null only when nothing at all is available. */
+export async function usage(): Promise<Usage | null> {
+  const [profiles, codex, routing] = await Promise.all([hydraUsage(), codexUsage(), routingInfo()]);
+  const claude = profiles ? (profiles[0]?.usage ?? null) : await claudeUsage();
+  if (!claude && !profiles?.some((p) => p.usage) && !codex) return null;
+  return { claude, codex, ...(profiles ? { profiles } : {}), routing };
 }

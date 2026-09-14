@@ -51,21 +51,20 @@ createdb orca
 `bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
 throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
 
-**Several Claude accounts** (to keep working when one hits its usage limit): give each its own
-config directory, log in once inside each, and list them. Orca sends each run to whichever login
-has headroom and carries the conversation's session across when it switches (see the handover
-ladder in `CLAUDE.md`). The header meter shows every login.
+**Several Claude accounts** (to keep working when one hits its usage limit) are handled by
+[claude-hydra](https://github.com/finnformica/claude-hydra), not by Orca. Install it, register each
+login, and install its `claude` shim; from then on every `claude -p` Orca spawns is routed to the
+login with the most headroom, and a `--resume` works on any of them because hydra shares sessions
+between logins. The header meter reads `hydra status --json` and shows every login's 5-hour, weekly
+and Fable windows, and warns if the shim has gone missing (Claude Code's updater can rewrite
+`~/.local/bin/claude`; re-run `install.sh --shim`). Needs `jq` and `curl`.
 
 ```sh
-CLAUDE_CONFIG_DIR=~/.claude-work claude login     # once per extra account
-```
-```ts
-// orca.config.ts (or the settings document)
-claudeProfiles: [
-  { name: "personal", configDir: "~/.claude" },
-  { name: "work", configDir: "~/.claude-work" },
-],
-profileSwitchPct: 90, // leave a login once its 5-hour window is this full
+git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra
+~/.local/share/claude-hydra/install.sh --shim
+hydra add personal --existing      # the login already in ~/.claude
+hydra add work                     # sign a second account in
+hydra status
 ```
 
 At least one agent CLI (`claude`, `codex`, `cursor-agent`) must be on the **bridge's** `$PATH`. If a CLI
@@ -86,6 +85,8 @@ bun install && bun run build
 cp .env.example .env            # set ORCA_DEV_ROOT, ORCA_DATABASE_URL, ORCA_INSTANCE=cloud,
                                 # ORCA_BIND=<tailscale ip>, ORCA_PREVIEW_HOST=<tailscale name>
 claude login                    # paste-the-code flow works over SSH; writes ~/.claude/.credentials.json
+# several Claude logins: install claude-hydra + its shim here too (see "Several Claude accounts";
+# apt install jq curl). The unit's PATH already lists ~/.local/bin, where hydra and the shim live.
 codex login --device-auth       # if you use Codex
 gh auth login                   # or export GH_TOKEN (fine-grained PAT — it is YOUR identity, so
 gh auth setup-git               # `gh pr list --author @me` still means you); setup-git lets worktrees push

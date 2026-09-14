@@ -2,6 +2,7 @@
 // the process metrics — no IO, so it's testable without booting (same ethos as workstream.ts). The
 // /api/diagnostics endpoint is a thin wrapper that hands it ledger.all() + metrics().
 import type { LedgerEntry, RunMode } from "./ledger";
+import type { Routing } from "./usage";
 
 const MODES: RunMode[] = ["fresh", "resume", "reset", "handoff"];
 
@@ -25,11 +26,14 @@ export type Diagnostics = {
   avgEvidenceChars: number; // over runs that carried evidence
   prDescription: { total: number; avoided: number };
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number };
+  /** Whether Claude launches are being routed across logins by hydra's shim (see usage.routingInfo). */
+  routing?: Routing;
 };
 
 export function summarize(
   entries: LedgerEntry[],
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number },
+  routing?: Routing,
 ): Diagnostics {
   const runs = entries.filter((e) => e.kind === "run");
   const prs = entries.filter((e) => e.kind === "pr-description");
@@ -55,7 +59,17 @@ export function summarize(
     avgEvidenceChars: evidenceCount ? Math.round(evidenceSum / evidenceCount) : 0,
     prDescription: { total: prs.length, avoided: prs.filter((e) => e.prDescriptionAvoided).length },
     gh,
+    ...(routing ? { routing } : {}),
   };
+}
+
+/** One line on whether runs are load-balanced across Claude logins — loud when the shim is gone. */
+export function renderRouting(r: Routing | undefined): string {
+  if (!r) return "Claude routing: unknown";
+  if (!r.hydra) return "Claude routing: hydra not installed — every run uses the default login";
+  return r.shim
+    ? `Claude routing: hydra shim active${r.bin ? ` → ${r.bin}` : ""}`
+    : "Claude routing: OFF — claude on PATH isn't hydra's shim (Claude Code's updater rewrites it; re-run install.sh --shim)";
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -78,6 +92,7 @@ export function renderText(d: Diagnostics): string {
     `Avg evidence: ${k(d.avgEvidenceChars)} chars`,
     `PR descriptions: ${d.prDescription.total} total, ${d.prDescription.avoided} avoided a fresh model call`,
     `GitHub: ${d.gh.ghCalls} gh calls, ${d.gh.agentPolls} agent polls over ${Math.round(d.gh.uptimeMs / 1000)}s`,
+    renderRouting(d.routing),
   ];
   return lines.join("\n");
 }

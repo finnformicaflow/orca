@@ -8,11 +8,10 @@ import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { usage } from "./usage";
+import { routingInfo, usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
-import { profilesOf, routeRun, type RunRoute } from "./profiles";
 import { backfillRun } from "./backfill";
 import * as bus from "./bus";
 import * as lease from "./lease";
@@ -84,10 +83,8 @@ agent.onQueuedMessage(async (message) => {
   const repo = repoOf(cfg, message.repo);
   const provider = isAgentProvider(message.provider) ? message.provider : "claude";
   if (!providerAllowed(repo, provider)) return; // opted out since it was queued
-  const route = provider === "claude" ? await routeRun(cfg, repo.name, message.branch, message.worktreePath, undefined) : ({} as RunRoute);
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
     provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
-    profile: route.profile, configDir: route.configDir,
     model: repo.agentModel, maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
     permissionMode: repo.agentPermissionMode ?? "ask",
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
@@ -201,11 +198,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
     // windows from the CLI's login. The Cursor CLI exposes no such endpoint — `about`/`status` report
     // only auth + subscription tier, no utilization — so there is deliberately no Cursor usage here.
-    return json(await usage(profilesOf(cfg.claudeProfiles)));
+    return json(await usage());
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
-    const report = summarize(ledger.all(), metrics());
+    const report = summarize(ledger.all(), metrics(), await routingInfo());
     return url.searchParams.get("format") === "text"
       ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
       : json(report);
@@ -521,11 +518,10 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: "an agent is already running for this worktree" }, 409);
     }
     const cwd = body.worktree || repo.repoPath;
-    // Claude runs go to whichever login has headroom; a resumed session is carried across a switch.
-    const route = provider === "claude" ? await routeRun(cfg, repo.name, body.branch, cwd, body.resume) : ({ resume: body.resume } as RunRoute);
+    // Which Claude LOGIN runs this is hydra's decision (the `claude` on PATH is its shim); a resume
+    // works on any login because hydra shares sessions between them. Orca just launches.
     const receipt = await agent.launch(body.key, cwd, body.prompt, {
-      provider, resume: route.resume, history: route.history ?? body.history, handoffFrom: route.handoffFrom ?? body.handoffFrom, repo: repo.name, branch: body.branch,
-      profile: route.profile, configDir: route.configDir,
+      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
       model: repo.agentModel,
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
