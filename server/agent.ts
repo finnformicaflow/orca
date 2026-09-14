@@ -51,7 +51,6 @@ export type RunMeta = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
-  profile?: string; // the Claude login (server/profiles.ts) this run went to; unset with one login
 };
 export type RunState = {
   status: "idle" | "running" | "done" | "error";
@@ -88,8 +87,6 @@ export type LaunchOptions = {
    *  `autofix`: queue a follow-up with the failure as evidence — once; a fix attempt that fails
    *  again stops there (isAutofix). */
   check?: { command: string; autofix: boolean };
-  profile?: string; // claude only: the login's name, shown on the card
-  configDir?: string; // claude only: that login's CLAUDE_CONFIG_DIR, set on the process
 };
 
 // Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
@@ -97,11 +94,12 @@ export type LaunchOptions = {
 // the environment must find nothing of Orca's there. Provider keys (ANTHROPIC_*, OPENAI_*) are
 // deliberately left alone: they are the CLI's, not ours.
 const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"];
-/** The environment a spawned agent gets: the bridge's, minus Orca's secrets, plus the profile's dir. */
-export function agentEnv(configDir?: string): Record<string, string | undefined> {
+/** The environment a spawned agent gets: the bridge's, minus Orca's secrets. Which Claude LOGIN a
+ *  run uses is not Orca's call: `claude` on PATH is hydra's shim, which picks the account with the
+ *  most headroom per launch (see CLAUDE.md "Handover ladder"). */
+export function agentEnv(): Record<string, string | undefined> {
   const env = { ...process.env };
   for (const key of ORCA_SECRETS) delete env[key];
-  if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   return env;
 }
 
@@ -509,8 +507,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const headBefore = options.check ? await headOf(cwd) : undefined;
   const proc = Bun.spawn(
     agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd),
-    // A profile is a CLAUDE_CONFIG_DIR: the CLI reads its login, settings and sessions from there.
-    { cwd, env: agentEnv(options.configDir), stdout: "pipe", stderr: "pipe" },
+    { cwd, env: agentEnv(), stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
@@ -571,7 +568,6 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     transcript.forget(runId); // run finished — the transcript file stays; it IS the history now
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
-    if (options.profile) meta = { ...meta, profile: options.profile };
     const structured = result ? parseAgentOutcome(result) : undefined;
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;

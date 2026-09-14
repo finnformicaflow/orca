@@ -158,12 +158,15 @@ context between turns.
 1. **Native resume, same login** (lossless). `--resume <session>` on the provider's own session:
    every message, tool call and result the provider recorded. The default for every follow-up.
    Changing the *model* keeps this rung — a resumed Claude session accepts a different `--model`.
-2. **Native resume, other Claude login** (lossless). With several `claudeProfiles` configured
-   (`server/profiles.ts`), a conversation stays on the login that owns its session until that
-   login's five-hour window passes `profileSwitchPct` (default 90), then moves to the login with the
-   most headroom. The session file (`<configDir>/projects/<cwd-slug>/<id>.jsonl` + its directory)
-   is **copied** into the new login's tree first, so the resume there sees the full native context.
-   The chosen login is recorded as `sessionProfile` on the workstream and shown on the card.
+2. **Native resume, other Claude login** (lossless) — **hydra's job, not Orca's.** The `claude` on
+   the bridge's PATH is [claude-hydra](https://github.com/finnformica/claude-hydra)'s shim: every
+   launch, interactive or `claude -p`, goes to the login with the most headroom (5-hour, weekly and
+   Fable windows, model-aware). Sessions are shared between logins through hydra's symlinked
+   `projects/`, so a `--resume` works on ANY account with no copy — verified cross-account. Orca
+   therefore has no profile routing of its own (it once did: a `claudeProfiles` picker plus a
+   session-file copy; both deleted when hydra took over). An explicit `CLAUDE_CONFIG_DIR` bypasses
+   hydra. If the shim is missing (Claude Code's updater rewrites `~/.local/bin/claude`), every run
+   silently lands on the default login — `/api/usage` reports `routing.shim` and the meter warns.
 3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
    context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
    can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)
@@ -226,7 +229,8 @@ worktrees it can see (`worktree_inventory`) so the board shows both. Leases, the
 files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
 describe the instance that answered, which is right for leases and wrong-but-tolerable for the
 usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is
-the whole deploy. `.github/workflows/check.yml` runs the gate on Linux, which is where a
+the whole deploy. The unit's `PATH` must hold `~/.local/bin` (hydra + the `claude` shim) and
+`jq`/`curl` (hydra's dependencies), and the box runs `hydra add … ; install.sh --shim` once. `.github/workflows/check.yml` runs the gate on Linux, which is where a
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
 mode never reads OAuth credentials, which would silently break every subscription-login launch.
