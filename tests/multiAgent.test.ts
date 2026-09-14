@@ -54,6 +54,16 @@ describe("provider adapters", () => {
     expect(agentCommand("codex", "/wt/x", "go", "x-1")).toEqual([
       "codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "x-1", "--", "go",
     ]);
+    // A pinned model reaches every CLI as its own --model flag.
+    expect(agentCommand("codex", "/wt/x", "go", undefined, undefined, "gpt-5.5")).toEqual([
+      "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.5", "-C", "/wt/x", "--", "go",
+    ]);
+    expect(agentCommand("cursor", "/wt/x", "go", undefined, undefined, "gpt-5")).toEqual([
+      "cursor-agent", "-p", "--model", "gpt-5", "--output-format", "stream-json", "--force", "--trust", "--", "go",
+    ]);
+    expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, "claude-fable-5-1")).toEqual([
+      "claude", "-p", "--permission-mode", "default", "--model", "claude-fable-5-1", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+    ]);
     // stream-json, like claude: the steps have to arrive as they happen for the chat to show them.
     expect(agentCommand("cursor", "/wt/x", "go")).toEqual([
       "cursor-agent", "-p", "--output-format", "stream-json", "--force", "--trust", "--", "go",
@@ -63,18 +73,17 @@ describe("provider adapters", () => {
     ]);
   });
 
-  test("a repo's agentModel pins the Claude runs only, leaving the one-shots and other providers alone", () => {
+  test("a model reaches the run as --model, leaving the one-shots alone", () => {
     // Without it, headless runs silently inherit ~/.claude/settings.json's `model` — the same default
     // your interactive sessions use, which is not necessarily what you want Orca's agents on.
     const pinned = agentCommand("claude", "/wt/x", "go", undefined, "s-1", "claude-opus-5[1m]", "bypass");
     expect(pinned.slice(0, 6)).toEqual(["claude", "-p", "--permission-mode", "bypassPermissions", "--model", "claude-opus-5[1m]"]);
     expect(pinned.at(-1)).toBe("go"); // still the trailing positional after `--`
     expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, "opus")).toContain("--resume"); // resumes still pin
-    // Unset → no flag at all, so the CLI default applies (never a hardcoded model).
+    // Unset → no flag at all, so the CLI default applies (the bridge decides what to pass, not argv).
     expect(agentCommand("claude", "/wt/x", "go", undefined, "s-1")).not.toContain("--model");
-    // Claude-only: the other providers take their model from their own CLI config.
-    expect(agentCommand("codex", "/wt/x", "go", undefined, undefined, "opus")).not.toContain("--model");
-    expect(agentCommand("cursor", "/wt/x", "go", undefined, undefined, "opus")).not.toContain("--model");
+    expect(agentCommand("codex", "/wt/x", "go")).not.toContain("--model");
+    expect(agentCommand("cursor", "/wt/x", "go")).not.toContain("--model");
     // The short blocking one-shots keep their own deliberate pins.
     expect(oneShotCommand("claude", "/wt/x", "t", "title")).toContain("haiku");
     expect(prDescriptionCommand("claude", "/wt/x", "b", "c-1")).toContain("sonnet");
@@ -400,12 +409,14 @@ describe("cross-provider continuation", () => {
   });
 
   test("pinning the card's agent routes every action through it, handing off from the last-run provider", async () => {
-    store.setCardProvider(row, "codex"); // persisted per branch, read by providerFor
+    store.setCardModel(row, "gpt-5.5"); // persisted per branch; the model implies the provider (read by providerFor)
     expect(apiFake.enrichmentData.get("r::feat")?.preferredProvider).toBe("codex");
+    expect(apiFake.enrichmentData.get("r::feat")?.preferredModel).toBe("gpt-5.5");
     // Address PR (not just Follow up) honours the pin — it used to hard-default to the last-run provider.
-    await store.addressPr({ ...row, preferredProvider: "codex" });
+    await store.addressPr({ ...row, preferredProvider: "codex", preferredModel: "gpt-5.5" });
     const launch = apiFake.agentLaunches.at(-1)!;
     expect(launch.provider).toBe("codex");
+    expect(launch.model).toBe("gpt-5.5"); // the pin rides along as the run's --model
     expect(launch.resume).toBeUndefined();  // switching agents → portable handoff, never a stale native resume
     expect(launch.handoffFrom).toBe("claude");
     expect(launch.history).toEqual(prior);

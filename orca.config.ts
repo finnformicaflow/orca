@@ -15,15 +15,17 @@ const previewDeps = join(import.meta.dir, "scripts/preview-deps.sh"); // reinsta
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {
+  // Every repo's headless Claude runs use Fable 5.1 unless the repo pins its own agentModel.
+  // Interactive sessions keep whatever ~/.claude/settings.json says; the title/PR-description
+  // one-shots stay on haiku/sonnet. (Live config is the database — see README; this file seeds it.)
+  agentModel: "claude-fable-5-1",
   repos: [
     {
       name: "branch-demo",
       repoPath: `${DEV}/branch-demo`,
       worktreeRoot: `${DEV}/branch-demo/.worktrees`,
       baseBranch: "master",
-      // Orca's headless Claude agents run on Opus 5; interactive sessions keep whatever
-      // ~/.claude/settings.json says. Title/PR-description one-shots stay on haiku/sonnet.
-      agentModel: "claude-opus-5[1m]",
+      // No per-repo agentModel: the top-level default (Fable 5.1) applies. Set one here to override.
       slackChannel: "#engineering",
       previewLabel: "preview",
       // Labels the Promote-to-PR menu offers as toggles; `preview` starts checked.

@@ -46,26 +46,26 @@ afterEach(async () => {
 });
 
 describe("optimistic follow-up submit", () => {
-  test("offers the available agent providers without a redundant chat-mode selector", async () => {
+  test("offers a model picker (not a provider one) without a redundant chat-mode selector", async () => {
     mount();
     await click(btn("Follow up")!);
     const mode = container!.querySelector('[role="combobox"][aria-label="Chat mode"]');
-    const provider = container!.querySelector('[role="combobox"][aria-label="Agent provider"]');
+    const model = container!.querySelector('[role="combobox"][aria-label="Model"]');
     expect(mode).toBeNull();
-    expect(provider?.textContent).toContain("Claude");
+    expect(container!.querySelector('[role="combobox"][aria-label="Agent provider"]')).toBeNull();
+    expect(model?.textContent).toBe("Claude · Fable 5.1");
   });
 
-  test("defaults to and tracks the card's current provider", async () => {
+  test("defaults to and tracks the card's current model", async () => {
     mount();
     await click(btn("Follow up")!);
-    const selected = () => container!.querySelector('[role="combobox"][aria-label="Agent provider"]')?.textContent ?? "";
-    expect(selected()).toContain("Claude");
+    const selected = () => container!.querySelector('[role="combobox"][aria-label="Model"]')?.textContent ?? "";
+    expect(selected()).toBe("Claude · Fable 5.1");
 
-    await act(async () => {
-      root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex" }} />);
-      await flush();
-    });
-    expect(selected()).toContain("Codex");
+    await act(async () => { root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex" }} />); await flush(); });
+    expect(selected()).toBe("Codex · GPT-5.5");   // last ran on Codex, nothing pinned → its first model
+    await act(async () => { root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex", preferredModel: "claude-fable-5-1" }} />); await flush(); });
+    expect(selected()).toBe("Claude · Fable 5.1");   // a pinned model wins, and implies its CLI
   });
 
   test("closes the box immediately on send and clears the draft on success", async () => {

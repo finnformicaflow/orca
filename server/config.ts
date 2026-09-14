@@ -63,8 +63,8 @@ export type RepoConfig = {
   copyToWorktree?: string[];
   /**
    * Model for this repo's headless Claude agent runs, e.g. `claude-opus-5[1m]` or a shorthand like
-   * `opus`. Unset → the `claude` CLI's own default (`model` in ~/.claude/settings.json), which is
-   * what your interactive sessions use. Setting it here scopes the choice to Orca's agents.
+   * `opus`. Overrides the top-level `agentModel` default; with neither set the `claude` CLI's own
+   * default applies (`model` in ~/.claude/settings.json), which is what your interactive sessions use.
    * Claude only: Codex/Cursor pick their model from their own CLI config. Does NOT affect the title
    * and PR-description one-shots — those pin haiku/sonnet deliberately (they're short, blocking calls).
    */
@@ -110,7 +110,14 @@ export type OrcaConfig = {
   staleHours: number;
   /** Hard ceiling for one headless agent run, preventing abandoned sessions consuming quota. */
   agentTimeoutMinutes?: number;
+  /** Default model for every repo's headless Claude runs (`--model`), e.g. `claude-fable-5-1`. A
+   *  repo's own `agentModel` overrides it. Unset → the `claude` CLI's own default. Claude only. */
+  agentModel?: string;
 };
+
+/** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
+export const modelFor = (cfg: Pick<OrcaConfig, "agentModel">, repo: Pick<RepoConfig, "agentModel">): string | undefined =>
+  repo.agentModel ?? cfg.agentModel;
 
 /** A repo path as STORED. Paths are per-machine — once a laptop and a cloud box share one database,
  *  the same repo lives at different absolute paths on each — so a stored config keeps them as
@@ -218,6 +225,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentTimeoutMinutes !== undefined && (typeof d.agentTimeoutMinutes !== "number" || d.agentTimeoutMinutes <= 0)) {
     errors.push("agentTimeoutMinutes must be a positive number");
   }
+  if (d.agentModel !== undefined && (typeof d.agentModel !== "string" || !d.agentModel.trim())) {
+    errors.push("agentModel must be a model id such as claude-fable-5-1");
+  }
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -226,6 +236,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       portRange: (portRange as [number, number]) ?? [30000, 40000],
       staleHours: (d.staleHours as number) ?? 24,
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
+      agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
     },
   };
@@ -279,6 +290,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       portRange: file.portRange,
       staleHours: file.staleHours,
       ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
+      ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
     },
   });
 }
@@ -303,6 +315,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     portRange: (app.portRange as [number, number]) ?? [30000, 40000],
     staleHours: (app.staleHours as number) ?? 24,
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
+    agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
   };
   cached = config;
@@ -325,6 +338,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       portRange: config.portRange,
       staleHours: config.staleHours,
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
+      ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
     },
   });

@@ -1,6 +1,6 @@
 import { tmpdir } from "os";
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -20,7 +20,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import { followUpPrompt, mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
-import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome } from "../shared/agent";
+import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -78,14 +78,22 @@ if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered $
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.
+/** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
+ *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
+const runModel = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvider, pinned?: string): string | undefined =>
+  pinned || (provider === "claude" ? modelFor(cfg, repo) : undefined);
+
 agent.onQueuedMessage(async (message) => {
   const cfg = await loadConfig();
   const repo = repoOf(cfg, message.repo);
   const provider = isAgentProvider(message.provider) ? message.provider : "claude";
   if (!providerAllowed(repo, provider)) return; // opted out since it was queued
+  // The pin lives in enrichment, so a message queued before a model switch still runs on the model
+  // the card shows when it is dispatched.
+  const pinned = (await db.enrichment(repo.name))[message.branch]?.preferredModel;
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
     provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
-    model: repo.agentModel, maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
+    model: runModel(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined), maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
     permissionMode: repo.agentPermissionMode ?? "ask",
     timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   });
@@ -225,6 +233,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
       hasRemote: await git.hasRemote(r.repoPath),
+      defaultModel: modelFor(cfg, r), // what an unpinned card runs on (Claude), so the picker can show it
       // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
       // enforces, because a tab open since before a change would otherwise offer the old actions.
       features: featuresOf(r),
@@ -495,7 +504,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
-      model: repo.agentModel,
+      model: runModel(cfg, repo, provider, body.model),
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
       maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
@@ -527,7 +536,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // works on any login because hydra shares sessions between them. Orca just launches.
     const receipt = await agent.launch(body.key, cwd, body.prompt, {
       provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
-      model: repo.agentModel,
+      model: runModel(cfg, repo, provider, body.model),
       permissionMode: repo.agentPermissionMode ?? "ask",
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
       maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),

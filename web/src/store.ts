@@ -13,6 +13,7 @@ import {
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
+import { defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
@@ -79,7 +80,7 @@ export const staleHours = () => cfg?.staleHours ?? 24;
 
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
-  prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; preferredProvider?: AgentProvider; transcript?: AgentTurn[]; following?: boolean;
+  prompt?: string; title?: string; promoted?: boolean; sessionId?: string; agentProvider?: AgentProvider; preferredProvider?: AgentProvider; preferredModel?: string; transcript?: AgentTurn[]; following?: boolean;
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
   handedReviewThreadIds?: string[];
@@ -353,7 +354,7 @@ function runFollowers() {
       const row: Row = {
         repo: rl.repo, hasRemote: rl.hasRemote, branch: pr.branch, title: pr.title, prompt: e.prompt ?? "",
         lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
-        agentProvider: e.agentProvider ?? wt?.agentProvider, preferredProvider: e.preferredProvider, transcript: e.transcript,
+        agentProvider: e.agentProvider ?? wt?.agentProvider, preferredProvider: e.preferredProvider, preferredModel: e.preferredModel, transcript: e.transcript,
         prNumber: pr.number, prUrl: pr.url, following: true,
         // addressPr decides its sections from the row, so the blocker state must travel with it.
         ciStatus: pr.ciStatus, mergeable: pr.mergeable, reviewStatus: pr.reviewStatus, mergeClean: wt?.mergeClean,
@@ -384,6 +385,7 @@ export type Row = {
   agentStartedAt?: number;
   agentProvider?: AgentProvider;
   preferredProvider?: AgentProvider;
+  preferredModel?: string;
   sessionId?: string;
   transcript?: AgentTurn[];
   mergeClean?: "clean" | "conflict";
@@ -457,6 +459,7 @@ export function assembleRows(): Row[] {
         agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         preferredProvider: e.preferredProvider,
+        preferredModel: e.preferredModel,
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
@@ -487,7 +490,8 @@ export function assembleRows(): Row[] {
 /** `chat`: the first message is a conversation (chatPrompt), not a work order (launchPrompt) — the
  *  "New chat" path. Same optimistic card + background worktree; `onCreated` fires with the branch
  *  once it exists so the caller can open its terminal. */
-export function createWorkstream(repo: string, prompt: string, images: File[] = [], provider: AgentProvider = "claude", opts: { chat?: boolean; onCreated?: (branch: string) => void } = {}): OptimisticDraft {
+export function createWorkstream(repo: string, prompt: string, images: File[] = [], model: string = defaultModelFor(repo), opts: { chat?: boolean; onCreated?: (branch: string) => void } = {}): OptimisticDraft {
+  const provider = providerOfModel(model) ?? "claude";
   const draft: OptimisticDraft = { id: `opt-${optSeq++}`, repo, prompt, title: titleFromPrompt(prompt) };
   optimistic = [...optimistic, draft];
   notify();
@@ -499,14 +503,14 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
       ]);
       const { branch, worktreePath, title } = created; // selected provider derives the title
       draft.created = { branch, worktreePath };
-      patchEnrich(repo, branch, { prompt, title, agentProvider: provider, createdAt: now() });
+      patchEnrich(repo, branch, { prompt, title, agentProvider: provider, preferredModel: model, createdAt: now() });
       opts.onCreated?.(branch);
       if (draft.cancelled) { // Undo pressed while creating — discard the worktree we just made.
         await api.discardWorktree(repo, worktreePath, branch, true).catch(() => {});
         deleteEnrich(repo, branch);
       } else {
         const first = opts.chat ? chatPrompt(prompt) : launchPrompt({ title, branch, prompt }, baseBranch(repo));
-        void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt })
+        void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt, model })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -532,16 +536,29 @@ export async function undoDraft(draft: OptimisticDraft) {
  *  else the provider that last ran, else Claude. Read by every agent action AND Follow autopilot, so
  *  one pinned choice drives Follow up / Fix CI / Resolve conflicts / Address review consistently. */
 export function providerFor(row: Row): AgentProvider {
-  if (row.preferredProvider && agentProviders().includes(row.preferredProvider)) return row.preferredProvider;
+  const pinned = providerOfModel(row.preferredModel) ?? row.preferredProvider;
+  if (pinned && agentProviders().includes(pinned)) return pinned;
   return row.agentProvider ?? "claude";
 }
 
-/** Pin the card to an agent (persisted per branch). A pin that differs from the provider that last
- *  ran makes the next action hand off through launchOnRow's portable transcript — so switching agents
- *  mid-workstream stays lossless; the worktree/git remain the source of truth. */
-export function setCardProvider(row: Row, provider: AgentProvider) {
-  patchEnrich(row.repo, row.branch, { preferredProvider: provider });
+/** What an unpinned card runs on: the repo's configured default, else Fable 5.1. */
+export const defaultModelFor = (repo: string): string => repoInfo(repo)?.defaultModel ?? defaultModelOf("claude");
+
+/** The model a card's next run uses — the pin, else the repo default (or the last-run provider's
+ *  first catalog model when that isn't Claude). This is what the picker shows. */
+export function modelFor(row: Row): string {
+  if (row.preferredModel && agentProviders().includes(providerOfModel(row.preferredModel) ?? "claude")) return row.preferredModel;
+  const provider = providerFor(row);
+  return provider === "claude" ? defaultModelFor(row.repo) : defaultModelOf(provider);
 }
+
+/** Pin the card to a model (persisted per branch); the model implies the agent. A pin whose CLI
+ *  differs from the one that last ran makes the next action hand off through launchOnRow's portable
+ *  transcript — so switching agents mid-workstream stays lossless; the worktree/git remain the truth. */
+export function setCardModel(row: Row, model: string) {
+  patchEnrich(row.repo, row.branch, { preferredModel: model, preferredProvider: providerOfModel(model) ?? "claude" });
+}
+
 
 /** Ask the pinned provider to name this card (2–5 words) from its prompt, or — for a PR opened outside
  *  Orca — its title + body. Used by the Rename dialog's "Suggest" button; the name stays editable. */
@@ -777,6 +794,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     // Carried so the bridge can queue this verbatim if a run is already in flight.
     attachments: ledger.attachments,
     instruction: ledger.instruction,
+    model: modelFor(row),
     resume: sameNativeSession ? sessionId : undefined,
     history: !sameNativeSession ? transcript : undefined,
     // No transcript (a chat started blank) → a plain first run, not a handoff over nothing.

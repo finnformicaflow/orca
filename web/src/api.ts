@@ -42,7 +42,7 @@ async function res(r: Response) {
   return data;
 }
 
-export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[] };
+export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[]; defaultModel?: string };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
@@ -119,11 +119,11 @@ export const api = {
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),
-  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; instruction?: string } = {}): Promise<LaunchReceipt> =>
+  runAgent: (worktreePath: string, prompt: string, provider: AgentProvider = "claude", options: { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; instruction?: string; model?: string } = {}): Promise<LaunchReceipt> =>
     post("/api/agents/run", { worktreePath, prompt, provider, ...options }),
   // Returns `{ status: "queued" }` instead of a receipt when a run is already in flight and this is a
   // follow-up — the bridge holds it and sends it when that run finishes.
-  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; attachments?: string[]; instruction?: string } = {}): Promise<LaunchReceipt | { status: "queued"; queued: QueuedMessage }> =>
+  agent: (repo: string, key: string, prompt: string, options: { worktree?: string; provider?: AgentProvider; resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider; branch?: string; action?: string; evidenceChars?: number; attachments?: string[]; instruction?: string; model?: string } = {}): Promise<LaunchReceipt | { status: "queued"; queued: QueuedMessage }> =>
     post("/api/agent", { repo, key, prompt, ...options }),
   // Compatibility helper for existing callers/tests while agent actions migrate to `agent`.
   claude: (repo: string, key: string, prompt: string, worktree?: string, resume?: string): Promise<{ status: string }> =>

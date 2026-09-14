@@ -43,7 +43,7 @@ export const apiFake = {
   // Prompts passed to the agent APIs (active-following fires agent actions through them) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
-  agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider }[],
+  agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string }[],
   handoffs: [] as { branch: string; content: string }[],
   slackSends: [] as { repo: string; text: string }[],
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
@@ -121,8 +121,8 @@ mock.module("@/api", () => ({
       apiFake.titleProviders.push(provider);
       return new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; });
     },
-    runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude") => {
-      apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider }); return { status: "ok" };
+    runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude", options: { model?: string } = {}) => {
+      apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider, model: options.model }); return { status: "ok" };
     },
     uploadAttachments: async () => [],
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {
@@ -218,9 +218,9 @@ mock.module("@/api", () => ({
       if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
       return { status: "ok" };
     },
-    agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider } = {}) => {
+    agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string } = {}) => {
       apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
-      apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom });
+      apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom, model: options.model });
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
       if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
       return { status: "ok" };

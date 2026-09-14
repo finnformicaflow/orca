@@ -70,12 +70,13 @@ describe("optimistic draft creation", () => {
     expect(apiFake.calls).toContain("runAgent");
   });
 
-  test("launches a newly-created worktree with the selected provider", async () => {
+  test("launches a newly-created worktree on the selected model, which picks the provider", async () => {
     mount();
-    act(() => { store.createWorkstream("r", "Add a fancy widget", [], "codex"); });
+    act(() => { store.createWorkstream("r", "Add a fancy widget", [], "gpt-5.5"); });
     await act(async () => { apiFake.pending!({ branch: "codex-widget", worktreePath: "/wt/codex-widget", title: "Add widget" }); await flush(); await flush(); });
     expect(apiFake.titleProviders.at(-1)).toBe("codex");
     expect(apiFake.agentLaunches.at(-1)?.provider).toBe("codex");
+    expect(apiFake.agentLaunches.at(-1)?.model).toBe("gpt-5.5");
   });
 
   test("Undo removes the card at once and discards the worktree even if it lands afterwards", async () => {

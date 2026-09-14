@@ -2,14 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, markReady,
-  cliCommand, disableAutoMerge, merge, promote, providerFor, rename, resolveConflicts, sendSlack, setCardProvider, staleHours, suggestTitle, toggleFollow, useAgentProviders, useRepos, type Row,
+  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { agentLabel, type AgentProvider } from "../../../shared/agent";
+import { ModelPicker } from "@/components/ModelPicker";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -299,11 +298,9 @@ export function FollowUpComposer(
   { row, onClose, onFail, onSubmitting }: { row: Row; onClose: () => void; onFail: (msg: string) => void; onSubmitting: (busy: boolean) => void },
 ) {
   const key = followUpDraftKey(row);
-  const providers = useAgentProviders();
   // The composer's picker IS the card's pin — one persisted choice, surfaced here and on the card
-  // header. Changing it re-pins the card, so every later action (Fix CI, Resolve conflicts, …) uses
-  // it too; the send below reads the same resolved provider, so no local mirror state to drift.
-  const provider = providerFor(row);
+  // header. Changing it re-pins the card, so every later action (Address PR, …) runs on it too; the
+  // send below resolves the same pin, so no local mirror state to drift.
   return (
     <ChatComposer
       autoFocus
@@ -315,12 +312,7 @@ export function FollowUpComposer(
       placeholder="Continue this work…  (⌘+Enter)"
       leading={
         <div className="flex min-w-0 w-full items-center overflow-hidden">
-          <Select value={provider} onValueChange={(v) => setCardProvider(row, v as AgentProvider)}>
-            <SelectTrigger size="sm" aria-label="Agent provider" className="text-muted-foreground hover:bg-accent min-w-0 max-w-full border-0 shadow-none focus-visible:ring-0"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <ModelPicker label="Model" value={modelFor(row)} ran={row.agentMeta?.model} onChange={(m) => setCardModel(row, m)} className="max-w-full" />
         </div>
       }
       // Optimistic submit: close the box the instant you send (launching the agent takes a few

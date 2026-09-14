@@ -4,7 +4,7 @@ import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/
 import type { ChangeSummary } from "../../../server/git";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, markReady, merge, promote,
-  providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
+  defaultModelFor, modelFor, rerunAgent, resolveConflicts, sendSlack, setCardModel,
   staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
@@ -19,7 +19,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, D
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
-import { agentLabel, type AgentProvider } from "../../../shared/agent";
+import { modelLabel, providerOfModel } from "../../../shared/models";
+import { ModelPicker } from "@/components/ModelPicker";
 
 const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
@@ -246,29 +247,12 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
   );
 }
 
-// The card's agent, as a hover-reveal picker. At rest it reads as plain text (the provider name);
-// hovering/focusing reveals it's a dropdown, and choosing re-pins the card so every action — Follow
-// up, Fix CI, Resolve conflicts, Address review — uses it (store.setCardProvider / providerFor). It's
-// a real Select trigger, so it's keyboard-focusable, not hover-only. stopPropagation keeps a click
+// The card's model, as a hover-reveal picker. At rest it reads as plain text ("Claude · Fable 5.1");
+// choosing re-pins the card so every action — Follow up, Address PR — runs on it (store.setCardModel
+// / modelFor). The tooltip names the last run's model when it differs. stopPropagation keeps a click
 // from bubbling to the card's row navigation.
-function ProviderPicker({ row }: { row: Row }) {
-  const providers = useAgentProviders();
-  const provider = providerFor(row);
-  return (
-    <Select value={provider} onValueChange={(v) => setCardProvider(row, v as AgentProvider)}>
-      <SelectTrigger
-        size="sm"
-        aria-label="Agent for this card"
-        onClick={(e) => e.stopPropagation()}
-        className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent pl-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70"
-      >
-        {agentLabel(provider)}
-      </SelectTrigger>
-      <SelectContent onClick={(e) => e.stopPropagation()}>
-        {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
-      </SelectContent>
-    </Select>
-  );
+function CardModelPicker({ row }: { row: Row }) {
+  return <ModelPicker quiet label="Model for this card" value={modelFor(row)} ran={row.agentMeta?.model} onChange={(m) => setCardModel(row, m)} />;
 }
 
 function timeAgo(iso?: string): string {
@@ -318,9 +302,11 @@ function NewDraft() {
   const repos = useRepos();
   const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
-  const [provider, setProvider] = useState<AgentProvider>(() => providers[0] ?? "claude");
-  useEffect(() => { if (providers.length && !providers.includes(provider)) setProvider(providers[0]!); }, [providers, provider]);
   const active = repo || repos[0]?.name || "";
+  // The model for the new draft; the repo's default unless you pick another. Falls back when the
+  // config arrives (or changes) and the current choice's CLI isn't installed here.
+  const [model, setModel] = useState<string>(() => defaultModelFor(active));
+  useEffect(() => { if (providers.length && !providers.includes(providerOfModel(model) ?? "claude")) setModel(defaultModelFor(active)); }, [providers, model, active]);
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
   // draft (wrong repo) can be reverted; Undo discards it (kills the run, removes the worktree+branch).
@@ -340,7 +326,7 @@ function NewDraft() {
       persistKey="orca.newDraft"
       placeholder="Describe a feature…  (⌘+Enter)"
       onSubmit={async (text, images) => {
-        setUndoable(createWorkstream(active, text, images, provider));
+        setUndoable(createWorkstream(active, text, images, model));
       }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
@@ -362,12 +348,7 @@ function NewDraft() {
               {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Select value={provider} onValueChange={(v) => setProvider(v as AgentProvider)}>
-            <SelectTrigger size="sm" aria-label="Agent provider" className="text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 max-w-24 flex-1 border-0 shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {providers.map((p) => <SelectItem key={p} value={p}>{agentLabel(p)}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <ModelPicker label="Model" value={model} onChange={setModel} className="max-w-40 flex-1" />
         </div>
       }
       action={
@@ -379,10 +360,10 @@ function NewDraft() {
             open={chatOpen}
             onClose={() => setChatOpen(false)}
             repo={active}
-            provider={provider}
+            model={model}
             onSubmit={async (text, images) => {
               setChatOpen(false);
-              setUndoable(createWorkstream(active, text, images, provider, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
+              setUndoable(createWorkstream(active, text, images, model, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
             }}
           />
         </>
@@ -393,7 +374,7 @@ function NewDraft() {
 
 // The blank chat's first message. A native <dialog> like the terminal's; the composer is the same
 // one the terminal uses, so paste/drop attachments and ⌘+Enter work the same.
-function NewChatDialog({ open, onClose, repo, provider, onSubmit }: { open: boolean; onClose: () => void; repo: string; provider: AgentProvider; onSubmit: (text: string, images: File[]) => Promise<void> }) {
+function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean; onClose: () => void; repo: string; model: string; onSubmit: (text: string, images: File[]) => Promise<void> }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
@@ -404,7 +385,7 @@ function NewChatDialog({ open, onClose, repo, provider, onSubmit }: { open: bool
   return (
     <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
       <div className="flex flex-col gap-2 p-3">
-        <div className="text-muted-foreground text-xs">New chat · {repo} · {agentLabel(provider)}</div>
+        <div className="text-muted-foreground text-xs">New chat · {repo} · {modelLabel(model)}</div>
         {open && <ChatComposer autoFocus persistKey="orca.newChat" placeholder="Ask anything…  (⌘+Enter)" onSubmit={onSubmit} onCancel={onClose} />}
       </div>
     </dialog>
@@ -522,7 +503,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : isLocal ? (
             <div>no changes yet</div>
           ) : <div />}
-          {(row.agentMeta || row.agentProvider || row.worktreePath || row.prNumber) && <ProviderPicker row={row} />}
+          {(row.agentMeta || row.agentProvider || row.worktreePath || row.prNumber) && <CardModelPicker row={row} />}
         </div>
       )}
       {isDone && <div className="text-muted-foreground text-xs">merged {timeAgo(row.mergedAt)}</div>}

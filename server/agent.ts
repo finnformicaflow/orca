@@ -77,7 +77,7 @@ export type LaunchOptions = {
   timeoutMs?: number;
   repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
-  model?: string; // repo's `agentModel` — claude only; unset means the CLI's own default
+  model?: string; // the CLI's --model; unset means its own default
   permissionMode?: "bypass" | "ask"; // repo's `agentPermissionMode`; `ask` (the default) is NOT bypass
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
@@ -112,14 +112,8 @@ export function runMode(options: LaunchOptions): ledger.RunMode {
   return "fresh";
 }
 
-/** claude-haiku-4-5-20251001 → "Haiku 4.5" (drop `claude-`, the `[1m]` tier suffix, and the
- *  trailing date, then prettify). */
-export function prettyModel(id: string): string {
-  const core = id.replace(/^claude-/, "").replace(/\[[^\]]*\]$/, "").replace(/-\d{6,8}$/, "");
-  const [family, ...ver] = core.split("-");
-  const cap = (s: string | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
-  return ver.length ? `${cap(family)} ${ver.join(".")}` : cap(core) || id;
-}
+import { prettyModel } from "../shared/models";
+export { prettyModel };
 
 /** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
 export function parseRunMeta(j: any): RunMeta {
@@ -468,28 +462,30 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
 export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number): string[] {
+  // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
+  const m = model ? ["--model", model] : [];
   if (provider === "codex") {
     return resume
-      ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resume, "--", prompt]
-      : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", cwd, "--", prompt];
+      ? ["codex", "exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", ...m, resume, "--", prompt]
+      : ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", ...m, "-C", cwd, "--", prompt];
   }
   if (provider === "cursor") {
     // stream-json (not json) so the run's steps arrive AS THEY HAPPEN, the same reason claude uses
     // it. The final `result` event is the same object the buffered form emitted, so
     // parseCursorOutput still extracts the outcome.
-    return ["cursor-agent", "-p", ...(resume ? ["--resume", resume] : []), "--output-format", "stream-json", "--force", "--trust", "--", prompt];
+    return ["cursor-agent", "-p", ...m, ...(resume ? ["--resume", resume] : []), "--output-format", "stream-json", "--force", "--trust", "--", prompt];
   }
   // stream-json (not json) so the run's steps arrive AS THEY HAPPEN — read incrementally in
   // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
   // stream-json under -p. The final `result` event is the same object the old `json` form emitted,
   // so parseClaudeStreamOutput extracts the identical outcome/meta at exit.
-  // `model` comes from the repo's `agentModel`; unset → the claude CLI's own default. The permission
+  // The permission
   // mode is the repo's: `bypassPermissions` was unconditional, which is fine for your own repo and
   // much less so for a client's, so a repo now opts into it.
   // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(model ? ["--model", model] : []), ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {

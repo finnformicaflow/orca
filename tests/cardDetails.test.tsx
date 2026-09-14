@@ -52,20 +52,21 @@ afterEach(() => {
 });
 
 describe("swimlane card details", () => {
-  test("the card shows only the agent picker — no model or context-fill readout", async () => {
+  test("the card shows the model picker (provider · model of the NEXT run) — no context-fill readout", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, agentProvider: "claude", agentMeta: { model: "Opus 4.8", contextPct: 12 } });
-    const picker = container!.querySelector<HTMLElement>('[aria-label="Agent for this card"]');
-    expect(picker?.textContent).toContain("Claude");
+    const picker = container!.querySelector<HTMLElement>('[aria-label="Model for this card"]');
+    expect(picker?.textContent).toBe("Claude · Fable 5.1"); // nothing pinned, no repo default → Fable
+    expect(picker?.title).toContain("last run: Opus 4.8");     // what actually answered lives in the tooltip
     expect(container!.textContent).not.toContain("Opus 4.8");
     expect(container!.textContent).not.toContain("ctx");
   });
 
-  test("the agent picker names the run's provider, without a token/cost tooltip", async () => {
+  test("the picker shows the pinned model, without a token/cost tooltip", async () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
-    await mount({ ...base, agentProvider: "codex", agentMeta: { model: "Codex", inputTokens: 1234, outputTokens: 56, cacheReadTokens: 900 } });
-    const picker = container!.querySelector<HTMLElement>('[aria-label="Agent for this card"]');
-    expect(picker?.textContent).toContain("Codex");
+    await mount({ ...base, agentProvider: "codex", preferredModel: "gpt-5.5", agentMeta: { model: "Codex", inputTokens: 1234, outputTokens: 56, cacheReadTokens: 900 } });
+    const picker = container!.querySelector<HTMLElement>('[aria-label="Model for this card"]');
+    expect(picker?.textContent).toBe("Codex · GPT-5.5");
     expect([...container!.querySelectorAll("[title]")].some((n) => n.getAttribute("title")?.includes("in / "))).toBe(false);
   });
 

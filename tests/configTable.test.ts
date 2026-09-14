@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as db from "../server/db";
 import {
-  configDocument, expandPath, featuresOf, invalidateConfig, loadConfig, parseConfigDocument,
+  configDocument, expandPath, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
   providerAllowed, providersFor, runsHere, saveConfigDocument, templatePath,
 } from "../server/config";
 import { agentCommand } from "../server/agent";
@@ -325,4 +325,20 @@ test("two overlapping publishes don't collide, and a departed branch is still sw
   // And it stays correct under overlap, rather than one publish sweeping the other's rows.
   await Promise.all([publish(["feat-a", "feat-c"]), publish(["feat-a", "feat-c"]), publish(["feat-a", "feat-c"])]);
   expect((await db.inventory("app")).map((r) => r.branch).sort()).toEqual(["feat-a", "feat-c"]);
+});
+
+test("a top-level agentModel is the default for every repo's Claude runs; a repo's own pin overrides it", async () => {
+  expect(parseConfigDocument(doc({ agentModel: "  " })).errors).toContain("agentModel must be a model id such as claude-fable-5-1");
+  await saveConfigDocument(parseConfigDocument(doc({
+    agentModel: "claude-fable-5-1",
+    repos: [
+      { name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" },                               // inherits
+      { name: "legacy", repoPath: "/l", worktreeRoot: "/l/.wt", baseBranch: "main", agentModel: "claude-opus-5[1m]" }, // pinned
+    ],
+  })).config!);
+  const cfg = await loadConfig();
+  expect(cfg.agentModel).toBe("claude-fable-5-1"); // survives the round trip through the database
+  expect(modelFor(cfg, cfg.repos[0]!)).toBe("claude-fable-5-1");
+  expect(modelFor(cfg, cfg.repos[1]!)).toBe("claude-opus-5[1m]");
+  expect(modelFor({}, { })).toBeUndefined(); // neither set → the CLI's own default
 });

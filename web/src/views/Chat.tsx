@@ -11,7 +11,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
-import { followUp, refresh, type Row } from "../store";
+import { followUp, modelFor, refresh, type Row } from "../store";
+import { modelLabel } from "../../../shared/models";
 import { promptInstruction } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
@@ -293,7 +294,7 @@ export function ChatPanel({ row }: { row: Row }) {
       </div>
       <ChatComposer
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
-        placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${agentLabel(row.agentProvider ?? "claude")}…`}
+        placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
         onSubmit={async (text, images) => {
           await followUp(row, text, images);
