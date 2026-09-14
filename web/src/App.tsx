@@ -147,7 +147,7 @@ function UsageMeter() {
     <>
       <div className="text-muted-foreground hidden items-center gap-3 font-mono text-[10px] leading-tight sm:flex" aria-label="Agent usage limits">
         {usage.profiles
-          ? usage.profiles.map((p) => p.usage && <ClaudeUsageGroup key={p.name} usage={p.usage} name={p.name} />)
+          ? usage.profiles.map((p) => <ClaudeUsageGroup key={p.name} usage={p.usage} name={p.name} state={p.state} />)
           : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
         {(usage.profiles?.some((p) => p.usage) || usage.claude) && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
         {usage.codex && <CodexUsageGroup usage={usage.codex} />}
@@ -161,14 +161,21 @@ function UsageMeter() {
   );
 }
 
-// `name` is the login's profile name when more than one Claude account is configured.
-function ClaudeUsageGroup({ usage, name }: { usage: ClaudeUsage; name?: string }) {
+// `name` is the login's hydra profile name (one group per login); `state` is hydra's verdict, shown
+// only when it isn't the ordinary "ok" — exhausted, locked, disabled, token stale, no data yet, not
+// signed in — so a login that can't be used says why instead of showing misleading bars.
+function ClaudeUsageGroup({ usage, name, state }: { usage: ClaudeUsage | null; name?: string; state?: string }) {
+  const off = state && state !== "ok";
   return (
     <div className="flex items-center gap-2" aria-label={name ? `Claude ${name} usage limits` : "Claude usage limits"}>
       <span className="opacity-70">{name ? `claude·${name}` : "claude"}</span>
-      <UsageStat provider="Claude" label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
-      <UsageStat provider="Claude" label="1w" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
-      {usage.extra && <SpendStat extra={usage.extra} />}
+      {usage && <>
+        <UsageStat provider="Claude" label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
+        <UsageStat provider="Claude" label="1w" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
+        {usage.fable && <UsageStat provider="Claude" label="fable" pct={usage.fable.utilization} resetsAt={usage.fable.resetsAt} />}
+        {usage.extra && <SpendStat extra={usage.extra} />}
+      </>}
+      {off && <span data-slot="usage-state" className={`rounded border px-1 ${state === "exhausted" || state === "locked" ? "border-red-500/40 text-red-600 dark:text-red-400" : "opacity-60"}`} title={`hydra: ${state}`}>{state}</span>}
     </div>
   );
 }
