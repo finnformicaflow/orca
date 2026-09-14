@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderText, summarize } from "../server/diagnostics";
+import { renderRouting, renderText, summarize } from "../server/diagnostics";
 import type { LedgerEntry } from "../server/ledger";
 
 const entries: LedgerEntry[] = [
@@ -47,5 +47,14 @@ describe("efficiency diagnostics", () => {
     expect(text).toContain("By provider:");
     expect(text).toContain("42 gh calls");
     expect(text).toContain("1 avoided");
+  });
+
+  test("reports whether Claude runs are being routed across logins, loud when the shim is gone", () => {
+    expect(summarize(entries, gh).routing).toBeUndefined(); // not asked → not reported
+    expect(summarize(entries, gh, { hydra: true, shim: true, bin: "/v/2.1.268" }).routing).toEqual({ hydra: true, shim: true, bin: "/v/2.1.268" });
+    expect(renderRouting({ hydra: true, shim: true, bin: "/v/2.1.268" })).toBe("Claude routing: hydra shim active → /v/2.1.268");
+    expect(renderRouting({ hydra: true, shim: false })).toContain("OFF");           // the silent-regression case
+    expect(renderRouting({ hydra: false, shim: false })).toContain("not installed");
+    expect(renderText(summarize(entries, gh, { hydra: true, shim: false }))).toContain("Claude routing: OFF");
   });
 });

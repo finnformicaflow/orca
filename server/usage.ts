@@ -21,9 +21,15 @@ export type CodexUsage = { windows: CodexUsageWindow[] };
  *  machine, or never fetched); `state` is hydra's verdict — "ok", "disabled", "exhausted", "locked",
  *  "token stale — refreshes on next launch", "no usage data yet", "not signed in on this machine". */
 export type ProfileUsage = { name: string; usage: ClaudeUsage | null; state?: string; email?: string };
+/** Whether Claude launches are actually being routed. `hydra`: installed on the bridge's PATH.
+ *  `shim`: the `claude` the bridge resolves is hydra's shim — the thing that routes a headless
+ *  `claude -p`. Claude Code's own updater rewrites `~/.local/bin/claude`, which silently removes the
+ *  shim and sends every run to the default login; this is how that becomes visible. `bin`: the real
+ *  binary hydra would exec (`hydra bin`). */
+export type Routing = { hydra: boolean; shim: boolean; bin?: string };
 /** `claude` is the first login's usage (back-compat for the single-login meter); `profiles` is every
  *  login hydra knows, present only when hydra is installed. */
-export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null; profiles?: ProfileUsage[] };
+export type Usage = { claude: ClaudeUsage | null; codex: CodexUsage | null; profiles?: ProfileUsage[]; routing?: Routing };
 
 /** Shape the raw Anthropic endpoint payload into the windows + extra-usage spend we surface. Pure. */
 export function shapeUsage(raw: any): ClaudeUsage {
@@ -90,6 +96,32 @@ export function shapeHydraStatus(raw: any): ProfileUsage[] {
         : null;
       return { name: p.name, usage, state: typeof p.state === "string" ? p.state : undefined, email: typeof p.email === "string" && p.email ? p.email : undefined };
     });
+}
+
+/** hydra's shim announces itself with a marker in its header; the real binary has none. Pure. */
+export const isHydraShim = (head: string): boolean => head.includes("hydra-shim");
+
+/** Is Claude routing live on this host? Reads only the first 512 bytes of whatever `claude`
+ *  resolves to (the real binary is large), and asks `hydra bin` for the target. Never throws. */
+export async function routingInfo(): Promise<Routing> {
+  const PATH = process.env.PATH ?? "";
+  const hydra = Bun.which("hydra", { PATH });
+  const claude = Bun.which("claude", { PATH });
+  let shim = false;
+  if (claude) {
+    try { shim = isHydraShim(await Bun.file(claude).slice(0, 512).text()); } catch { shim = false; }
+  }
+  let bin: string | undefined;
+  if (hydra) {
+    try {
+      const proc = Bun.spawn([hydra, "bin"], { env: process.env, stdout: "pipe", stderr: "ignore" });
+      const timer = setTimeout(() => proc.kill(), 5_000);
+      const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      clearTimeout(timer);
+      if (code === 0 && out.trim()) bin = out.trim();
+    } catch { /* advisory */ }
+  }
+  return { hydra: Boolean(hydra), shim, ...(bin ? { bin } : {}) };
 }
 
 // The last good hydra reading, so a slow or failed call (hydra refreshes stale profiles on this
@@ -218,8 +250,8 @@ async function codexUsage(): Promise<CodexUsage | null> {
  *  installed (every login, three windows each), else from the default login's endpoint reading;
  *  Codex from its app server. Null only when nothing at all is available. */
 export async function usage(): Promise<Usage | null> {
-  const [profiles, codex] = await Promise.all([hydraUsage(), codexUsage()]);
+  const [profiles, codex, routing] = await Promise.all([hydraUsage(), codexUsage(), routingInfo()]);
   const claude = profiles ? (profiles[0]?.usage ?? null) : await claudeUsage();
   if (!claude && !profiles?.some((p) => p.usage) && !codex) return null;
-  return { claude, codex, ...(profiles ? { profiles } : {}) };
+  return { claude, codex, ...(profiles ? { profiles } : {}), routing };
 }

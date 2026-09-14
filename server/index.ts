@@ -8,7 +8,7 @@ import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { usage } from "./usage";
+import { routingInfo, usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
@@ -202,7 +202,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
-    const report = summarize(ledger.all(), metrics());
+    const report = summarize(ledger.all(), metrics(), await routingInfo());
     return url.searchParams.get("format") === "text"
       ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
       : json(report);

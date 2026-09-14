@@ -177,3 +177,29 @@ test("a login that can't be used says why instead of showing misleading bars", a
   expect(spare?.textContent).not.toContain("%");
   expect(container!.querySelector("[aria-label='Claude old usage limits']")?.querySelector("[data-slot='usage-state']")?.textContent).toBe("disabled");
 });
+
+test("warns when hydra is installed but the bridge's `claude` isn't its shim (runs silently unrouted)", async () => {
+  const one = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null };
+  apiFake.usageData = { claude: one, codex: null, profiles: [{ name: "work", state: "ok", usage: one }], routing: { hydra: true, shim: false } };
+  await mount();
+  const warn = container!.querySelector("[data-slot='routing-warning']");
+  expect(warn?.textContent).toContain("routing off");
+  expect(warn?.getAttribute("title")).toContain("install.sh --shim");
+});
+
+test("no warning when the shim is active, or when hydra isn't installed at all", async () => {
+  const one = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null };
+  apiFake.usageData = { claude: one, codex: null, profiles: [{ name: "work", state: "ok", usage: one }], routing: { hydra: true, shim: true, bin: "/v/2.1.268" } };
+  await mount();
+  expect(container!.querySelector("[data-slot='routing-warning']")).toBeNull();
+  act(() => root?.unmount()); container?.remove();
+  apiFake.usageData = { claude: one, codex: null, routing: { hydra: false, shim: false } }; // no hydra → nothing to warn about
+  await mount();
+  expect(container!.querySelector("[data-slot='routing-warning']")).toBeNull();
+});
+
+test("mergeUsage keeps the last-known routing verdict across a poll that omitted it", () => {
+  const claude = { fiveHour: { utilization: 40, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null }, extra: null };
+  const routing = { hydra: true, shim: true };
+  expect(mergeUsage({ claude, codex: null, routing }, { claude, codex: null })).toEqual({ claude, codex: null, profiles: undefined, routing });
+});

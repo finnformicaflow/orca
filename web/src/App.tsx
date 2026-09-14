@@ -108,7 +108,7 @@ function RepoFilter() {
  *  this poll (a transient failure, or not fetched yet) keeps its previous value instead of blanking
  *  the bar. Pure, so the belt is testable without a timer. */
 export function mergeUsage(prev: Usage | null, next: Usage): Usage {
-  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null, profiles: next.profiles ?? prev?.profiles };
+  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null, profiles: next.profiles ?? prev?.profiles, routing: next.routing ?? prev?.routing };
 }
 
 // Provider usage (top-right): two compact terminal-bar groups, side by side.
@@ -146,6 +146,13 @@ function UsageMeter() {
   return (
     <>
       <div className="text-muted-foreground hidden items-center gap-3 font-mono text-[10px] leading-tight sm:flex" aria-label="Agent usage limits">
+        {/* hydra is installed but the `claude` the bridge runs isn't its shim: every run is quietly
+            landing on the default login (Claude Code's updater rewrites ~/.local/bin/claude). */}
+        {usage.routing?.hydra && !usage.routing.shim && (
+          <span data-slot="routing-warning" className="rounded border border-amber-500/40 px-1 text-amber-600 dark:text-amber-400" title="claude on the bridge's PATH isn't hydra's shim, so runs aren't load-balanced across logins. Re-run claude-hydra's install.sh --shim.">
+            routing off — claude on PATH isn't hydra's shim
+          </span>
+        )}
         {usage.profiles
           ? usage.profiles.map((p) => <ClaudeUsageGroup key={p.name} usage={p.usage} name={p.name} state={p.state} />)
           : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}

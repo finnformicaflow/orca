@@ -6,7 +6,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hydraUsage, shapeHydraStatus, usage } from "../server/usage";
+import { hydraUsage, isHydraShim, routingInfo, shapeHydraStatus, usage } from "../server/usage";
 
 const STATUS = {
   threshold: 90, now: 1789378422,
@@ -82,6 +82,34 @@ test("without hydra on PATH there are no profiles and the single-login path is u
     const u = await usage();
     // Either nothing at all (null) or a reading with NO profiles — never a hydra-shaped payload.
     expect(u?.profiles).toBeUndefined();
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+  }
+});
+
+test("routingInfo: the shim marker in `claude`'s header decides whether routing is live", async () => {
+  await installFakeHydra(STATUS); // fake hydra on PATH → hydra: true, bin from `hydra bin`
+  // A `claude` on the same PATH dir that IS hydra's shim (marker in the first 512 bytes)…
+  await writeFile(join(shim!, "claude"), "#!/usr/bin/env bash\n# hydra-shim — stands in for the `claude` binary on PATH.\nexec hydra exec \"$@\"\n");
+  await chmod(join(shim!, "claude"), 0o755);
+  expect(await routingInfo()).toEqual({ hydra: true, shim: true, bin: "/fake/claude-real" });
+
+  // …versus a plain `claude` with no marker: hydra is installed but nothing routes — the updater case.
+  await writeFile(join(shim!, "claude"), "#!/bin/sh\necho the real claude\n");
+  expect(await routingInfo()).toEqual({ hydra: true, shim: false, bin: "/fake/claude-real" });
+  const u = await usage();
+  expect(u?.routing).toEqual({ hydra: true, shim: false, bin: "/fake/claude-real" }); // carried on the meter payload
+
+  expect(isHydraShim("#!/usr/bin/env bash\n# hydra-shim — …")).toBe(true);
+  expect(isHydraShim("ELF…binary…")).toBe(false);
+});
+
+test("routingInfo without hydra or claude on PATH reports neither", async () => {
+  const empty = await mkdtemp(join(tmpdir(), "orca-nopath-"));
+  prevPath = process.env.PATH;
+  process.env.PATH = empty;
+  try {
+    expect(await routingInfo()).toEqual({ hydra: false, shim: false });
   } finally {
     await rm(empty, { recursive: true, force: true });
   }
