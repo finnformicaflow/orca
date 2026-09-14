@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  addressReviewPrompt, chatPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
+  addressPrPrompt, chatPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
@@ -355,12 +355,11 @@ function runFollowers() {
         lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
         agentProvider: e.agentProvider ?? wt?.agentProvider, preferredProvider: e.preferredProvider, transcript: e.transcript,
         prNumber: pr.number, prUrl: pr.url, following: true,
+        // addressPr decides its sections from the row, so the blocker state must travel with it.
+        ciStatus: pr.ciStatus, mergeable: pr.mergeable, reviewStatus: pr.reviewStatus, mergeClean: wt?.mergeClean,
         failingChecks: pr.failingChecks, feedback: pr.feedback,
       };
-      const fire = action === "resolveConflicts" ? resolveConflicts(row)
-        : action === "fixCi" ? fixCi(row)
-        : addressReview(row, false);
-      void fire.catch(() => {});
+      void addressPr(row, false).catch(() => {}); // one run for whatever the PR needs
     }
   }
 }
@@ -869,35 +868,38 @@ export function addPreviewLabel(row: Row) {
   return api.addPreviewLabel(row.repo, row.prNumber);
 }
 
-export async function fixCi(row: Row) {
+/** THE agent action for a PR: one run that resolves conflicts, fixes CI and addresses the review —
+ *  whichever of those apply — so nobody has to triage which button a blocked PR needs. Evidence is
+ *  fetched immediately before launch: CI logs when CI is failing, unresolved inline threads, and every
+ *  conversation comment since the last hand-over (no filtering; the agent decides what needs a
+ *  response). Manual runs include all current threads; Follow sends only newly actionable ones and
+ *  records the hand-over (thread ids, comment cursor) only after launch acceptance. */
+export async function addressPr(row: Row, manual = true) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
-  const details = row.prNumber ? await api.ciEvidence(row.repo, row.prNumber).catch(() => []) : [];
-  await launchOnRow(row, wt, resolveCiPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.failingChecks, details), providerFor(row), { action: "ci", evidenceChars: JSON.stringify(details).length, instruction: "Fix the failing CI checks" });
-  await refresh();
-}
-
-/** Fetch unresolved inline threads immediately before launch. Manual runs include all current
- * threads; Follow sends only newly actionable IDs and records them only after launch acceptance. */
-export async function addressReview(row: Row, manual = true) {
-  const wt = await ensureWorktree(row);
   const enrichment = enrichOf(row.repo, row.branch);
-  const [collected, comments] = await Promise.all([
+  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const ciFailing = row.ciStatus === "failing";
+  const [details, collected, comments] = await Promise.all([
+    ciFailing && row.prNumber ? api.ciEvidence(row.repo, row.prNumber).catch(() => []) : Promise.resolve([]),
     row.prNumber ? api.reviewEvidence(row.repo, row.prNumber).catch(() => undefined) : Promise.resolve(undefined),
-    // Every conversation comment since the last hand-over — no filtering by who or what: the agent
-    // decides what needs a response. Orca only guarantees it SEES each one exactly once.
     row.prNumber ? api.prComments(row.repo, row.prNumber, enrichment.commentsSeenAt).catch(() => [] as ConversationComment[]) : Promise.resolve([] as ConversationComment[]),
   ]);
   const handed = new Set(enrichment.handedReviewThreadIds ?? []);
   const threads = collected?.filter((thread) => manual || !handed.has(thread.id));
-  // Unchanged: everything unresolved was already handed over AND nobody has said anything new.
-  if (!manual && collected?.length && !threads?.length && !comments.length) return;
+  // Follow only: no blocker, every unresolved thread already handed over, and nobody said anything new.
+  if (!manual && !conflicting && !ciFailing && collected?.length && !threads?.length && !comments.length) return;
   const marked = (threads ?? []).map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
   const seenAt = new Date().toISOString();
+  const evidenceChars = JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length;
   await launchOnRow(
     row, wt,
-    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked, !manual, comments),
+    addressPrPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, {
+      base: baseBranch(row.repo), conflicting,
+      ci: ciFailing ? { failingChecks: row.failingChecks, details } : undefined,
+      feedback: row.feedback, threads: marked, followed: !manual, comments,
+    }),
     providerFor(row),
-    { action: "review", evidenceChars: JSON.stringify(marked).length + JSON.stringify(comments).length, instruction: "Address the review feedback" },
+    { action: "address", evidenceChars, instruction: "Address the PR: conflicts, CI, review" },
   );
   const fields: Enrichment = {};
   if (threads?.length) fields.handedReviewThreadIds = [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100);

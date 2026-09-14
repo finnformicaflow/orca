@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
 import {
-  addPreviewLabel, addressReview, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, fixCi, followUp, markReady,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, markReady,
   cliCommand, disableAutoMerge, merge, promote, providerFor, rename, resolveConflicts, sendSlack, setCardProvider, staleHours, suggestTitle, toggleFollow, useAgentProviders, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
@@ -136,9 +136,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
                   {prActions.includes("autoMerge") && (row.autoMergeEnabled
                     ? <DropdownMenuItem onSelect={run(() => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
                     : <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
-                  {prActions.includes("resolveConflicts") && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                  {prActions.includes("fixCi") && <DropdownMenuItem onSelect={run(() => fixCi(row))}>Fix CI</DropdownMenuItem>}
-                  {prActions.includes("addressReview") && <DropdownMenuItem onSelect={run(() => addressReview(row))}>Address review</DropdownMenuItem>}
+                  {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
+                  {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run(() => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
                   {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
                   {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run(copyLink)}>Copy link</DropdownMenuItem></>}
                 </DropdownMenuSubContent>

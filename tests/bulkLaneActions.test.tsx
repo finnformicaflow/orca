@@ -92,12 +92,12 @@ describe("swimlane bulk actions", () => {
     expect(confirmed).toHaveLength(1);
   });
 
-  test("Address review fires the agent on every open PR (not only changes-requested ones)", async () => {
+  test("Address PR fires the agent on every open PR (not only changes-requested ones)", async () => {
     apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8" })];
     await mount();
     await pointerdown(laneMenu("In Review")!);
     await openSub("Agent");
-    await click(item("Address review"));
+    await click(item("Address PR"));
     expect(apiFake.agentLaunches).toHaveLength(2);
   });
 

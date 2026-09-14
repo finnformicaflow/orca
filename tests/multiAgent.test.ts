@@ -402,8 +402,8 @@ describe("cross-provider continuation", () => {
   test("pinning the card's agent routes every action through it, handing off from the last-run provider", async () => {
     store.setCardProvider(row, "codex"); // persisted per branch, read by providerFor
     expect(apiFake.enrichmentData.get("r::feat")?.preferredProvider).toBe("codex");
-    // Fix CI (not just Follow up) now honours the pin — it used to hard-default to the last-run provider.
-    await store.fixCi({ ...row, preferredProvider: "codex" });
+    // Address PR (not just Follow up) honours the pin — it used to hard-default to the last-run provider.
+    await store.addressPr({ ...row, preferredProvider: "codex" });
     const launch = apiFake.agentLaunches.at(-1)!;
     expect(launch.provider).toBe("codex");
     expect(launch.resume).toBeUndefined();  // switching agents → portable handoff, never a stale native resume

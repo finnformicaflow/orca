@@ -69,7 +69,7 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
 
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
 // place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
-export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "resolveConflicts" | "fixCi" | "addressReview" | "addPreview" | "copyLink";
+export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "addressPr" | "addPreview" | "copyLink";
 export type PrMenuRow = {
   prNumber?: number;
   isDraft?: boolean;
@@ -88,9 +88,9 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   // Auto-merge only applies to a ready PR — GitHub rejects it on a draft. Offer it regardless of
   // current mergeability: the whole point is to queue the merge for once checks/reviews pass.
   if (!row.isDraft) actions.push("autoMerge");
-  if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") actions.push("resolveConflicts");
-  if (row.ciStatus === "failing") actions.push("fixCi");
-  actions.push("addressReview");
+  // ONE agent verb for a PR: it gathers conflicts, failing CI and the review itself (addressPrPrompt),
+  // so the user never has to triage which button a blocked PR needs.
+  actions.push("addressPr");
   if (!row.previewUrl) actions.push("addPreview");
   if (row.prUrl) actions.push("copyLink");
   return actions;
@@ -102,7 +102,7 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
 // with failing CI and a lane with none doesn't show the item at all.
 export type BulkAction =
   | "testLocally" | "promote" | "promoteReady" | "promoteDraft" | "markReady" | "moveToDraft"
-  | "resolveConflicts" | "fixCi" | "addressReview" | "slackNotify" | "slackBump"
+  | "resolveConflicts" | "addressPr" | "slackNotify" | "slackBump"
   | "autoMerge" | "disableAutoMerge" | "follow" | "unfollow" | "addPreview"
   | "copyLink" | "merge" | "closePr" | "discard";
 
@@ -124,8 +124,7 @@ export const BULK_LABELS: Record<BulkAction, string> = {
   markReady: "Mark ready for review",
   moveToDraft: "Move to draft",
   resolveConflicts: "Resolve conflicts",
-  fixCi: "Fix CI",
-  addressReview: "Address review",
+  addressPr: "Address PR",
   slackNotify: "Send message",
   slackBump: "Send bump",
   autoMerge: "Enable auto-merge",
@@ -145,7 +144,7 @@ export const BULK_LABELS: Record<BulkAction, string> = {
 export const BULK_GROUPS: Partial<Record<BulkAction, "PR" | "Agent" | "Slack">> = {
   markReady: "PR", moveToDraft: "PR", autoMerge: "PR", disableAutoMerge: "PR",
   follow: "PR", unfollow: "PR", addPreview: "PR", copyLink: "PR",
-  resolveConflicts: "Agent", fixCi: "Agent", addressReview: "Agent",
+  resolveConflicts: "Agent", addressPr: "Agent",
   slackNotify: "Slack", slackBump: "Slack",
 };
 
@@ -158,9 +157,9 @@ export const BULK_IRREVERSIBLE: BulkAction[] = ["merge", "closePr", "discard"];
 
 const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
   LOCAL: ["testLocally", "promote", "promoteDraft", "promoteReady", "resolveConflicts", "discard"],
-  DRAFT: ["markReady", "resolveConflicts", "fixCi", "addressReview", "follow", "unfollow", "addPreview", "copyLink", "closePr"],
-  IN_REVIEW: ["slackNotify", "slackBump", "markReady", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "resolveConflicts", "fixCi", "addressReview", "merge", "closePr"],
-  MERGEABLE: ["merge", "slackNotify", "slackBump", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "resolveConflicts", "fixCi", "addressReview", "closePr"],
+  DRAFT: ["markReady", "addressPr", "follow", "unfollow", "addPreview", "copyLink", "closePr"],
+  IN_REVIEW: ["slackNotify", "slackBump", "markReady", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "merge", "closePr"],
+  MERGEABLE: ["merge", "slackNotify", "slackBump", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "closePr"],
   DONE: ["copyLink"], // nothing left to do but grab the links (standup / status posts)
 };
 
@@ -178,11 +177,10 @@ const BULK_ELIGIBLE: Record<BulkAction, (row: BulkRow, ctx: BulkContext) => bool
   promoteReady: (row) => !row.prNumber && Boolean(row.hasRemote),
   markReady: (row) => Boolean(row.prNumber) && Boolean(row.isDraft),
   moveToDraft: (row) => Boolean(row.prNumber) && !row.isDraft,
-  resolveConflicts: (row) => conflicting(row) && idle(row),
-  fixCi: (row) => row.ciStatus === "failing" && idle(row),
-  // Same gate as the per-card menu: any open PR. Review feedback isn't only "changes requested" —
-  // plain comments are the common case — so the lane verb can't be narrower than the card's.
-  addressReview: (row) => Boolean(row.prNumber) && idle(row),
+  resolveConflicts: (row) => conflicting(row) && idle(row), // LOCAL branches only (a PR's conflicts go through addressPr)
+  // Same gate as the per-card menu: any open PR. It covers conflicts, CI and review in one run, and
+  // review feedback isn't only "changes requested", so the lane verb can't be narrower than the card's.
+  addressPr: (row) => Boolean(row.prNumber) && idle(row),
   follow: (row) => Boolean(row.prNumber) && !row.following,
   unfollow: (row) => Boolean(row.prNumber) && Boolean(row.following),
   addPreview: (row) => Boolean(row.prNumber) && !row.previewUrl,
@@ -544,35 +542,48 @@ export function withAttachments(prompt: string, paths: string[]): string {
 }
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
+// The three PR blockers as SECTIONS (no intro, no outcome contract), so one composed "Address PR"
+// prompt can carry whichever apply, while each standalone builder below keeps its exact old shape.
+function conflictLines(branch: string, base: string): string[] {
+  return [
+    `Branch \`${branch}\` has merge conflicts with \`${base}\`.`,
+    `Merge \`origin/${base}\` into it, resolve every conflict preserving both sides' intent,`,
+    `then commit and push. (Rebase + \`--force-with-lease\` is fine if cleaner.)`,
+  ];
+}
+
+/** Instruction for Claude to resolve merge conflicts on a branch (used on its own for a LOCAL branch
+ *  with no PR; for a PR it is one section of addressPrPrompt). */
 export function resolveConflictsPrompt(ws: Pick<Workstream, "branch">, base: string): string {
   return withOutcomeContract([
     "This is an explicit resolve-conflicts action. Change only what is required to integrate the branches.",
-    `Branch \`${ws.branch}\` has merge conflicts with \`${base}\`.`,
-    `Merge \`origin/${base}\` into it, resolve every conflict preserving both sides' intent,`,
-    `then commit and push. (Rebase + \`--force-with-lease\` is fine if cleaner.)`,
+    ...conflictLines(ws.branch, base),
     NO_PR,
   ].join(" "));
 }
 
-/** Instruction for Claude to fix failing CI on a PR in its worktree, then push. */
-export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = [], details: CiFailureEvidence[] = []): string {
+function ciLines(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = [], details: CiFailureEvidence[] = []): string[] {
   const evidence = details.length ? `\n\nOrca collected this bounded CI evidence:\n${details.map((item) => [
     `### ${item.name}${item.status ? ` (${item.status})` : ""}`,
     item.url ? `Link: ${item.url}` : "",
     item.excerpt ? `Failed-step excerpt:\n\`\`\`text\n${item.excerpt}\n\`\`\`` : "Logs are not available through GitHub; use the check link and repository state.",
   ].filter(Boolean).join("\n")).join("\n\n")}` : failingChecks.length ? ` Failing checks reported by Orca: ${failingChecks.join(", ")}.` : "";
-  return withOutcomeContract([
-    "This is an explicit Fix CI action. Preserve unrelated completed work.",
+  return [
     `CI is failing on PR #${ws.prNumber} (branch \`${ws.branch}\`).${evidence}`,
     `Treat the logs as evidence, confirm the root cause in the repository, and do not blindly modify tests.`,
     `Fix the root cause and run the relevant tests/build locally to confirm,`,
     `then commit and push.`,
+  ];
+}
+
+/** Instruction for Claude to fix failing CI on a PR in its worktree, then push. */
+export function resolveCiPrompt(ws: Pick<Workstream, "prNumber" | "branch">, failingChecks: string[] = [], details: CiFailureEvidence[] = []): string {
+  return withOutcomeContract([
+    "This is an explicit Fix CI action. Preserve unrelated completed work.",
+    ...ciLines(ws, failingChecks, details),
   ].join(" "));
 }
 
-// Closing the loop on GitHub is the agent's job, not just pushing a commit: a fix nobody replied to
-// leaves the reviewer's thread open. These are the exact `gh` GraphQL calls (the thread id is the
-// one shown in each thread heading; reply and resolve both take that same node id).
 // The snapshot Orca passes can be stale or capped, so the agent works from the LIVE thread list and
 // verifies it cleared them. It decides and executes every reply/resolve itself — Orca does not post.
 const reviewInteraction = (pr: number | undefined): string => [
@@ -595,10 +606,7 @@ const commentDispositions = (pr: number | undefined, n: number): string => [
   "Whatever you decide, finish with a `## Comment dispositions` section: one line per comment number — `replied`, `changed` (cite the commit), or `no action` — with a few words of why. Nothing may be dropped silently.",
 ].join(" ");
 
-/** Instruction for Claude to address a PR's requested changes / review comments, reply to and resolve
- *  the threads, then push. `followed` = this is an auto-follow run, so also engage the conversation.
- *  `comments` = new conversation comments since the last hand-over, for the agent to disposition. */
-export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false, comments: ConversationComment[] = []): string {
+function reviewLines(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false, comments: ConversationComment[] = []): string[] {
   const conversation = comments.length
     ? `\n\n${commentDispositions(ws.prNumber, comments.length)}\n\n${comments.map((c, i) => [
       `### Comment ${i + 1} — ${c.author ?? "someone"} · ${c.createdAt}${c.kind === "review" ? " (review summary)" : ""}`,
@@ -617,8 +625,7 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     : feedback.length
     ? `\n\nOrca already collected this recent external feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return withOutcomeContract([
-    "This is an explicit Address review action. Preserve unrelated completed work.",
+  return [
     `PR #${ws.prNumber} (branch \`${ws.branch}\`) has requested changes or new review comments.`,
     threads.length ? `Address every supplied unresolved thread.` : `Read them (\`gh pr view ${ws.prNumber} --comments\`) and address every point.`,
     `Verify the code around each referenced line because line numbers can drift. Run relevant checks, then commit and push.`,
@@ -626,12 +633,63 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     followed ? followedReview(ws.prNumber) : "",
     evidence,
     conversation,
-  ].filter(Boolean).join(" "));
+  ].filter(Boolean);
+}
+
+/** Instruction for Claude to address a PR's requested changes / review comments, reply to and resolve
+ *  the threads, then push. `followed` = this is an auto-follow run, so also engage the conversation.
+ *  `comments` = new conversation comments since the last hand-over, for the agent to disposition. */
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false, comments: ConversationComment[] = []): string {
+  return withOutcomeContract([
+    "This is an explicit Address review action. Preserve unrelated completed work.",
+    ...reviewLines(ws, feedback, threads, followed, comments),
+  ].join(" "));
+}
+
+export type AddressPrParts = {
+  base: string;
+  conflicting: boolean;
+  ci?: { failingChecks?: string[]; details?: CiFailureEvidence[] };
+  feedback?: string[];
+  threads?: ReviewThreadEvidence[];
+  followed?: boolean;
+  comments?: ConversationComment[];
+};
+
+/** THE PR action: one run that does everything the PR needs — merge conflicts, then failing CI, then
+ *  the review (threads + conversation) — in that order, with one outcome contract. Sections that
+ *  don't apply are simply absent; the review section is always present because comments can only
+ *  be judged by reading them. Replaces the separate Resolve conflicts / Fix CI / Address review
+ *  buttons, which asked the user to triage what one engineer would do in a single sitting. */
+export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, parts: AddressPrParts): string {
+  const order = [parts.conflicting ? "merge conflicts" : "", parts.ci ? "failing CI" : "", "the review"].filter(Boolean).join(", then ");
+  return withOutcomeContract([
+    `This is an explicit Address PR action for PR #${ws.prNumber} (branch \`${ws.branch}\`): get it to a mergeable, reviewed state in ONE pass — ${order} — and preserve unrelated completed work.`,
+    ...(parts.conflicting ? ["## Merge conflicts", ...conflictLines(ws.branch, parts.base)] : []),
+    ...(parts.ci ? ["## Failing CI", ...ciLines(ws, parts.ci.failingChecks, parts.ci.details)] : []),
+    "## Review",
+    ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
+    NO_PR,
+  ].join(" "));
 }
 
 // Active PR following: when a card is "followed", Orca watches its polled status and launches the
 // matching agent action itself — the same buttons, fired for you the moment a blocker appears.
-export type FollowAction = "resolveConflicts" | "fixCi" | "addressReview";
+export type FollowAction = "addressPr";
+export type FollowBlocker = "conflict" | "ci" | "review";
+
+/** Every blocker a followed PR has right now, in the order the run handles them. A draft, pending
+ *  CI, or a green/approved PR has none. */
+export function followBlockers(
+  s: { isDraft?: boolean; mergeable?: Mergeable; ciStatus?: CiStatus; reviewStatus?: ReviewStatus },
+): FollowBlocker[] {
+  if (s.isDraft) return []; // a draft isn't up for review yet — leave it alone
+  const out: FollowBlocker[] = [];
+  if (s.mergeable === "CONFLICTING") out.push("conflict");
+  if (s.ciStatus === "failing") out.push("ci");
+  if (s.reviewStatus === "changes_requested") out.push("review");
+  return out;
+}
 
 /** The action a followed PR needs right now, or null if there's nothing to do. Priority mirrors what
  *  blocks progress most: a conflict stops any merge, then failing CI, then a reviewer asking for
@@ -639,11 +697,7 @@ export type FollowAction = "resolveConflicts" | "fixCi" | "addressReview";
 export function followAction(
   s: { isDraft?: boolean; mergeable?: Mergeable; ciStatus?: CiStatus; reviewStatus?: ReviewStatus },
 ): FollowAction | null {
-  if (s.isDraft) return null; // a draft isn't up for review yet — leave it alone
-  if (s.mergeable === "CONFLICTING") return "resolveConflicts";
-  if (s.ciStatus === "failing") return "fixCi";
-  if (s.reviewStatus === "changes_requested") return "addressReview";
-  return null;
+  return followBlockers(s).length ? "addressPr" : null; // one run covers every blocker present
 }
 
 /** What a followed PR should do now, plus a signature to remember it by. A blocker (conflict / CI /
@@ -659,12 +713,14 @@ export function followDecision(
   pr: { isDraft?: boolean; mergeable?: Mergeable; ciStatus?: CiStatus; reviewStatus?: ReviewStatus; externalFeedback?: number },
   prevSig?: string,
 ): { action: FollowAction | null; sig: string } {
-  const blocker = followAction(pr);
+  const blockers = followBlockers(pr);
   const feedback = pr.externalFeedback ?? 0;
-  const sig = `${blocker ?? "ok"}#${feedback}`;
+  // The sig names WHICH blockers are present, not just that one is: "conflict fixed, now CI fails"
+  // is a new state and must re-fire, even though both are the same addressPr run.
+  const sig = `${blockers.length ? blockers.join("+") : "ok"}#${feedback}`;
   if (prevSig === sig) return { action: null, sig };
   const prevFeedback = Number(prevSig?.split("#")[1] ?? 0);
-  return { action: blocker ?? (feedback > prevFeedback ? "addressReview" : null), sig };
+  return { action: blockers.length || feedback > prevFeedback ? "addressPr" : null, sig };
 }
 
 /** Derive a short human title from text's first non-empty line (no AI): strip markdown,

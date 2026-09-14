@@ -24,7 +24,7 @@ const poll = () => act(async () => { await store.refresh(); });
 
 afterEach(async () => { apiFake.reset(); localStorage.clear(); await store.refresh(); });
 
-test("following a failing-CI PR auto-launches the Fix-CI agent", async () => {
+test("following a failing-CI PR auto-launches ONE Address PR run whose prompt carries the CI section", async () => {
   seed("feat-ci", { ciStatus: "failing" });
   store.toggleFollow({ repo: "r", branch: "feat-ci" } as store.Row);
   await poll();
@@ -32,14 +32,14 @@ test("following a failing-CI PR auto-launches the Fix-CI agent", async () => {
   expect(apiFake.claudePrompts.some((p) => p.includes("CI is failing"))).toBe(true);
 });
 
-test("following a conflicting PR auto-launches the resolve-conflicts agent (conflict wins over CI)", async () => {
+test("a conflicting AND failing PR gets ONE run whose prompt carries both sections", async () => {
   seed("feat-cf", { mergeable: "CONFLICTING", ciStatus: "failing" });
   store.toggleFollow({ repo: "r", branch: "feat-cf" } as store.Row);
   await poll();
   expect(apiFake.claudePrompts.some((p) => p.includes("merge conflicts"))).toBe(true);
 });
 
-test("following a changes-requested PR auto-launches a review follow-up", async () => {
+test("following a changes-requested PR auto-launches the review section", async () => {
   seed("feat-rv", { reviewStatus: "changes_requested" });
   store.toggleFollow({ repo: "r", branch: "feat-rv" } as store.Row);
   await poll();
@@ -72,7 +72,7 @@ test("review launch sends unresolved thread evidence and persists IDs only after
   seed("feat-threads", { reviewStatus: "changes_requested" });
   apiFake.reviewEvidenceData = [{ id: "T1", path: "src/a.ts", line: 12, author: "alice", body: "Handle null", url: "https://review/T1", resolved: false }];
   const row = { repo: "r", hasRemote: true, branch: "feat-threads", title: "threads", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-threads", prNumber: 1 } as store.Row;
-  await store.addressReview(row, false);
+  await store.addressPr(row, false);
   expect(apiFake.claudePrompts.at(-1)).toContain("Thread T1");
   expect(apiFake.claudePrompts.at(-1)).toContain("src/a.ts:12");
   // A followed review run must close the loop on GitHub, not just push: reply + resolve the thread,
@@ -82,7 +82,7 @@ test("review launch sends unresolved thread evidence and persists IDs only after
   expect(apiFake.claudePrompts.at(-1)).toContain("actively followed");
   expect(apiFake.enrichmentData.get("r::feat-threads")?.handedReviewThreadIds).toEqual(["T1"]);
 
-  await store.addressReview(row, false);
+  await store.addressPr(row, false);
   expect(apiFake.calls.filter((call) => call === "agent:/wt/feat-threads")).toHaveLength(1);
 });
 
@@ -90,8 +90,8 @@ test("manual review includes all unresolved threads and marks previously handed 
   seed("feat-manual", {});
   apiFake.reviewEvidenceData = [{ id: "T1", body: "Still open", resolved: false }];
   const row = { repo: "r", hasRemote: true, branch: "feat-manual", title: "manual", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-manual", prNumber: 1 } as store.Row;
-  await store.addressReview(row, false);
-  await store.addressReview(row, true);
+  await store.addressPr(row, false);
+  await store.addressPr(row, true);
   expect(apiFake.claudePrompts.at(-1)).toContain("previously handed; still unresolved");
 });
 
@@ -100,7 +100,7 @@ test("failed review launch does not persist handed IDs", async () => {
   apiFake.reviewEvidenceData = [{ id: "T-reject", body: "Change this", resolved: false }];
   apiFake.claudeError = "launch rejected";
   const row = { repo: "r", hasRemote: true, branch: "feat-reject", title: "reject", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-reject", prNumber: 1 } as store.Row;
-  await expect(store.addressReview(row, false)).rejects.toThrow("launch rejected");
+  await expect(store.addressPr(row, false)).rejects.toThrow("launch rejected");
   expect(apiFake.enrichmentData.get("r::feat-reject")?.handedReviewThreadIds).toBeUndefined();
 });
 
@@ -108,20 +108,22 @@ test("evidence endpoint failure falls back to generic review discovery", async (
   seed("feat-fallback", {});
   apiFake.reviewEvidenceError = "GitHub unavailable";
   const row = { repo: "r", hasRemote: true, branch: "feat-fallback", title: "fallback", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-fallback", prNumber: 1 } as store.Row;
-  await store.addressReview(row);
+  await store.addressPr(row);
   expect(apiFake.claudePrompts.at(-1)).toContain("gh pr view 1 --comments");
 });
 
-test("Fix CI includes bounded failed-step evidence and falls back to check names", async () => {
+test("Address PR on a failing-CI PR includes bounded failed-step evidence and falls back to check names", async () => {
   seed("feat-ci-evidence", { ciStatus: "failing" });
-  const row = { repo: "r", hasRemote: true, branch: "feat-ci-evidence", title: "ci", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-ci-evidence", prNumber: 1, failingChecks: ["unit"] } as store.Row;
+  const row = { repo: "r", hasRemote: true, branch: "feat-ci-evidence", title: "ci", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-ci-evidence", prNumber: 1, ciStatus: "failing", failingChecks: ["unit"] } as store.Row;
   apiFake.ciEvidenceData = [{ name: "unit", status: "FAILURE", url: "https://actions/run", excerpt: "Error: expected true" }];
-  await store.fixCi(row);
+  await store.addressPr(row);
+  expect(apiFake.claudePrompts.at(-1)).toContain("## Failing CI");            // the CI section is in the one run
   expect(apiFake.claudePrompts.at(-1)).toContain("Error: expected true");
   expect(apiFake.claudePrompts.at(-1)).toContain("do not blindly modify tests");
+  expect(apiFake.claudePrompts.at(-1)).not.toContain("## Merge conflicts");   // …and only the sections that apply
 
   apiFake.ciEvidenceError = "logs unavailable";
-  await store.fixCi(row);
+  await store.addressPr(row);
   expect(apiFake.claudePrompts.at(-1)).toContain("Failing checks reported by Orca: unit");
 });
 
@@ -130,13 +132,13 @@ test("a new conversation comment re-fires a followed review even when every thre
   // One unresolved thread that Orca ALREADY handed over → on its own this must not re-fire…
   apiFake.reviewEvidenceData = [{ id: "T1", body: "Still open", resolved: false }];
   const row = { repo: "r", hasRemote: true, branch: "feat-convo", title: "convo", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-convo", prNumber: 1 } as store.Row;
-  await store.addressReview(row, false); // hands T1 over
-  await store.addressReview(row, false); // unchanged → skipped
+  await store.addressPr(row, false); // hands T1 over
+  await store.addressPr(row, false); // unchanged → skipped
   expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(1);
 
   // …but a fresh conversation comment is new information: it fires, is handed over, and is remembered.
   apiFake.prCommentsData = [{ id: "IC_9", kind: "comment", author: "eddy-ai-flow", createdAt: new Date().toISOString(), body: "The playbook step 19 is now wrong" }];
-  await store.addressReview(row, false);
+  await store.addressPr(row, false);
   expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(2);
   expect(apiFake.claudePrompts.at(-1)).toContain("playbook step 19");
   expect(apiFake.claudePrompts.at(-1)).toContain("## Comment dispositions");
@@ -144,6 +146,6 @@ test("a new conversation comment re-fires a followed review even when every thre
   expect(typeof seenAt).toBe("string");
 
   // The same comment is not shown twice: the seen-at cursor filters it out, so nothing new → no fire.
-  await store.addressReview(row, false);
+  await store.addressPr(row, false);
   expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(2);
 });

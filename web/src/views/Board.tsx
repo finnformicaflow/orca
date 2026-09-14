@@ -3,7 +3,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
 import {
-  addPreviewLabel, addressReview, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, fixCi, markReady, merge, promote,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, markReady, merge, promote,
   providerFor, rerunAgent, resolveConflicts, sendSlack, setCardProvider,
   staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
@@ -103,9 +103,8 @@ const BULK_RUN: Record<Exclude<BulkAction, "copyLink">, (row: Row) => Promise<un
   promoteReady: (row) => promote(row, { draft: false }),
   markReady,
   moveToDraft: convertToDraft,
-  resolveConflicts,
-  fixCi,
-  addressReview: (row) => addressReview(row),
+  resolveConflicts, // LOCAL lane only
+  addressPr: (row) => addressPr(row),
   slackNotify: (row) => sendSlack(row, "notify"),
   slackBump: (row) => sendSlack(row, "bump"),
   autoMerge,

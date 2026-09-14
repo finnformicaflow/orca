@@ -11,7 +11,7 @@ import { freePort, killTree, orphanPreviewDbs, previewDbName, previewHost } from
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
 import {
-  addressReviewPrompt, attachCommand, bulkActions, canMerge, chatPrompt, deriveKanbanState, draftState, followAction, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
+  addressPrPrompt, addressReviewPrompt, attachCommand, bulkActions, canMerge, chatPrompt, deriveKanbanState, draftState, followAction, followBlockers, followDecision, followUpPrompt, investigateReportPrompt, launchPrompt,
   DEFAULT_PR_TEMPLATE, prDescriptionPrompt, prMenuActions, promptFor, resolveCiPrompt, resolveConflictsPrompt, shouldBump, slackApiText, slackClipboard, slackMessage, slackPrompt, slugifyBranch, summarizeSync, validPrDescription, withAttachments, type WorkstreamState,
 } from "../web/src/workstream";
 import { retryTitle, titleFromModelJson } from "../server/title";
@@ -422,15 +422,29 @@ describe("W10 active-following (followAction)", () => {
   test("a clean, green, approved PR needs nothing", () => {
     expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "approved" })).toBeNull();
   });
-  test("a merge conflict wins over everything → resolveConflicts", () => {
-    expect(followAction({ mergeable: "CONFLICTING", ciStatus: "failing", reviewStatus: "changes_requested" })).toBe("resolveConflicts");
-  });
-  test("failing CI (no conflict) → fixCi", () => {
-    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "failing", reviewStatus: "review_required" })).toBe("fixCi");
+  test("any blocker → the ONE Address PR run; the blockers are enumerated in handling order", () => {
+    expect(followAction({ mergeable: "CONFLICTING", ciStatus: "failing", reviewStatus: "changes_requested" })).toBe("addressPr");
+    expect(followBlockers({ mergeable: "CONFLICTING", ciStatus: "failing", reviewStatus: "changes_requested" })).toEqual(["conflict", "ci", "review"]);
+    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "failing", reviewStatus: "review_required" })).toBe("addressPr");
+    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "changes_requested" })).toBe("addressPr");
     expect(resolveCiPrompt({ prNumber: 7, branch: "feat" }, ["unit", "lint"])).toContain("unit, lint");
   });
-  test("requested changes (clean + green) → addressReview", () => {
-    expect(followAction({ mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "changes_requested" })).toBe("addressReview");
+  test("addressPrPrompt carries only the sections that apply, in order, under one outcome contract", () => {
+    const all = addressPrPrompt({ prNumber: 7, branch: "feat" }, { base: "main", conflicting: true, ci: { failingChecks: ["unit"] }, threads: [{ id: "T1", body: "Handle null", resolved: false }] });
+    expect(all).toContain("merge conflicts, then failing CI, then the review");
+    expect(all.indexOf("## Merge conflicts")).toBeLessThan(all.indexOf("## Failing CI"));
+    expect(all.indexOf("## Failing CI")).toBeLessThan(all.indexOf("## Review"));
+    expect(all).toContain("origin/main");            // the conflict section
+    expect(all).toContain("Failing checks reported by Orca: unit"); // the CI section
+    expect(all).toContain("Thread T1");             // the review section
+    expect(all).toContain("resolveReviewThread");
+    expect(all.match(/## Outcome/g)).toHaveLength(1); // one contract, not three
+    expect(all).toContain("Do NOT open a pull request");
+    const reviewOnly = addressPrPrompt({ prNumber: 7, branch: "feat" }, { base: "main", conflicting: false });
+    expect(reviewOnly).not.toContain("## Merge conflicts");
+    expect(reviewOnly).not.toContain("## Failing CI");
+    expect(reviewOnly).toContain("## Review");        // always present: comments can only be judged by reading them
+    expect(reviewOnly).toContain("gh pr view 7 --comments");
   });
   test("pending CI and unknown mergeability are not (yet) actionable", () => {
     expect(followAction({ mergeable: "UNKNOWN", ciStatus: "pending", reviewStatus: "review_required" })).toBeNull();
@@ -451,17 +465,22 @@ describe("W11 follow decisions (followDecision — blockers + new-comment trigge
   const green = { mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "approved" } as const;
   test("a blocker fires regardless of feedback, tagging the sig with the count", () => {
     expect(followDecision({ ...green, ciStatus: "failing", externalFeedback: 2 }, undefined))
-      .toEqual({ action: "fixCi", sig: "fixCi#2" });
+      .toEqual({ action: "addressPr", sig: "ci#2" });
+    // The sig names the blockers, so "conflict fixed, now CI fails" is a NEW state that re-fires.
+    expect(followDecision({ ...green, mergeable: "CONFLICTING", ciStatus: "failing", externalFeedback: 2 }, "ci#2"))
+      .toEqual({ action: "addressPr", sig: "conflict+ci#2" });
+    expect(followDecision({ ...green, ciStatus: "failing", externalFeedback: 2 }, "conflict+ci#2"))
+      .toEqual({ action: "addressPr", sig: "ci#2" });
   });
   test("first follow of a green PR with existing comments addresses them once", () => {
     // prevSig undefined (just enabled / cleared) → pending feedback is picked up
-    expect(followDecision({ ...green, externalFeedback: 3 }, undefined)).toEqual({ action: "addressReview", sig: "ok#3" });
+    expect(followDecision({ ...green, externalFeedback: 3 }, undefined)).toEqual({ action: "addressPr", sig: "ok#3" });
   });
   test("a steady state never re-fires — same sig → no action (survives reloads)", () => {
     expect(followDecision({ ...green, externalFeedback: 3 }, "ok#3")).toEqual({ action: null, sig: "ok#3" });
   });
-  test("a NEW comment (feedback ↑ since last acted) fires addressReview again", () => {
-    expect(followDecision({ ...green, externalFeedback: 4 }, "ok#3")).toEqual({ action: "addressReview", sig: "ok#4" });
+  test("a NEW comment (feedback ↑ since last acted) fires Address PR again", () => {
+    expect(followDecision({ ...green, externalFeedback: 4 }, "ok#3")).toEqual({ action: "addressPr", sig: "ok#4" });
   });
   test("feedback dropping (a deleted comment) records the sig but does not fire", () => {
     expect(followDecision({ ...green, externalFeedback: 2 }, "ok#3")).toEqual({ action: null, sig: "ok#2" });
@@ -774,20 +793,20 @@ describe("A1 PR-actions submenu (prMenuActions)", () => {
   });
 
   test("open ready PR → draft toggle + auto-merge + copy link, plus preview when unlabeled", () => {
-    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "autoMerge", "addressReview", "addPreview", "copyLink"]);
+    expect(prMenuActions({ prNumber: 5, prUrl: "u" })).toEqual(["moveToDraft", "autoMerge", "addressPr", "addPreview", "copyLink"]);
   });
 
   test("draft PR offers Mark ready instead of Move to draft, and no auto-merge (gh rejects it on a draft)", () => {
-    expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "addressReview", "copyLink"]);
+    expect(prMenuActions({ prNumber: 5, isDraft: true, prUrl: "u", previewUrl: "p" })).toEqual(["markReady", "addressPr", "copyLink"]);
   });
 
-  test("conflicts and failing CI add their fix actions, in order", () => {
+  test("conflicts and failing CI add NO separate actions — the one Address PR covers them", () => {
     expect(prMenuActions({ prNumber: 5, mergeable: "CONFLICTING", ciStatus: "failing", previewUrl: "p", prUrl: "u" }))
-      .toEqual(["moveToDraft", "autoMerge", "resolveConflicts", "fixCi", "addressReview", "copyLink"]);
+      .toEqual(["moveToDraft", "autoMerge", "addressPr", "copyLink"]);
   });
 
   test("no prUrl → no Copy link (nothing to copy)", () => {
-    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge", "addressReview"]);
+    expect(prMenuActions({ prNumber: 5, previewUrl: "p" })).toEqual(["moveToDraft", "autoMerge", "addressPr"]);
   });
 });
 
@@ -808,7 +827,7 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
 
   test("Draft offers Mark ready for draft PRs only, and the PR verbs each card can take", () => {
     expect(names("DRAFT", [{ prNumber: 1, isDraft: true, prUrl: "u" }, { prNumber: 2, prUrl: "u" }]))
-      .toEqual(["markReady:1", "addressReview:2", "follow:2", "addPreview:2", "copyLink:2", "closePr:2"]);
+      .toEqual(["markReady:1", "addressPr:2", "follow:2", "addPreview:2", "copyLink:2", "closePr:2"]);
   });
 
   test("In Review offers Slack + the PR/agent verbs, and the fix actions only where the condition is live", () => {
@@ -819,15 +838,15 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
     ];
     expect(names("IN_REVIEW", rows)).toEqual([
       "slackNotify:3", "moveToDraft:3", "autoMerge:2", "disableAutoMerge:1", "follow:2", "unfollow:1",
-      "addPreview:3", "resolveConflicts:1", "fixCi:1", "addressReview:3", "merge:1", "closePr:3",
+      "addPreview:3", "addressPr:3", "merge:1", "closePr:3",
     ]);
   });
 
   // Address review can't be narrower than the per-card menu: plain review comments (not just
   // "changes requested") are the common case, so it's offered for every idle open PR.
-  test("Address review covers every open PR, not only changes-requested ones", () => {
+  test("Address PR covers every open PR, not only changes-requested ones", () => {
     const rows = [{ prNumber: 1 }, { prNumber: 2, reviewStatus: "changes_requested" as const }];
-    expect(names("DRAFT", rows)).toEqual(["addressReview:2", "follow:2", "addPreview:2", "closePr:2"]);
+    expect(names("DRAFT", rows)).toEqual(["addressPr:2", "follow:2", "addPreview:2", "closePr:2"]);
   });
 
   // The two Slack counts partition the lane: announce what nobody's been told about, bump what's
@@ -843,7 +862,7 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
 
   test("a running agent is skipped by the agent actions (its run lease would reject a second launch)", () => {
     const rows = [{ prNumber: 1, ciStatus: "failing" as const, agentStatus: "running" as const }];
-    expect(names("IN_REVIEW", rows).filter((n) => /fixCi|resolveConflicts|addressReview/.test(n))).toEqual([]);
+    expect(names("IN_REVIEW", rows).filter((n) => /addressPr|resolveConflicts/.test(n))).toEqual([]);
   });
 
   test("Mergeable merges the cards that can merge; Done offers only the link copy", () => {

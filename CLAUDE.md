@@ -12,7 +12,7 @@ connective tissue between "managing agents" and "managing PRs."**
 **Orca launches Claude, Codex, or Cursor headless.** On create, the user selects a provider and Orca runs
 `claude -p`, `codex exec`, or `cursor-agent -p` (using the CLI's existing login — no API key) in the new worktree, and shows a
 status badge (running/done/error). Headless one-shot is the mechanism for the AUTOMATED board actions
-(create, Fix CI, Resolve conflicts, Address review, Follow up, Slack, PR description) — they need the
+(create, Address PR, Resolve conflicts on a local branch, Follow up, Slack, PR description) — they need the
 structured outcome / portable transcript / run ledger, so **board automation is never routed through
 tmux**. The card's **terminal** is now a conversation modal (the durable turns + a composer, see
 below), not a live shell; a live tmux lane existed once and its backend is left dormant. For a quick
@@ -144,7 +144,11 @@ A workstream is a branch; its lane (`store.laneFor`):
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **Promote** (Local, remote repo) = a dropdown: Create PR ready / draft, ± add preview label.
   Local repo → plain Promote (sets `promoted`).
-- **Resolve conflicts / Fix CI / Follow up** = launch the selected provider headlessly in the branch's
+- **Address PR / Follow up** = launch the selected provider headlessly in the branch's
+  worktree. **Address PR is the one agent verb for a PR** (`store.addressPr`, `addressPrPrompt`): a
+  single run that resolves merge conflicts, fixes failing CI and addresses the review — whichever
+  apply, in that order — instead of three buttons the user had to triage between. Resolve conflicts
+  remains on its own only for a LOCAL branch with no PR. They
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
   requires a manual "check out" step or a copied prompt. Follow up continues the conversation by
