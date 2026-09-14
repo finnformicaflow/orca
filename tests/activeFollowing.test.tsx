@@ -124,3 +124,26 @@ test("Fix CI includes bounded failed-step evidence and falls back to check names
   await store.fixCi(row);
   expect(apiFake.claudePrompts.at(-1)).toContain("Failing checks reported by Orca: unit");
 });
+
+test("a new conversation comment re-fires a followed review even when every thread was already handed, then is remembered", async () => {
+  seed("feat-convo", {});
+  // One unresolved thread that Orca ALREADY handed over → on its own this must not re-fire…
+  apiFake.reviewEvidenceData = [{ id: "T1", body: "Still open", resolved: false }];
+  const row = { repo: "r", hasRemote: true, branch: "feat-convo", title: "convo", prompt: "", lane: "IN_REVIEW", worktreePath: "/wt/feat-convo", prNumber: 1 } as store.Row;
+  await store.addressReview(row, false); // hands T1 over
+  await store.addressReview(row, false); // unchanged → skipped
+  expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(1);
+
+  // …but a fresh conversation comment is new information: it fires, is handed over, and is remembered.
+  apiFake.prCommentsData = [{ id: "IC_9", kind: "comment", author: "eddy-ai-flow", createdAt: new Date().toISOString(), body: "The playbook step 19 is now wrong" }];
+  await store.addressReview(row, false);
+  expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(2);
+  expect(apiFake.claudePrompts.at(-1)).toContain("playbook step 19");
+  expect(apiFake.claudePrompts.at(-1)).toContain("## Comment dispositions");
+  const seenAt = apiFake.enrichmentData.get("r::feat-convo")?.commentsSeenAt as string;
+  expect(typeof seenAt).toBe("string");
+
+  // The same comment is not shown twice: the seen-at cursor filters it out, so nothing new → no fire.
+  await store.addressReview(row, false);
+  expect(apiFake.calls.filter((c) => c === "agent:/wt/feat-convo")).toHaveLength(2);
+});

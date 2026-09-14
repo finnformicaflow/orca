@@ -1,7 +1,7 @@
 // Pure workstream logic — the state machine and derivations. No React, no I/O,
 // so both the store and the e2e tests import it directly.
 
-import type { CiFailureEvidence, CiStatus, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
+import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome } from "../../shared/agent";
 export { attachCommand } from "../../shared/agent";
 
@@ -586,9 +586,26 @@ const reviewInteraction = (pr: number | undefined): string => [
 const followedReview = (pr: number | undefined): string =>
   `This PR is actively followed, so keep its conversation current, not just its code: read the wider discussion (\`gh pr view ${pr} --comments\`) and reply to any open question or request directed at the author. Reply substantively; don't post redundant status chatter.`;
 
+// Conversation comments have no "resolved" bit and Orca does NOT judge them — QA reports, review
+// summaries and a human's question all arrive the same way. The agent decides, per comment, whether
+// it needs a change, a reply, or nothing; the only rule is that every one gets an explicit
+// disposition, so an item can be declined but never silently dropped.
+const commentDispositions = (pr: number | undefined, n: number): string => [
+  `Below are the ${n} conversation comment${n === 1 ? "" : "s"} posted since Orca last handed you this PR (not inline threads; everyone but you). They are yours to judge: for each one decide whether it needs a code change, a reply, or nothing. If it does, act on it and reply on the PR (\`gh pr comment ${pr} --body "…"\`); related ones — e.g. successive automated reports where a newer one supersedes the older — can share one consolidated reply.`,
+  "Whatever you decide, finish with a `## Comment dispositions` section: one line per comment number — `replied`, `changed` (cite the commit), or `no action` — with a few words of why. Nothing may be dropped silently.",
+].join(" ");
+
 /** Instruction for Claude to address a PR's requested changes / review comments, reply to and resolve
- *  the threads, then push. `followed` = this is an auto-follow run, so also engage the conversation. */
-export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false): string {
+ *  the threads, then push. `followed` = this is an auto-follow run, so also engage the conversation.
+ *  `comments` = new conversation comments since the last hand-over, for the agent to disposition. */
+export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false, comments: ConversationComment[] = []): string {
+  const conversation = comments.length
+    ? `\n\n${commentDispositions(ws.prNumber, comments.length)}\n\n${comments.map((c, i) => [
+      `### Comment ${i + 1} — ${c.author ?? "someone"} · ${c.createdAt}${c.kind === "review" ? " (review summary)" : ""}`,
+      c.body,
+      c.url ? `Link: ${c.url}` : "",
+    ].filter(Boolean).join("\n")).join("\n\n")}`
+    : "";
   const evidence = threads.length
     ? `\n\nOrca collected these unresolved inline threads:\n${threads.map((thread) => [
       `### Thread ${thread.id}${thread.alreadyHanded ? " (previously handed; still unresolved)" : ""}`,
@@ -608,6 +625,7 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
     reviewInteraction(ws.prNumber),
     followed ? followedReview(ws.prNumber) : "",
     evidence,
+    conversation,
   ].filter(Boolean).join(" "));
 }
 

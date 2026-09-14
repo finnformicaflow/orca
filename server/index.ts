@@ -293,6 +293,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     const since = Number(url.searchParams.get("since"));
     return json(await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined));
   }
+  const commentsMatch = p.match(/^\/api\/prs\/(\d+)\/comments$/);
+  if (req.method === "GET" && commentsMatch) {
+    // Conversation comments newer than `since` (ISO) — the agent decides what needs a response.
+    return json(await gh.conversationComments(repo.repoPath, Number(commentsMatch[1]), url.searchParams.get("since") || undefined));
+  }
   const reviewEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/review-evidence$/);
   if (req.method === "GET" && reviewEvidenceMatch) {
     return json(await gh.reviewEvidence(repo.repoPath, Number(reviewEvidenceMatch[1])));

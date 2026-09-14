@@ -46,3 +46,27 @@ describe("address review reliably clears every thread", () => {
     expect(p).toContain("confirm it prints nothing");
   });
 });
+
+describe("conversation comments are surfaced for the agent to disposition", () => {
+  const comments = [
+    { id: "IC_1", kind: "comment" as const, author: "eddy-ai-flow", createdAt: "2026-09-11T15:06:00Z", body: "## Eddy QA Report\nCoverage incomplete", url: "https://x/1" },
+    { id: "IC_3", kind: "comment" as const, author: "alice", createdAt: "2026-09-11T15:40:00Z", body: "Can this handle the empty case?" },
+  ];
+
+  test("every new comment is handed over verbatim, and each must get an explicit disposition — the agent decides", () => {
+    const p = addressReviewPrompt({ prNumber: 7, branch: "feat" }, [], [], false, comments);
+    expect(p).toContain("Comment 1 — eddy-ai-flow");        // a bot's report is surfaced, not pre-filtered
+    expect(p).toContain("Coverage incomplete");
+    expect(p).toContain("Comment 2 — alice");
+    expect(p).toContain("yours to judge");                    // the decision is the agent's…
+    expect(p).toContain("## Comment dispositions");           // …but it must be stated per comment
+    expect(p).toContain("Nothing may be dropped silently");
+    expect(p).toContain("gh pr comment 7 --body");            // and the agent executes the reply itself
+    expect(p).toContain("supersedes the older");              // consolidation is allowed
+  });
+
+  test("no new comments → no comments block at all", () => {
+    const p = addressReviewPrompt({ prNumber: 7, branch: "feat" }, [], [], false, []);
+    expect(p).not.toContain("Comment dispositions");
+  });
+});

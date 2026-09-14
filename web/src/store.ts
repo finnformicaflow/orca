@@ -7,7 +7,7 @@
 // (theme, density, composer drafts) — see the migration below for the one-shot handover.
 import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
-import type { CiStatus, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
+import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressReviewPrompt, chatPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt, resolveCiPrompt,
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
@@ -83,6 +83,7 @@ export type Enrichment = {
   followSig?: string; // last follow state Orca acted on (see runFollowers) — persisted so a reload doesn't re-fire
   followUps?: string[]; // every follow-up prompt SENT for this branch, oldest→newest — recorded on send (see followUp), kept until the branch is merged/discarded. Never lost to a launch/agent error, and drives the composer's ↑/↓ history recall.
   handedReviewThreadIds?: string[];
+  commentsSeenAt?: string; // ISO: conversation comments up to here have been handed to the agent (see addressReview)
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
 };
 // The bridge owns enrichment (server/db.ts); this map is a local MIRROR of it. Reads stay synchronous
@@ -879,21 +880,29 @@ export async function fixCi(row: Row) {
  * threads; Follow sends only newly actionable IDs and records them only after launch acceptance. */
 export async function addressReview(row: Row, manual = true) {
   const wt = await ensureWorktree(row);
-  const collected = row.prNumber ? await api.reviewEvidence(row.repo, row.prNumber).catch(() => undefined) : undefined;
   const enrichment = enrichOf(row.repo, row.branch);
+  const [collected, comments] = await Promise.all([
+    row.prNumber ? api.reviewEvidence(row.repo, row.prNumber).catch(() => undefined) : Promise.resolve(undefined),
+    // Every conversation comment since the last hand-over — no filtering by who or what: the agent
+    // decides what needs a response. Orca only guarantees it SEES each one exactly once.
+    row.prNumber ? api.prComments(row.repo, row.prNumber, enrichment.commentsSeenAt).catch(() => [] as ConversationComment[]) : Promise.resolve([] as ConversationComment[]),
+  ]);
   const handed = new Set(enrichment.handedReviewThreadIds ?? []);
   const threads = collected?.filter((thread) => manual || !handed.has(thread.id));
-  if (!manual && collected?.length && !threads?.length) return; // unchanged unresolved state
+  // Unchanged: everything unresolved was already handed over AND nobody has said anything new.
+  if (!manual && collected?.length && !threads?.length && !comments.length) return;
   const marked = (threads ?? []).map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
+  const seenAt = new Date().toISOString();
   await launchOnRow(
     row, wt,
-    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked, !manual),
+    addressReviewPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, row.feedback, marked, !manual, comments),
     providerFor(row),
-    { action: "review", evidenceChars: JSON.stringify(marked).length, instruction: "Address the review feedback" },
+    { action: "review", evidenceChars: JSON.stringify(marked).length + JSON.stringify(comments).length, instruction: "Address the review feedback" },
   );
-  if (threads?.length) {
-    patchEnrich(row.repo, row.branch, { handedReviewThreadIds: [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100) });
-  }
+  const fields: Enrichment = {};
+  if (threads?.length) fields.handedReviewThreadIds = [...new Set([...handed, ...threads.map((thread) => thread.id)])].slice(-100);
+  if (comments.length) fields.commentsSeenAt = seenAt; // recorded only after launch acceptance, like the thread ids
+  if (Object.keys(fields).length) patchEnrich(row.repo, row.branch, fields);
   await refresh();
 }
 

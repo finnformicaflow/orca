@@ -39,6 +39,49 @@ const CI_TOTAL_LIMIT = 8_000;
 const botLogin = (login?: string) => !login || login.endsWith("[bot]") || /^(?:github-actions|dependabot)$/i.test(login);
 const truncate = (value: string, limit: number) => value.length > limit ? `${value.slice(0, limit - 16)}\n…(truncated)…` : value;
 
+/** One PR conversation item — an issue-level comment or a submitted review's top-level body — as
+ *  opposed to an inline thread. These have no native "handled" bit on GitHub, so Orca remembers
+ *  when it last handed them over (enrichment `commentsSeenAt`) and only surfaces newer ones. */
+export type ConversationComment = {
+  id: string; kind: "comment" | "review"; author?: string; createdAt: string; body: string; url?: string;
+};
+
+const COMMENTS_MAX = 30;
+
+/** Conversation comments and review summaries on a PR newer than `since` (ISO), from everyone but
+ *  the PR's author — Orca runs the agent AS the author, so its own replies are never re-surfaced.
+ *  Deliberately no other filtering (bots included): what needs a response is the agent's call.
+ *  Newest-last, bounded to the last COMMENTS_MAX and the same total size as thread evidence. */
+export async function conversationComments(cwd: string, pr: number, since?: string): Promise<ConversationComment[]> {
+  const raw = await gh(cwd, "pr", "view", String(pr), "--json", "author,comments,reviews");
+  const j = JSON.parse(raw) as {
+    author?: { login?: string };
+    comments?: Array<{ id?: string; author?: { login?: string }; body?: string; createdAt?: string; url?: string }>;
+    reviews?: Array<{ id?: string; author?: { login?: string }; body?: string; submittedAt?: string; url?: string; state?: string }>;
+  };
+  const me = j.author?.login;
+  const items: ConversationComment[] = [];
+  for (const c of j.comments ?? []) {
+    if (!c.createdAt || c.author?.login === me || (since && c.createdAt <= since) || !c.body?.trim()) continue;
+    items.push({ id: c.id ?? c.url ?? c.createdAt, kind: "comment", author: c.author?.login, createdAt: c.createdAt, body: truncate(c.body.trim(), REVIEW_BODY_LIMIT), url: c.url });
+  }
+  for (const r of j.reviews ?? []) {
+    if (!r.submittedAt || r.author?.login === me || (since && r.submittedAt <= since) || !r.body?.trim()) continue;
+    items.push({ id: r.id ?? r.url ?? r.submittedAt, kind: "review", author: r.author?.login, createdAt: r.submittedAt, body: truncate(r.body.trim(), REVIEW_BODY_LIMIT), url: r.url });
+  }
+  items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const recent = items.slice(-COMMENTS_MAX);
+  const out: ConversationComment[] = [];
+  let used = 0;
+  for (const item of recent.reverse()) { // keep the newest when the size cap bites
+    const size = JSON.stringify(item).length;
+    if (used + size > REVIEW_TOTAL_LIMIT) break;
+    used += size;
+    out.unshift(item);
+  }
+  return out;
+}
+
 /** Unresolved inline review threads for one PR. This GraphQL call is intentionally on-demand. */
 export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThreadEvidence[]> {
   const repoRaw = await gh(cwd, "repo", "view", "--json", "nameWithOwner");
