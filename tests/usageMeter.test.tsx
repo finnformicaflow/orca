@@ -158,7 +158,7 @@ test("with hydra's logins, the header shows ONE fleet row (mean per window, Fabl
   const card = fleet.querySelector("[data-slot='usage-breakdown']")!;
   const rows = [...card.querySelectorAll("[data-slot='usage-login']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
   expect(rows).toHaveLength(2);
-  expect(rows[0]).toContain("personal"); expect(rows[0]).toContain("95%"); expect(rows[0]).toContain("21%");
+  expect(rows[0]).toContain("personal"); expect(rows[0]).toContain("95%"); expect(rows[0]).toContain("21%"); expect(rows[0]).toContain("ok"); // a healthy login says so, not a blank
   expect(rows[1]).toContain("work");     expect(rows[1]).toContain("12%"); expect(rows[1]).toContain("—"); // no Fable window
   expect(fleet.querySelector("[data-slot='usage-state']")).toBeNull(); // nothing exhausted → no tag
 });

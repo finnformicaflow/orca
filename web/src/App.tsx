@@ -220,7 +220,7 @@ function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
                 <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.fiveHour.utilization)] : ""}`}>{pct(p.usage?.fiveHour)}</td>
                 <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.sevenDay.utilization)] : ""}`}>{pct(p.usage?.sevenDay)}</td>
                 <td className={`text-right ${p.usage?.fable ? ZONE_TEXT[usageZone(p.usage.fable.utilization)] : ""}`}>{pct(p.usage?.fable)}</td>
-                <td className="text-left">{p.state && p.state !== "ok" ? p.state : ""}</td>
+                <td className="text-left">{p.state ?? "ok"}</td>
               </tr>
             ))}
           </tbody>
