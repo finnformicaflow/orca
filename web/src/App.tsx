@@ -5,7 +5,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { densityAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
-import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage } from "../../server/usage";
+import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage, ProfileUsage, UsageWindow } from "../../server/usage";
 import { useRepos } from "./store";
 import { summarizeSync } from "./workstream";
 import { Board } from "./views/Board";
@@ -153,9 +153,7 @@ function UsageMeter() {
             routing off — claude on PATH isn't hydra's shim
           </span>
         )}
-        {usage.profiles
-          ? usage.profiles.map((p) => <ClaudeUsageGroup key={p.name} usage={p.usage} name={p.name} state={p.state} />)
-          : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
+        {usage.profiles ? <ClaudeFleetGroup profiles={usage.profiles} /> : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
         {(usage.profiles?.some((p) => p.usage) || usage.claude) && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
         {usage.codex && <CodexUsageGroup usage={usage.codex} />}
       </div>
@@ -171,6 +169,67 @@ function UsageMeter() {
 // `name` is the login's hydra profile name (one group per login); `state` is hydra's verdict, shown
 // only when it isn't the ordinary "ok" — exhausted, locked, disabled, token stale, no data yet, not
 // signed in — so a login that can't be used says why instead of showing misleading bars.
+// Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
+// and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up.
+const outOfRotation = (p: ProfileUsage): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
+
+export type FleetUsage = { count: number; exhausted: number; fiveHour: UsageWindow; sevenDay: UsageWindow; fable: UsageWindow | null };
+
+/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
+ *  with the soonest reset — so the header answers "how used are my Claude accounts overall" in one
+ *  row, and the per-login truth lives in the breakdown. Null when nothing is in rotation. Pure. */
+export function aggregateProfiles(profiles: ProfileUsage[]): FleetUsage | null {
+  const live = profiles.filter((p) => !outOfRotation(p));
+  if (!live.length) return null;
+  const mean = (ws: UsageWindow[]): UsageWindow => ({
+    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
+    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
+  });
+  const fables = live.map((p) => p.usage!.fable).filter((w): w is UsageWindow => Boolean(w));
+  return {
+    count: live.length,
+    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
+    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
+    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
+    fable: fables.length ? mean(fables) : null,
+  };
+}
+
+// The whole fleet as ONE row (three logins × three bars was too much header), with the per-login
+// breakdown in a hover card. Pure CSS hover (group-hover) plus focus-within so it opens from the
+// keyboard too; the card is always in the DOM, only hidden, so it costs no state.
+function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
+  const fleet = aggregateProfiles(profiles);
+  const pct = (w: UsageWindow | null | undefined) => (w ? `${w.utilization}%` : "—");
+  return (
+    <div className="group relative flex items-center gap-2 outline-none" tabIndex={0} aria-label="Claude usage limits">
+      <span className="opacity-70">claude ×{fleet?.count ?? 0}</span>
+      {fleet ? <>
+        <UsageStat provider="Claude" label="5h" pct={fleet.fiveHour.utilization} resetsAt={fleet.fiveHour.resetsAt} />
+        <UsageStat provider="Claude" label="1w" pct={fleet.sevenDay.utilization} resetsAt={fleet.sevenDay.resetsAt} />
+        {fleet.fable && <UsageStat provider="Claude" label="fable" pct={fleet.fable.utilization} resetsAt={fleet.fable.resetsAt} />}
+        {fleet.exhausted > 0 && <span data-slot="usage-state" className="rounded border border-red-500/40 px-1 text-red-600 dark:text-red-400">{fleet.exhausted} exhausted</span>}
+      </> : <span data-slot="usage-state" className="rounded border px-1 opacity-60">no login in rotation</span>}
+      <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground absolute top-full right-0 z-30 mt-1 hidden min-w-max rounded-md border p-2 shadow-md group-hover:block group-focus-within:block">
+        <table className="border-separate border-spacing-x-3 border-spacing-y-0.5">
+          <thead><tr className="opacity-60"><th className="text-left font-normal">login</th><th className="font-normal">5h</th><th className="font-normal">1w</th><th className="font-normal">fable</th><th className="text-left font-normal">state</th></tr></thead>
+          <tbody>
+            {profiles.map((p) => (
+              <tr key={p.name} data-slot="usage-login" className={outOfRotation(p) ? "opacity-60" : ""}>
+                <td className="text-left">{p.name}</td>
+                <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.fiveHour.utilization)] : ""}`}>{pct(p.usage?.fiveHour)}</td>
+                <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.sevenDay.utilization)] : ""}`}>{pct(p.usage?.sevenDay)}</td>
+                <td className={`text-right ${p.usage?.fable ? ZONE_TEXT[usageZone(p.usage.fable.utilization)] : ""}`}>{pct(p.usage?.fable)}</td>
+                <td className="text-left">{p.state && p.state !== "ok" ? p.state : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ClaudeUsageGroup({ usage, name, state }: { usage: ClaudeUsage | null; name?: string; state?: string }) {
   const off = state && state !== "ok";
   return (

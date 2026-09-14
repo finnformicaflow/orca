@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { App, mergeUsage, untilReset } from "@/App";
+import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -135,7 +135,7 @@ test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => 
   expect(shapeCodexUsage(null)).toBeNull();
 });
 
-test("with hydra's logins, the meter shows one group per login with 5h, 1w AND the Fable window", async () => {
+test("with hydra's logins, the header shows ONE fleet row (mean per window, Fable included) and the per-login breakdown in a hover card", async () => {
   apiFake.usageData = {
     claude: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null },
     codex: null,
@@ -145,37 +145,52 @@ test("with hydra's logins, the meter shows one group per login with 5h, 1w AND t
     ],
   };
   await mount();
-  const personal = container!.querySelector("[aria-label='Claude personal usage limits']");
-  const work = container!.querySelector("[aria-label='Claude work usage limits']");
-  expect(personal?.textContent).toContain("claude·personal");
-  expect(personal?.textContent).toContain("95%");
-  expect(personal?.textContent).toContain("fable");   // the per-model window, from hydra's limits[] parse
-  expect(personal?.textContent).toContain("21%");
-  expect(work?.textContent).toContain("12%");
-  expect(work?.textContent).not.toContain("fable");   // an account with no Fable window shows no bar
-  // An ordinary "ok" login carries no state tag.
-  expect(personal?.querySelector("[data-slot='usage-state']")).toBeNull();
+  // Exactly one Claude group in the header — not one per login — labelled with how many are in rotation.
+  const groups = container!.querySelectorAll("[aria-label='Claude usage limits']");
+  expect(groups).toHaveLength(1);
+  const fleet = groups[0]!;
+  expect(fleet.textContent).toContain("claude ×2");
+  // The bars are the fleet mean: 5h (95+12)/2 → 54, 1w (60+5)/2 → 33, Fable over the logins that have one → 21.
+  expect(fleet.querySelector("[title^='Claude 5h']")?.textContent).toContain("54%");
+  expect(fleet.querySelector("[title^='Claude 1w']")?.textContent).toContain("33%");
+  expect(fleet.querySelector("[title^='Claude fable']")?.textContent).toContain("21%");
+  // The breakdown card carries every login with its own numbers.
+  const card = fleet.querySelector("[data-slot='usage-breakdown']")!;
+  const rows = [...card.querySelectorAll("[data-slot='usage-login']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toContain("personal"); expect(rows[0]).toContain("95%"); expect(rows[0]).toContain("21%");
+  expect(rows[1]).toContain("work");     expect(rows[1]).toContain("12%"); expect(rows[1]).toContain("—"); // no Fable window
+  expect(fleet.querySelector("[data-slot='usage-state']")).toBeNull(); // nothing exhausted → no tag
 });
 
-test("a login that can't be used says why instead of showing misleading bars", async () => {
+test("logins that can't be routed to are excluded from the fleet mean but still listed with their reason; exhausted ones count and are flagged", async () => {
   apiFake.usageData = {
     claude: null, codex: null,
     profiles: [
       { name: "work", state: "exhausted", usage: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 40, resetsAt: null }, extra: null, fable: null } },
-      { name: "spare", state: "not signed in on this machine", usage: null }, // no reading at all…
+      { name: "spare", state: "not signed in on this machine", usage: null },
       { name: "old", state: "disabled", usage: null },
     ],
   };
   await mount();
-  const work = container!.querySelector("[aria-label='Claude work usage limits']");
-  expect(work?.querySelector("[data-slot='usage-state']")?.textContent).toBe("exhausted");
-  expect(work?.textContent).toContain("95%"); // bars still shown — exhausted is a reading
-  // …but the login still appears, named, with its reason, so the board shows every account hydra knows.
-  const spare = container!.querySelector("[aria-label='Claude spare usage limits']");
-  expect(spare?.textContent).toContain("claude·spare");
-  expect(spare?.querySelector("[data-slot='usage-state']")?.textContent).toBe("not signed in on this machine");
-  expect(spare?.textContent).not.toContain("%");
-  expect(container!.querySelector("[aria-label='Claude old usage limits']")?.querySelector("[data-slot='usage-state']")?.textContent).toBe("disabled");
+  const fleet = container!.querySelector("[aria-label='Claude usage limits']")!;
+  expect(fleet.textContent).toContain("claude ×1");                       // only `work` is in rotation…
+  expect(fleet.querySelector("[title^='Claude 5h']")?.textContent).toContain("95%"); // …so the mean IS its reading
+  expect(fleet.querySelector("[data-slot='usage-state']")?.textContent).toBe("1 exhausted");
+  const rows = [...fleet.querySelectorAll("[data-slot='usage-login']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+  expect(rows).toHaveLength(3);                                          // every login hydra knows is still listed
+  expect(rows[1]).toContain("spare"); expect(rows[1]).toContain("not signed in on this machine"); expect(rows[1]).not.toContain("%");
+  expect(rows[2]).toContain("old");   expect(rows[2]).toContain("disabled");
+});
+
+test("aggregateProfiles: mean per window over the rotation, soonest reset, null when nothing is in rotation", () => {
+  const w = (u: number, r: string | null = null) => ({ utilization: u, resetsAt: r });
+  expect(aggregateProfiles([
+    { name: "a", state: "ok", usage: { fiveHour: w(10, "2026-09-14T15:00:00Z"), sevenDay: w(20), extra: null, fable: w(30) } },
+    { name: "b", state: "exhausted", usage: { fiveHour: w(90, "2026-09-14T13:00:00Z"), sevenDay: w(40), extra: null, fable: null } },
+    { name: "c", state: "disabled", usage: { fiveHour: w(0), sevenDay: w(0), extra: null, fable: null } },
+  ])).toEqual({ count: 2, exhausted: 1, fiveHour: w(50, "2026-09-14T13:00:00Z"), sevenDay: w(30), fable: w(30) });
+  expect(aggregateProfiles([{ name: "x", state: "not signed in on this machine", usage: null }])).toBeNull();
 });
 
 test("warns when hydra is installed but the bridge's `claude` isn't its shim (runs silently unrouted)", async () => {
