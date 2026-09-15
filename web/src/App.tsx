@@ -197,10 +197,11 @@ export function aggregateProfiles(profiles: ProfileUsage[]): FleetUsage | null {
 
 // The whole fleet as ONE row (three logins × three bars was too much header), with the per-login
 // breakdown in a hover card. Pure CSS hover (group-hover) plus focus-within so it opens from the
-// keyboard too; the card is always in the DOM, only hidden, so it costs no state.
+// keyboard too; the card is always in the DOM, only hidden, so it costs no state. The card hangs
+// off a padded wrapper rather than a margin: a margin is a gap the cursor must cross, and leaving
+// the group for even one pixel closed it before you could reach it.
 function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
   const fleet = aggregateProfiles(profiles);
-  const pct = (w: UsageWindow | null | undefined) => (w ? `${w.utilization}%` : "—");
   return (
     <div className="group relative flex items-center gap-2 outline-none" tabIndex={0} aria-label="Claude usage limits">
       <span className="opacity-70">claude ×{fleet?.count ?? 0}</span>
@@ -210,22 +211,53 @@ function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
         {fleet.fable && <UsageStat provider="Claude" label="fable" pct={fleet.fable.utilization} resetsAt={fleet.fable.resetsAt} />}
         {fleet.exhausted > 0 && <span data-slot="usage-state" className="rounded border border-red-500/40 px-1 text-red-600 dark:text-red-400">{fleet.exhausted} exhausted</span>}
       </> : <span data-slot="usage-state" className="rounded border px-1 opacity-60">no login in rotation</span>}
-      <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground absolute top-full right-0 z-30 mt-1 hidden min-w-max rounded-md border p-2 shadow-md group-hover:block group-focus-within:block">
-        <table className="border-separate border-spacing-x-3 border-spacing-y-0.5">
-          <thead><tr className="opacity-60"><th className="text-left font-normal">login</th><th className="font-normal">5h</th><th className="font-normal">1w</th><th className="font-normal">fable</th><th className="text-left font-normal">state</th></tr></thead>
-          <tbody>
-            {profiles.map((p) => (
-              <tr key={p.name} data-slot="usage-login" className={outOfRotation(p) ? "opacity-60" : ""}>
-                <td className="text-left">{p.name}</td>
-                <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.fiveHour.utilization)] : ""}`}>{pct(p.usage?.fiveHour)}</td>
-                <td className={`text-right ${p.usage ? ZONE_TEXT[usageZone(p.usage.sevenDay.utilization)] : ""}`}>{pct(p.usage?.sevenDay)}</td>
-                <td className={`text-right ${p.usage?.fable ? ZONE_TEXT[usageZone(p.usage.fable.utilization)] : ""}`}>{pct(p.usage?.fable)}</td>
-                <td className="text-left">{p.state ?? "ok"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="absolute top-full right-0 z-30 hidden pt-2 group-hover:block group-focus-within:block">
+        <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground w-80 rounded-lg border p-3 shadow-lg">
+          <div className="mb-2 flex items-baseline justify-between text-[11px] opacity-60">
+            <span>Claude logins</span>
+            <span>{fleet ? `${fleet.count} in rotation` : "none in rotation"}</span>
+          </div>
+          <div className="flex flex-col gap-2.5">
+            {profiles.map((p) => <LoginUsage key={p.name} profile={p} />)}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+// One login in the breakdown: name + state on the first line, then a bar per window with the
+// figure and the time to reset. Dimmed when hydra can't route to it.
+function LoginUsage({ profile: p }: { profile: ProfileUsage }) {
+  const state = p.state ?? "ok";
+  const windows: [string, UsageWindow | null | undefined][] = [["5h", p.usage?.fiveHour], ["1w", p.usage?.sevenDay], ["fable", p.usage?.fable]];
+  return (
+    <div data-slot="usage-login" className={outOfRotation(p) ? "opacity-50" : ""}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate font-medium" title={p.email}>{p.name}</span>
+        <span className={`shrink-0 rounded px-1 text-[10px] uppercase tracking-wide ${state === "ok" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : state === "exhausted" || state === "locked" ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted opacity-70"}`}>{state}</span>
+      </div>
+      <div className="mt-1 grid grid-cols-3 gap-2">
+        {windows.map(([label, w]) => <UsageBar key={label} label={label} window={w} />)}
+      </div>
+    </div>
+  );
+}
+
+const ZONE_BAR: Record<"ok" | "warn" | "danger", string> = { ok: "bg-emerald-500", warn: "bg-amber-500", danger: "bg-red-500" };
+
+function UsageBar({ label, window: w }: { label: string; window: UsageWindow | null | undefined }) {
+  const left = w ? untilReset(w.resetsAt) : null;
+  return (
+    <div className="min-w-0">
+      <div className="flex justify-between text-[10px] leading-tight">
+        <span className="opacity-60">{label}</span>
+        <span className={w ? `font-semibold ${ZONE_TEXT[usageZone(w.utilization)]}` : "opacity-40"}>{w ? `${w.utilization}%` : "—"}</span>
+      </div>
+      <div className="bg-muted mt-0.5 h-1.5 w-full overflow-hidden rounded-full">
+        {w && <div className={`h-full rounded-full ${ZONE_BAR[usageZone(w.utilization)]}`} style={{ width: `${Math.min(100, w.utilization)}%` }} />}
+      </div>
+      <div className="mt-0.5 text-[10px] leading-tight opacity-50">{left ? `resets in ${left}` : "\u00a0"}</div>
     </div>
   );
 }
