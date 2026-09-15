@@ -16,11 +16,13 @@ export async function makeScratchRepo(): Promise<string> {
 }
 
 // A `gh` stand-in: `pr create` prints a URL, `pr view` cats the fixture file,
-// `pr merge` succeeds. Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
+// `pr merge` succeeds (or, with ORCA_GH_STACKED set, fails the way GitHub refuses a stacked PR, and
+// the merge-async endpoint answers ORCA_GH_MERGE_ASYNC). Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
 // records each invocation's args, so a test can assert *which* --json fields we ask gh for (the
 // shim otherwise ignores the field list — cat'ing the whole fixture regardless).
 const GH_SHIM = `#!/bin/sh
 [ -n "$ORCA_GH_ARGS_LOG" ] && echo "$*" >> "$ORCA_GH_ARGS_LOG"
+case "$*" in *merge-async*) if [ -n "$ORCA_GH_MERGE_ASYNC" ]; then echo "$ORCA_GH_MERGE_ASYNC"; else echo '{"status":"merged"}'; fi; exit 0 ;; esac
 case "$1 $2" in
   "pr create") echo "https://github.com/acme/app/pull/\${ORCA_PR_NUMBER:-123}" ;;
   "pr view") cat "$ORCA_GH_FIXTURE" ;;
@@ -30,7 +32,7 @@ case "$1 $2" in
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
   *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;
   "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
-  "pr merge") exit 0 ;;
+  "pr merge") [ -n "$ORCA_GH_STACKED" ] && { echo "GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously (mergePullRequest)" >&2; exit 1; }; exit 0 ;;
   "pr ready") exit 0 ;;
   "pr edit") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
