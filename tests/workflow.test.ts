@@ -510,6 +510,33 @@ test("W8 draft-toggle: markReady/convertToDraft shell out to `gh pr ready` (± -
   await expect(convertToDraft(repo, 1)).resolves.toBeDefined();
 });
 
+test("W9b stacked PR: `gh pr merge` refuses a PR that is part of a stack, so merge + auto-merge fall back to the asynchronous merge API", async () => {
+  // GitHub's exact refusal (seen on a real PR): the mutation gh uses can't merge a stacked PR; the
+  // REST merge-async endpoint merges the stack up to that PR in the background.
+  process.env.ORCA_GH_STACKED = "1";
+  try {
+    let read = await recordGhArgs();
+    await mergePr(repo, 5112);
+    process.env.ORCA_GH_ARGS_LOG = "";
+    let log = await read();
+    expect(log).toContain("pr merge 5112 --squash");                                                                       // tried the normal way first
+    expect(log).toContain("api -X PUT repos/{owner}/{repo}/pulls/5112/merge-async -f merge_method=squash -f merge_action=direct_merge");
+    read = await recordGhArgs();
+    await enableAutoMerge(repo, 5112);
+    process.env.ORCA_GH_ARGS_LOG = "";
+    log = await read();
+    expect(log).toContain("merge_action=default"); // "auto" → let GitHub queue it when the base needs it
+
+    // A pending merge is polled by its uuid; a failed one is an error here, not a silent "merged" card.
+    process.env.ORCA_GH_MERGE_ASYNC = '{"status":"failed","details":{"message":"base branch was modified"}}';
+    await expect(mergePr(repo, 5112)).rejects.toThrow("stacked merge of PR #5112 failed: base branch was modified");
+  } finally {
+    delete process.env.ORCA_GH_STACKED; delete process.env.ORCA_GH_MERGE_ASYNC;
+  }
+  // Any other merge failure still surfaces as-is (the fallback is for the stack refusal only).
+  await expect(mergePr(repo, 1)).resolves.toBeUndefined();
+});
+
 test("W9 auto-merge: enableAutoMerge shells out to `gh pr merge --auto` (queues the merge for when CI/reviews pass)", async () => {
   // Unlike mergePr, this doesn't require the PR to be green *now* — GitHub holds it until requirements pass.
   await expect(enableAutoMerge(repo, 1)).resolves.toBeDefined();

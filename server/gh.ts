@@ -467,13 +467,34 @@ export const markReady = (cwd: string, pr: number) => gh(cwd, "pr", "ready", Str
 /** Convert an open PR back to a draft. */
 export const convertToDraft = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr), "--undo");
 
-export async function mergePr(cwd: string, pr: number): Promise<void> {
-  await gh(cwd, "pr", "merge", String(pr), "--squash");
+// A PR in a GitHub *stack* can't be merged through the mutation `gh pr merge` uses — GitHub answers
+// "This pull request is part of a stack and must be merged using the asynchronous merge REST API".
+// That API (PUT …/merge-async) merges the whole stack up to and including the PR, in the background.
+const STACKED = /part of a stack/i;
+
+/** Merge (or, with `auto`, queue) a stacked PR through the asynchronous merge API, then wait a
+ *  little for the background merge to land so a failure surfaces here rather than on the next poll.
+ *  `merge_action: default` lets GitHub pick the merge queue when the base requires one. */
+async function mergeAsync(cwd: string, pr: number, auto: boolean): Promise<void> {
+  const raw = await gh(cwd, "api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${pr}/merge-async`, "-f", "merge_method=squash", "-f", `merge_action=${auto ? "default" : "direct_merge"}`);
+  let res = JSON.parse(raw) as { status: string; details?: { uuid?: string; message?: string } };
+  // ponytail: ~20s of polling, then trust the board's own PR poll to show the result.
+  for (let i = 0; i < 10 && res.status === "pending" && res.details?.uuid; i++) {
+    await Bun.sleep(2_000);
+    res = JSON.parse(await gh(cwd, "api", `repos/{owner}/{repo}/pulls/${pr}/merge-async/${res.details.uuid}`));
+  }
+  if (res.status === "failed") throw new Error(`stacked merge of PR #${pr} failed: ${res.details?.message ?? "see the PR on GitHub"}`);
 }
 
-/** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. */
+/** Squash-merge a PR. A PR that is part of a stack falls back to the asynchronous merge API. */
+export async function mergePr(cwd: string, pr: number): Promise<void> {
+  await gh(cwd, "pr", "merge", String(pr), "--squash").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, false) : Promise.reject(e));
+}
+
+/** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. A stacked
+ *  PR has no auto-merge toggle; it goes through the asynchronous merge API instead. */
 export const enableAutoMerge = (cwd: string, pr: number) =>
-  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash");
+  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, true) : Promise.reject(e));
 
 /** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */
 export const disableAutoMerge = (cwd: string, pr: number) =>
