@@ -212,7 +212,7 @@ function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
         {fleet.exhausted > 0 && <span data-slot="usage-state" className="rounded border border-red-500/40 px-1 text-red-600 dark:text-red-400">{fleet.exhausted} exhausted</span>}
       </> : <span data-slot="usage-state" className="rounded border px-1 opacity-60">no login in rotation</span>}
       <div className="absolute top-full right-0 z-30 hidden pt-2 group-hover:block group-focus-within:block">
-        <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground w-80 rounded-lg border p-3 shadow-lg">
+        <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground w-96 rounded-lg border px-4 py-3 shadow-lg">
           <div className="mb-2 flex items-baseline justify-between text-[11px] opacity-60">
             <span>Claude logins</span>
             <span>{fleet ? `${fleet.count} in rotation` : "none in rotation"}</span>
@@ -237,7 +237,7 @@ function LoginUsage({ profile: p }: { profile: ProfileUsage }) {
         <span className="truncate font-medium" title={p.email}>{p.name}</span>
         <span className={`shrink-0 rounded px-1 text-[10px] uppercase tracking-wide ${state === "ok" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : state === "exhausted" || state === "locked" ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted opacity-70"}`}>{state}</span>
       </div>
-      <div className="mt-1 grid grid-cols-3 gap-2">
+      <div className="mt-1 grid grid-cols-3 gap-4">
         {windows.map(([label, w]) => <UsageBar key={label} label={label} window={w} />)}
       </div>
     </div>
@@ -247,7 +247,6 @@ function LoginUsage({ profile: p }: { profile: ProfileUsage }) {
 const ZONE_BAR: Record<"ok" | "warn" | "danger", string> = { ok: "bg-emerald-500", warn: "bg-amber-500", danger: "bg-red-500" };
 
 function UsageBar({ label, window: w }: { label: string; window: UsageWindow | null | undefined }) {
-  const left = w ? untilReset(w.resetsAt) : null;
   return (
     <div className="min-w-0">
       <div className="flex justify-between text-[10px] leading-tight">
@@ -257,7 +256,6 @@ function UsageBar({ label, window: w }: { label: string; window: UsageWindow | n
       <div className="bg-muted mt-0.5 h-1.5 w-full overflow-hidden rounded-full">
         {w && <div className={`h-full rounded-full ${ZONE_BAR[usageZone(w.utilization)]}`} style={{ width: `${Math.min(100, w.utilization)}%` }} />}
       </div>
-      <div className="mt-0.5 text-[10px] leading-tight opacity-50">{left ? `resets in ${left}` : "\u00a0"}</div>
     </div>
   );
 }
