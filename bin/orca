@@ -8,11 +8,14 @@ import { API_PORT } from "../server/ports";
 const [verb = "", ...rest] = process.argv.slice(2);
 const args: Record<string, unknown> = {};
 const words: string[] = [];
+const flag = /^--[a-z]+$/;
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i]!;
   // Only a bare `--name` is a flag: free text that happens to open with dashes (a `---` rule at the
   // top of the notes) is still text.
-  if (/^--[a-z]+$/.test(a)) args[a.slice(2)] = rest[++i] ?? "";
+  // A flag followed by another flag (or by nothing) is a switch: `--status --repo r` must not take
+  // `--repo` as its value.
+  if (flag.test(a)) args[a.slice(2)] = flag.test(rest[i + 1] ?? "--end") ? "" : rest[++i]!;
   else words.push(a);
 }
 const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/orchestrator/tool`, {

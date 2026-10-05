@@ -18,9 +18,10 @@ import * as db from "./db";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as verbs from "./verbs";
+import * as preview from "./preview";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
-import { runsHere, type OrcaConfig, type RepoConfig } from "./config";
+import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
   orchestratorPrompt, withAttachments, workerBrief, workerEvent, type BoardRow,
@@ -254,6 +255,28 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }
+    case "preview": {
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      if (!featuresOf(repo).previews || !repo.previewServices.length) throw new Error(`Previews are not enabled for ${repo.name}; the user turns them on in the repo's config`);
+      const at = `--repo ${repo.name} --branch ${branch}`;
+      if ("status" in args) {
+        // Read-only: look the worktree up rather than `ensureWorktree`, which would check one out.
+        const key = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch)?.worktreePath;
+        const svcs = key ? await preview.status(key) : [];
+        if (!key || !svcs.length) return `No preview for ${repo.name}/${branch}. Start one: orca preview ${at}`;
+        const state = (s: preview.SvcStatus) => (!s.running ? "failed" : s.ready ? `running ${s.url}` : "starting");
+        const overall = svcs.some((s) => !s.running) ? "failed" : svcs.every((s) => s.ready) ? "running" : "starting";
+        return [
+          `Preview ${repo.name}/${branch}: ${overall}`,
+          ...svcs.map((s) => `  ${s.name}: ${state(s)}`),
+          ...(await preview.logs(key)).flatMap((l) => ["", `--- ${l.name} log (tail) ---`, l.log || "(empty)"]),
+        ].join("\n");
+      }
+      const key = await verbs.ensureWorktree(repo, branch);
+      const svcs = await verbs.startPreview(cfg, repo, key, key);
+      return `Starting the preview for ${repo.name}/${branch}: ${svcs.map((s) => `${s.name} ${s.url}`).join(", ")}. It takes a minute or more to boot and nothing wakes you when it is up: check with \`orca preview ${at} --status\`.`;
+    }
     case "chats": {
       const query = words.join(" ").trim();
       if (!query) {
@@ -292,6 +315,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, preview, chats, read, notes`);
   }
 }
