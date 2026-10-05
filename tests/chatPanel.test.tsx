@@ -429,3 +429,52 @@ test("a card whose runs never report context (Codex, Cursor, or nothing run yet)
   const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
 });
+
+/** Type into the panel's composer and send with ⌘+Enter. */
+async function sendText(value: string) {
+  const textarea = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    await flush(); await flush();
+  });
+}
+const sendingText = () => [...container!.querySelectorAll('[data-slot="chat-sending"]')].map((e) => e.textContent);
+
+test("a sent message shows in the log at once, and gives way to the real turn when the bridge answers", async () => {
+  apiFake.holdClaude = true; // the launch is still in flight
+  await mount(base);
+  await sendText("add a retry");
+
+  expect(sendingText()).toEqual(["❯add a retry▋ sending…"]);
+  expect(container!.querySelector("textarea")!.value).toBe(""); // the box is already clear
+
+  apiFake.turnsData.set("r::feat", [{ id: "run-9", provider: "claude", instruction: "add a retry", prompt: "p", response: "" }]);
+  await act(async () => { apiFake.releaseClaude!(); await flush(); await flush(); await flush(); });
+  expect(sendingText()).toEqual([]);
+  expect(text()).toContain("add a retry"); // now the recorded turn, working
+  expect(text()).toContain("▋ working…");
+});
+
+test("if the turn lands over the stream first, the message is not shown twice", async () => {
+  apiFake.holdClaude = true;
+  apiFake.turnsData.set("r::feat", [{ id: "run-9", provider: "claude", instruction: "add a retry", prompt: "p", response: "" }]);
+  await mount(base);
+  await sendText("add a retry");
+  expect(sendingText()).toEqual([]);
+  expect(text().split("add a retry")).toHaveLength(2); // exactly once
+  await act(async () => { apiFake.releaseClaude!(); await flush(); await flush(); });
+});
+
+test("a message that fails to send is withdrawn from the log and handed back to the composer", async () => {
+  apiFake.claudeError = "bridge down";
+  await mount(base);
+  await sendText("add a retry");
+  expect(sendingText()).toEqual([]);
+  expect(container!.querySelector("textarea")!.value).toBe("add a retry");
+  expect(text()).toContain("bridge down");
+});

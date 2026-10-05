@@ -193,7 +193,26 @@ function Turn({ turn }: { turn: AgentTurn }) {
 export function ChatPanel({ row, send, flush, controls }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
 }) {
-  const submit = send ?? ((text: string, images: File[]) => followUp(row, text, images));
+  const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
+  // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
+  // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
+  // shows nothing until then reads as "it didn't go". So the message is drawn at once and replaced
+  // by the real turn (or queued entry) when the bridge answers; on failure it is withdrawn and the
+  // composer puts the text back.
+  const [sending, setSending] = useState<{ id: number; text: string }[]>([]);
+  const sendSeq = useRef(0);
+  const submit = async (text: string, images: File[]) => {
+    const id = ++sendSeq.current;
+    follow.current = true; // you just spoke: jump to it, wherever you had scrolled
+    setSending((s) => [...s, { id, text }]);
+    try {
+      await deliver(text, images);
+      setTurns(await api.turns(row.repo, row.branch).catch(() => turnsRef.current ?? []));
+      await loadQueued(); // it may have been held rather than launched
+    } finally {
+      setSending((s) => s.filter((m) => m.id !== id));
+    }
+  };
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
@@ -251,7 +270,7 @@ export function ChatPanel({ row, send, flush, controls }: {
   // Keyed on `turns` itself, not its length, so appended steps scroll too.
   useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
-  }, [turns]);
+  }, [turns, sending]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const loadQueued = () => api.queued(row.repo, row.branch).then(setQueued).catch(() => {});
   const [stopping, setStopping] = useState(false);
@@ -267,6 +286,10 @@ export function ChatPanel({ row, send, flush, controls }: {
       setStopping(false);
     }
   };
+  // Has the bridge already recorded this message — as the turn now running, or a queued entry?
+  // (startsWith: attachments are appended to the instruction after the text.)
+  const landed = (text: string) =>
+    Boolean(turns?.some((t) => !t.finishedAt && t.instruction?.startsWith(text))) || queued.some((m) => m.instruction.startsWith(text));
   const onScroll = () => {
     const el = scroller.current;
     if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK;
@@ -295,6 +318,17 @@ export function ChatPanel({ row, send, flush, controls }: {
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
+        {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
+            them "sending", is worse than the moment's gap it would cover. */}
+        {sending.filter((m) => !landed(m.text)).map((m) => (
+          <div key={m.id} className="mb-3" data-slot="chat-sending">
+            <div className="flex gap-2 text-emerald-400">
+              <span className="shrink-0 select-none">❯</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words">{m.text}</span>
+            </div>
+            <div className="mt-1 pl-4 text-neutral-500">▋ sending…</div>
+          </div>
+        ))}
         {queued.map((m) => (
           <Queued
             key={m.id}
@@ -314,11 +348,7 @@ export function ChatPanel({ row, send, flush, controls }: {
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
-        onSubmit={async (text, images) => {
-          await submit(text, images);
-          setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
-          await loadQueued(); // it may have been held rather than launched
-        }}
+        onSubmit={submit}
         // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
         // next user.message: the run is stopped and the text goes straight after it. If the process
         // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the
@@ -329,8 +359,6 @@ export function ChatPanel({ row, send, flush, controls }: {
           onSubmit: async (text, images) => {
             await api.stopAgent(row.worktreePath!);
             await submit(text, images);
-            setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
-            await loadQueued();
             await refresh();
           },
         } : undefined}
