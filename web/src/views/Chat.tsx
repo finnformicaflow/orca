@@ -6,7 +6,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
@@ -184,9 +184,13 @@ function Turn({ turn }: { turn: AgentTurn }) {
 
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
- *  orchestrator's popout): the log runs edge to edge with no frame of its own, and only the composer
- *  keeps a margin. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush }: { row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean }) {
+ *  orchestrator's popout): the log runs edge to edge with no frame of its own, and the composer sits
+ *  on the SAME terminal background, so the window reads as one surface rather than a log with a
+ *  differently coloured strip under it. `leading` goes in the composer's toolbar (a model picker).
+ *  Everything else about the panel is the same. */
+export function ChatPanel({ row, send, flush, leading }: {
+  row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; leading?: ReactNode;
+}) {
   const submit = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -297,8 +301,12 @@ export function ChatPanel({ row, send, flush }: { row: Row; send?: (text: string
           />
         ))}
       </div>
-      <div className={flush ? "p-2" : undefined}>
+      {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
+          background whatever the page's theme is. */}
+      <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : undefined}>
       <ChatComposer
+        className={flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
+        leading={leading}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}

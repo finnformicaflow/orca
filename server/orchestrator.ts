@@ -26,6 +26,7 @@ import {
   orchestratorPrompt, withAttachments, workerBrief, workerEvent, type BoardRow,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
+import { defaultModelOf, providerOfModel } from "../shared/models";
 
 // ponytail: constants, not config — promote one to OrcaConfig the first time it needs tuning.
 /** Wakes in a row with no message from you before it stops waking itself. The loop guard: an
@@ -45,7 +46,11 @@ export function dir(): string {
   return d;
 }
 
-type Blob = { notes?: string; wakes?: number; sessionId?: string; contextPct?: number };
+type Blob = { notes?: string; wakes?: number; sessionId?: string; contextPct?: number; preferredModel?: string };
+/** The model it runs on: its pin, else the config's default. Always a Claude model — its tool
+ *  permissions are Claude Code's. */
+const modelOf = (cfg: OrcaConfig, b: Blob): string | undefined =>
+  (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel : undefined) ?? cfg.agentModel;
 const blob = async (): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {}) as Blob;
 const patch = (fields: db.Fields) => db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, fields);
 const enqueue = (instruction: string, attachments: string[] = []) =>
@@ -60,9 +65,20 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(): Promise<{ key: string; running: boolean; paused: boolean; notes: string }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number }> {
   const b = await blob();
-  return { key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "" };
+  return {
+    key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    model: modelOf(cfg, b) ?? defaultModelOf("claude"),
+    contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
+  };
+}
+
+/** Pin the model its next wake runs on. The session is kept: a resumed Claude session accepts a
+ *  different --model (rung 1 of the ladder). */
+export async function setModel(model: unknown): Promise<void> {
+  if (typeof model !== "string" || providerOfModel(model) !== "claude") throw new Error("the orchestrator runs on a Claude model");
+  await patch({ preferredModel: model });
 }
 
 /** Something you typed. Resets the wake count — a person is in the loop again. */
@@ -132,7 +148,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
-      model: cfg.agentModel, maxBudgetUsd: WAKE_BUDGET_USD,
+      model: modelOf(cfg, b), maxBudgetUsd: WAKE_BUDGET_USD,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // NOT bypassPermissions: it may run `orca` and read files, and that is all.
       permissionMode: "ask", allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob"],

@@ -29,13 +29,14 @@ afterEach(async () => {
 });
 
 const panel = () => container!.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
-const launcher = () => container!.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+const launcher = () => container!.querySelector<HTMLButtonElement>('button[aria-label$="orchestrator"][aria-expanded]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 
 test("the floating launcher pops out the orchestrator's conversation, and the composer sends to it", async () => {
   apiFake.turnsData.set("@orca::orchestrator", [
     { id: "run-1", provider: "claude", instruction: "ship the cache", prompt: "p", response: "Spawned r/add-cache.", finishedAt: 2 },
   ]);
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, model: "claude-opus-5", contextPct: 42 };
   await mount(<OrchestratorButton />);
   expect(panel()).toBeNull(); // closed: only the launcher, pinned bottom-right
   expect(container!.querySelector("dialog")).toBeNull(); // a popout, not a modal — the board stays usable
@@ -52,6 +53,18 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   expect(log.parentElement!.parentElement!.className).toBe("min-h-0 flex-1");
   expect(log.className).not.toContain("border");
   expect(log.className).not.toContain("rounded");
+  // The text box sits on the same terminal colour as the log (no seam), dark-scoped so its text
+  // reads in a light theme too, and carries the orchestrator's model picker — Claude models only.
+  const box = panel()!.querySelector("textarea")!.parentElement!;
+  expect(box.className).toContain("bg-neutral-950");
+  expect(box.className).not.toContain("bg-card");
+  expect(box.parentElement!.parentElement!.className).toContain("dark text-foreground bg-neutral-950");
+  const picker = panel()!.querySelector<HTMLElement>('[aria-label="Orchestrator model"]')!;
+  expect(picker.textContent).toBe("Claude · Opus 5");
+  // Beside it, how full its context is: a small ring, with the percentage on hover.
+  const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
+  expect(ring.title).toBe("Context 42% full — resets onto its notes at 80%");
+  expect(ring.querySelectorAll("circle")).toHaveLength(2);
 
   const textarea = panel()!.querySelector("textarea")!;
   await act(async () => {
@@ -75,9 +88,12 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
 });
 
 test("a paused orchestrator says so, and an orchestrated card is marked", async () => {
-  apiFake.orchestratorState = { key: "/state/orchestrator", running: false, paused: true, notes: "" };
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, paused: true, contextPct: 85 };
   await mount(<><OrchestratorButton /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);
   expect(container!.querySelector('[aria-label="Orchestrated"]')).toBeTruthy();
   await click(launcher());
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
+  const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
+  expect(ring.title).toBe("Context 85% full — the next message starts a fresh session from its notes");
+  expect(ring.className).toContain("text-amber-400");
 });

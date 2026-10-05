@@ -192,7 +192,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
   // answered before a request is resolved to (and possibly forwarded for) a repo.
-  if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status());
+  if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
+  if (req.method === "POST" && p === "/api/orchestrator/model") {
+    try { await orchestrator.setModel(body.model); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/orchestrator/message") {
     if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
     return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));

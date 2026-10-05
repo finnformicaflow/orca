@@ -120,7 +120,7 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect(await orchestrator.message(cfg(), "first")).toEqual({ status: "running" });
   expect(await orchestrator.message(cfg(), "second")).toEqual({ status: "queued" });
   expect(await orchestrator.message(cfg(), "third")).toEqual({ status: "queued" });
-  expect((await orchestrator.status()).running).toBe(true);
+  expect((await orchestrator.status(cfg())).running).toBe(true);
   await rm(hold);
 
   const turns = await settled(orchTurns, 2);
@@ -151,13 +151,13 @@ test("O4: the wake cap pauses self-waking; your next message resumes it with wha
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakes: orchestrator.MAX_WAKES });
   await orchestrator.onRunFinished(cfg(), finished("mine"));
   expect(await orchTurns()).toEqual([]);
-  expect((await orchestrator.status()).paused).toBe(true);
+  expect((await orchestrator.status(cfg())).paused).toBe(true);
   expect(await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).toHaveLength(1);
 
   await orchestrator.message(cfg(), "carry on");
   const [turn] = await settled(orchTurns, 1);
   expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine\n\ncarry on`);
-  expect((await orchestrator.status()).paused).toBe(false);
+  expect((await orchestrator.status(cfg())).paused).toBe(false);
 });
 
 test("O5: notes ride every wake, and a session at 80% context is reset onto them", async () => {
@@ -172,7 +172,9 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
   expect(first!.prompt).toContain("## Your notes\nPlan: ship the cache. User prefers small PRs.");
 
   // The run reported a nearly full context: the next wake must NOT resume it.
+  expect((await orchestrator.status(cfg())).contextPct).toBeUndefined(); // nothing has reported yet
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { contextPct: 85 });
+  expect((await orchestrator.status(cfg())).contextPct).toBe(85); // what the composer's ring shows
   await orchestrator.message(cfg(), "and now?");
   const turns = await settled(orchTurns, 2);
   const argv = (await launches())[1]!;
@@ -182,6 +184,25 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
   expect(argv).toContain("what is the plan?");
   expect(argv).toContain("You are Orca's orchestrator");
   expect(argv).toContain("Plan: ship the cache.");
+});
+
+test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {
+  wire();
+  expect((await orchestrator.status(cfg())).model).toBe("claude-fable-5-1"); // nothing pinned, no config default
+  expect((await orchestrator.status({ ...cfg(), agentModel: "claude-sonnet-5" })).model).toBe("claude-sonnet-5");
+  await expect(orchestrator.setModel("gpt-5.5")).rejects.toThrow("runs on a Claude model");
+
+  await orchestrator.message(cfg(), "hello");
+  const [first] = await settled(orchTurns, 1);
+  expect((await launches())[0]).not.toContain("--model");
+
+  await orchestrator.setModel("claude-opus-5");
+  expect((await orchestrator.status(cfg())).model).toBe("claude-opus-5");
+  await orchestrator.message(cfg(), "and again");
+  await settled(orchTurns, 2);
+  const argv = (await launches())[1]!;
+  expect(argv).toContain("--model claude-opus-5");
+  expect(argv).toContain(`--resume ${first!.sessionId}`); // rung 1 survives a model change
 });
 
 test("O6: past conversations are listed, searched and read — archived ones included", async () => {

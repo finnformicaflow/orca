@@ -7,11 +7,12 @@ import { useAgentProviders } from "../store";
 // the model implies which CLI runs it (shared/models.ts). The trigger shows the model the next run
 // will use; `ran` (the last run's reported model) is surfaced in the tooltip when it differs, so you
 // can see what actually answered without a second readout. `quiet` = the card's hover-reveal look.
-export function ModelPicker({ value, onChange, label, ran, quiet, className = "" }: {
+export function ModelPicker({ value, onChange, label, ran, quiet, className = "", only }: {
   value: string; onChange: (id: string) => void; label: string; ran?: string; quiet?: boolean; className?: string;
+  only?: AgentProvider; // offer just this provider's models (the orchestrator is Claude-only)
 }) {
   const providers = useAgentProviders();
-  const choices = modelChoices(providers);
+  const choices = modelChoices(only ? [only] : providers);
   const current = modelLabel(value);
   const title = ran && !current.endsWith(ran) ? `Next run: ${current} · last run: ${ran}` : undefined;
   return (

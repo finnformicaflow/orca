@@ -3,8 +3,9 @@ import { Bot, X } from "lucide-react";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
 import type { Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../workstream";
+import { CONTEXT_RESET_PCT, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../workstream";
 import { Button } from "@/components/ui/button";
+import { ModelPicker } from "@/components/ModelPicker";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -53,7 +54,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 // running drives Stop and the composer's placeholder.
 export function OrchestratorButton() {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   useEffect(() => {
     if (!open) return;
@@ -84,6 +85,16 @@ export function OrchestratorButton() {
           <div className="min-h-0 flex-1">
             <ChatPanel
               row={row} flush
+              // Its model, changed where you type. Claude only; the session carries over.
+              leading={state && (
+                <div className="flex min-w-0 items-center gap-1">
+                  <ModelPicker
+                    only="claude" label="Orchestrator model" value={state.model} className="min-w-0"
+                    onChange={(model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); }}
+                  />
+                  <ContextRing pct={state.contextPct} />
+                </div>
+              )}
               send={async (text, images) => {
                 await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
                 await load();
@@ -103,5 +114,23 @@ export function OrchestratorButton() {
         {open ? <X className="size-5" /> : <Bot className="size-5" />}
       </button>
     </div>
+  );
+}
+
+/** How full the orchestrator's session is, as a small ring; the number is on hover. It turns amber
+ *  at the point the next wake resets the session onto its notes instead of resuming it. */
+function ContextRing({ pct }: { pct?: number }) {
+  const value = Math.max(0, Math.min(100, Math.round(pct ?? 0)));
+  const label = pct === undefined
+    ? "Context: not measured yet (no finished run)"
+    : `Context ${value}% full${value >= CONTEXT_RESET_PCT ? " — the next message starts a fresh session from its notes" : ` — resets onto its notes at ${CONTEXT_RESET_PCT}%`}`;
+  const r = 6, c = 2 * Math.PI * r;
+  return (
+    <span role="img" aria-label={label} title={label} data-slot="context-ring" className={`shrink-0 p-1 ${value >= CONTEXT_RESET_PCT ? "text-amber-400" : "text-neutral-400"}`}>
+      <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
+        <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+        <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - value / 100)} />
+      </svg>
+    </span>
   );
 }

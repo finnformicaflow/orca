@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowUp, FileText, Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 
 // The one chat input, shared by the new-draft box and the follow-up box. A single bordered
@@ -17,8 +18,9 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className,
 }: {
+  className?: string; // extra classes for the box itself, e.g. a host's own background
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
   placeholder?: string;
@@ -132,7 +134,7 @@ export function ChatComposer({
   return (
     <div>
       <div
-        className="bg-card focus-within:border-ring focus-within:ring-ring/50 cursor-text rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]"
+        className={cn("bg-card focus-within:border-ring focus-within:ring-ring/50 cursor-text rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
