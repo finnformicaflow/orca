@@ -10,7 +10,7 @@ import {
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
+import { Bot, Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -445,7 +445,14 @@ export function WorkstreamCard({ row }: { row: Row }) {
       )}
       {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <Eyebrow repo={row.repo} />
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Eyebrow repo={row.repo} />
+          {row.orchestrated && (
+            <span title="Started or continued by the orchestrator, which hears when its agent finishes" aria-label="Orchestrated">
+              <Bot className="text-muted-foreground size-3" />
+            </span>
+          )}
+        </div>
         <div className="flex shrink-0 items-center gap-3">
           {row.previewUrl && <DestLink href={row.previewUrl}>Preview</DestLink>}
           {row.prNumber && <DestLink href={row.prUrl}>PR #{row.prNumber}</DestLink>}

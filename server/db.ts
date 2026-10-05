@@ -538,6 +538,59 @@ export async function archive(repo: string, branch: string): Promise<void> {
     WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND archived_at IS NULL`;
 }
 
+// ---- conversations, read across workstreams (the orchestrator's memory of past work) ----
+
+export type Conversation = { id: number; repo: string; branch: string; title?: string; archived: boolean; turns: number; lastAt?: number };
+
+/** Every conversation, newest activity first — ARCHIVED ones included, because the conversations
+ *  most worth chaining from are exactly the ones whose branches got merged and reaped. */
+export async function conversations(limit = 40): Promise<Conversation[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT w.id, w.repo, w.branch, w.data->>'title' AS title, w.archived_at, COUNT(t.id) AS turns, MAX(t.started_at) AS last_at
+    FROM workstream w JOIN turn t ON t.workstream_id = w.id
+    WHERE w.user_id = ${currentUser()} AND w.branch IS NOT NULL
+    GROUP BY w.id ORDER BY MAX(t.started_at) DESC LIMIT ${limit}`;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: Number(r.id), repo: String(r.repo), branch: String(r.branch), title: (r.title as string) ?? undefined,
+    archived: r.archived_at !== null, turns: Number(r.turns), lastAt: r.last_at === null ? undefined : Number(r.last_at),
+  }));
+}
+
+/** Full-text search over what was asked and what was answered, across every conversation.
+ *  ponytail: Postgres full-text with no index — a sequential scan over prompt+response is fine at
+ *  one user's history; add a GIN index on the tsvector (or embeddings) when this is measurably slow. */
+export async function searchTurns(query: string, limit = 15): Promise<(Conversation & { runId: string; turn: AgentTurn })[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT t.*, w.id AS ws_id, w.repo, w.branch, w.data->>'title' AS title, w.archived_at
+    FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${currentUser()} AND w.branch IS NOT NULL
+      AND to_tsvector('english', coalesce(t.instruction, '') || ' ' || coalesce(t.response, ''))
+          @@ websearch_to_tsquery('english', ${query})
+    ORDER BY t.started_at DESC LIMIT ${limit}`;
+  return (rows as (TurnRow & Record<string, unknown>)[]).map((r) => ({
+    id: Number(r.ws_id), repo: String(r.repo), branch: String(r.branch), title: (r.title as string) ?? undefined,
+    archived: r.archived_at !== null, turns: 0, runId: r.run_id, turn: toTurn(r),
+  }));
+}
+
+/** A conversation's turns by its workstream id — works for an archived one, which `turns` (keyed by
+ *  the live branch pointer) cannot reach. */
+export async function conversationTurns(id: number): Promise<AgentTurn[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT * FROM turn WHERE workstream_id = ${id} AND user_id = ${currentUser()} ORDER BY started_at, id`;
+  return (rows as TurnRow[]).map(toTurn);
+}
+
+/** One turn by run id, wherever it lives. */
+export async function turn(runId: string): Promise<AgentTurn | undefined> {
+  const sql = await open();
+  const rows = await sql`SELECT * FROM turn WHERE run_id = ${runId} AND user_id = ${currentUser()}`;
+  return rows.length ? toTurn(rows[0] as TurnRow) : undefined;
+}
+
 // ---- config ----
 
 /** Every repo this user manages, in display order. Empty means "not configured yet" — the caller

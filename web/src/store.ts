@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  addressPrPrompt, chatPrompt, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
+  addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
   rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
@@ -86,6 +86,7 @@ export type Enrichment = {
   handedReviewThreadIds?: string[];
   commentsSeenAt?: string; // ISO: conversation comments up to here have been handed to the agent (see addressReview)
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
+  orchestrated?: boolean; // started or continued by the orchestrator, which is woken when its run ends
 };
 // The bridge owns enrichment (server/db.ts); this map is a local MIRROR of it. Reads stay synchronous
 // — `enrichOf` is called from render and from poll handlers — while writes go through the server and
@@ -403,6 +404,8 @@ export type Row = {
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
   following?: boolean;
+  /** The orchestrator started or continued this one, and hears when its agent finishes. */
+  orchestrated?: boolean;
   followUps?: string[];
   failingChecks?: string[];
   feedback?: string[];
@@ -465,7 +468,7 @@ export function assembleRows(): Row[] {
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
         prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, followUps: e.followUps,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
@@ -759,32 +762,14 @@ export async function followUp(
   await refresh();
 }
 
-/** Continue natively when possible; otherwise create a target-provider session with portable history. */
-const CONTEXT_RESET_PCT = 80;
-// A resumed session the provider can't find — claude "No conversation found…", codex "no rollout
-// found…", cursor "session not found". These mean the id points at nothing, so resuming it loops.
-const SESSION_MISSING = /no conversation found|no rollout found|session (?:id )?[^\n]*not found|unable to (?:find|resume)/i;
+/** Continue natively when possible; otherwise create a target-provider session with portable history
+ *  (the rung is `continuation`'s call — shared with the bridge's own verbs). */
 async function launchOnRow(row: Row, worktree: string, prompt: string, provider: AgentProvider, ledger: { action?: string; evidenceChars?: number; attachments?: string[]; instruction?: string } = {}) {
   const current = enrichOf(row.repo, row.branch);
-  const from = current.agentProvider ?? row.agentProvider;
-  const sessionId = current.sessionId ?? row.sessionId;
-  const contextTooFull = typeof row.agentMeta?.contextPct === "number" && row.agentMeta.contextPct >= CONTEXT_RESET_PCT;
-  const transcript = current.transcript ?? row.transcript ?? [];
-  const nativeTurns = sessionId ? transcript.filter((turn) => turn.provider === provider && turn.sessionId === sessionId) : [];
-  const repeatedFailures = nativeTurns.slice(-3).length === 3 && nativeTurns.slice(-3).every((turn) => turn.failed);
-  // Codex and Cursor report token usage but not their context-window occupancy.
-  // Reset only on observable bounded history, never a fabricated percentage.
-  const portableReset = provider !== "claude" && (nativeTurns.length >= 12 || repeatedFailures);
-  // A resume that reports the session doesn't exist can only keep failing: the id was never a real
-  // session (e.g. the first run died before creating it), so every follow-up resuming it re-fails
-  // with "No conversation found …" and bricks the card. Detect that SPECIFIC failure on the latest
-  // native turn and start fresh, seeded from the transcript + worktree, instead. A plain task failure
-  // must still resume (that's what portableReset's 3-strike rule is for) — only a missing session
-  // forces the reset. Text match because a turn carries no structured error kind; if a CLI reworded
-  // the message the fallback is merely today's behaviour, never something worse.
-  const lastNative = nativeTurns.at(-1);
-  const sessionMissing = Boolean(lastNative?.failed) && SESSION_MISSING.test(lastNative?.response ?? "");
-  const sameNativeSession = from === provider && Boolean(sessionId) && !contextTooFull && !portableReset && !sessionMissing;
+  const next = continuation({
+    provider, from: current.agentProvider ?? row.agentProvider, sessionId: current.sessionId ?? row.sessionId,
+    contextPct: row.agentMeta?.contextPct, transcript: current.transcript ?? row.transcript ?? [],
+  });
   const receipt = await api.agent(row.repo, worktree, prompt, {
     worktree,
     provider,
@@ -795,10 +780,7 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     attachments: ledger.attachments,
     instruction: ledger.instruction,
     model: modelFor(row),
-    resume: sameNativeSession ? sessionId : undefined,
-    history: !sameNativeSession ? transcript : undefined,
-    // No transcript (a chat started blank) → a plain first run, not a handoff over nothing.
-    handoffFrom: !sameNativeSession && transcript.length ? from : undefined,
+    ...next,
   });
   // Queued rather than launched: nothing started, so the session pointer must not move.
   if ("status" in receipt && receipt.status === "queued") return receipt;
