@@ -87,6 +87,23 @@ export type LaunchOptions = {
    *  `autofix`: queue a follow-up with the failure as evidence — once; a fix attempt that fails
    *  again stops there (isAutofix). */
   check?: { command: string; autofix: boolean };
+  /** claude only: `--allowedTools`, for a run that must act without `bypassPermissions` (the
+   *  orchestrator, which may run the `orca` command and nothing else). */
+  allowedTools?: string[];
+  /** Extra environment for the process, over agentEnv(). */
+  env?: Record<string, string>;
+  /** `false`: this run's queue is drained by whoever launched it, not by the exit handler (the
+   *  orchestrator batches every pending wake into one run). */
+  queue?: false;
+};
+
+/** What a finished run looked like — handed to the onRunFinished hook. */
+export type RunFinished = {
+  key: string; cwd: string; runId: string; options: LaunchOptions;
+  status: db.TurnStatus; sessionId?: string; result?: string; structured?: AgentOutcome;
+  check?: TurnCheck; meta?: RunMeta;
+  /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
+  continued: boolean;
 };
 
 // Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
@@ -461,7 +478,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number, allowedTools?: string[]): string[] {
   // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
   const m = model ? ["--model", model] : [];
   if (provider === "codex") {
@@ -485,7 +502,7 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--", prompt];
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--", prompt];
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
@@ -502,8 +519,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.
   const headBefore = options.check ? await headOf(cwd) : undefined;
   const proc = Bun.spawn(
-    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd),
-    { cwd, env: agentEnv(), stdout: "pipe", stderr: "pipe" },
+    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
+    { cwd, env: { ...agentEnv(), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
@@ -613,7 +630,18 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       : { status: "error", ...common, error });
     // An instruction typed while this run was in flight goes now. Fire-and-forget and after the run
     // is marked finished, so the queued launch sees a free worktree.
-    if (options.repo && options.branch) void dispatchQueued(options.repo, options.branch, options);
+    // Awaited now (it was fire-and-forget) only so the hook below can say whether the branch went
+    // straight into another run; nothing else waits on this function.
+    const continued = options.repo && options.branch && options.queue !== false
+      ? await dispatchQueued(options.repo, options.branch, options) : false;
+    try {
+      await runFinished?.({
+        key, cwd, runId, options, status: wasStopped ? "stopped" : ok ? "done" : "error",
+        sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued,
+      });
+    } catch (e) {
+      console.error("orca: run-finished hook failed", e); // a listener must never break the run it heard about
+    }
   })();
   return { status: "running", provider, runId, sessionId };
 }
@@ -709,18 +737,28 @@ export function onQueuedMessage(fn: (message: db.QueuedMessage) => Promise<void>
   queuedLauncher = fn;
 }
 
+// Set by index.ts: the orchestrator's wake loop listens here. A hook for the same reason as the
+// queued launcher — agent.ts knows nothing about who cares that a run ended.
+let runFinished: ((run: RunFinished) => Promise<void>) | undefined;
+export function onRunFinished(fn: ((run: RunFinished) => Promise<void>) | undefined): void {
+  runFinished = fn;
+}
+
 /** Send the next instruction queued for a branch, if any. Claimed in one statement, so a restart
- *  racing itself — or a second instance — cannot dispatch the same message twice. */
-async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<void> {
-  if (!queuedLauncher) return;
+ *  racing itself — or a second instance — cannot dispatch the same message twice. Resolves true
+ *  when it launched one. */
+async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<boolean> {
+  if (!queuedLauncher) return false;
   try {
     const next = await db.claimQueuedMessage(repo, branch);
-    if (!next) return;
+    if (!next) return false;
     await queuedLauncher(next);
+    return true;
   } catch (e) {
     // Never let a queued send break the run that just finished; the message stays claimed rather
     // than retrying forever against a worktree that may be gone.
     console.error("orca: queued message dispatch failed", e);
+    return false;
   }
 }
 

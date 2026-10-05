@@ -19,7 +19,9 @@ import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
-import { followUpPrompt, mergeSafe, prDescriptionPrompt, slugifyBranch, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import * as orchestrator from "./orchestrator";
+import { checkGate, launchOptions, newWorktree } from "./verbs";
+import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -78,11 +80,6 @@ if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered $
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.
-/** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
- *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
-const runModel = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvider, pinned?: string): string | undefined =>
-  pinned || (provider === "claude" ? modelFor(cfg, repo) : undefined);
-
 agent.onQueuedMessage(async (message) => {
   const cfg = await loadConfig();
   const repo = repoOf(cfg, message.repo);
@@ -92,17 +89,14 @@ agent.onQueuedMessage(async (message) => {
   // the card shows when it is dispatched.
   const pinned = (await db.enrichment(repo.name))[message.branch]?.preferredModel;
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
-    provider, repo: repo.name, branch: message.branch, action: "followup", instruction: message.instruction,
-    model: runModel(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined), maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
-    permissionMode: repo.agentPermissionMode ?? "ask",
-    timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined),
+    branch: message.branch, action: "followup", instruction: message.instruction,
   });
 });
 
-/** The verification gate for a repo's runs: its check command, auto-fixing only where the repo has
- *  opted into follow automation (an unasked-for agent run is that feature's whole question). */
-const checkGate = (repo: RepoConfig): { command: string; autofix: boolean } | undefined =>
-  repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
+// The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
+// ending drains what queued up meanwhile. Config is read per event, like every request.
+agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig(), run));
 
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;
@@ -196,8 +190,28 @@ async function api(req: Request, url: URL): Promise<Response> {
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
+  // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
+  // answered before a request is resolved to (and possibly forwarded for) a repo.
+  if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status());
+  if (req.method === "POST" && p === "/api/orchestrator/message") {
+    if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
+    return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));
+  }
+  if (req.method === "POST" && p === "/api/orchestrator/tool") {
+    // What `bin/orca` calls. A refusal is a 400 with a message written for the model to act on.
+    try {
+      return json({ text: await orchestrator.tool(cfg, String(body.verb ?? ""), body.args ?? {}) });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
-  const repo = repoOf(cfg, url.searchParams.get("repo") ?? body.repo);
+  // The orchestrator's conversation is recorded under a reserved repo name that is no git repo —
+  // only the database-backed chat routes (turns, stream, queued) are ever asked for it.
+  const repoName = url.searchParams.get("repo") ?? body.repo;
+  const repo = repoName === ORCHESTRATOR_REPO
+    ? { name: ORCHESTRATOR_REPO, repoPath: orchestrator.dir(), worktreeRoot: orchestrator.dir(), baseBranch: "", previewServices: [] }
+    : repoOf(cfg, repoName);
   // A repo this instance doesn't run is handled by the instance that does.
   const forwarded = await forwardToOwner(req, url, repo, cfg);
   if (forwarded) return forwarded;
@@ -252,11 +266,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     const title = (featuresOf(repo).aiTitles ? await agent.summarize(provider, body.prompt) : undefined)
       ?? titleFromPrompt(body.prompt);
-    const branch = `${slugifyBranch(title)}-${crypto.randomUUID().slice(0, 6)}`;
-    const wt = await git.createWorktree(repo.repoPath, repo.worktreeRoot, branch, repo.baseBranch);
-    await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
-    await git.linkToWorktree(repo.repoPath, wt.worktreePath, repo.linkToWorktree);
-    return json({ ...wt, title });
+    return json({ ...(await newWorktree(repo, title)), title });
   }
   if (req.method === "GET" && p === "/api/summary") {
     const wt = url.searchParams.get("worktree");
@@ -503,12 +513,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
     const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
-      model: runModel(cfg, repo, provider, body.model),
-      permissionMode: repo.agentPermissionMode ?? "ask",
+      ...launchOptions(cfg, repo, provider, body.model),
+      resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
-      maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
   }
@@ -535,12 +542,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Which Claude LOGIN runs this is hydra's decision (the `claude` on PATH is its shim); a resume
     // works on any login because hydra shares sessions between them. Orca just launches.
     const receipt = await agent.launch(body.key, cwd, body.prompt, {
-      provider, resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, repo: repo.name, branch: body.branch,
-      model: runModel(cfg, repo, provider, body.model),
-      permissionMode: repo.agentPermissionMode ?? "ask",
+      ...launchOptions(cfg, repo, provider, body.model),
+      resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
-      maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
-      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return json(receipt);
   }

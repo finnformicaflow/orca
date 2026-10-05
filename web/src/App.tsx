@@ -19,6 +19,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
+import { OrchestratorButton } from "@/components/Terminal";
 
 export function App() {
   const route = useRoute();
@@ -39,6 +40,7 @@ export function App() {
                 <PreviewManagerMenu />
               </div>
             )}
+            {topLevel && <OrchestratorButton />}
             {topLevel && <RepoFilter />}
             {topLevel && <DensityToggle />}
             <ProfileMenu />

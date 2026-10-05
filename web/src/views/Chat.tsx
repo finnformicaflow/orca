@@ -182,7 +182,10 @@ function Turn({ turn }: { turn: AgentTurn }) {
   );
 }
 
-export function ChatPanel({ row }: { row: Row }) {
+/** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
+ *  orchestrator's, which goes to its own route. Everything else about the panel is the same. */
+export function ChatPanel({ row, send }: { row: Row; send?: (text: string, images: File[]) => Promise<void> }) {
+  const submit = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
@@ -297,7 +300,7 @@ export function ChatPanel({ row }: { row: Row }) {
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
         onSubmit={async (text, images) => {
-          await followUp(row, text, images);
+          await submit(text, images);
           setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
           await loadQueued(); // it may have been held rather than launched
         }}
@@ -310,7 +313,7 @@ export function ChatPanel({ row }: { row: Row }) {
           title: "Interrupt the run and send this instead. The worktree, its commits, and the session are kept.",
           onSubmit: async (text, images) => {
             await api.stopAgent(row.worktreePath!);
-            await followUp(row, text, images);
+            await submit(text, images);
             setTurns(await api.turns(row.repo, row.branch).catch(() => turns ?? []));
             await loadQueued();
             await refresh();

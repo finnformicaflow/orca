@@ -88,6 +88,11 @@ export const api = {
     fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
+  // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
+  // turns are read through the ordinary chat routes under its reserved repo/branch.
+  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string }> => fetch("/api/orchestrator").then(res),
+  orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
+    post("/api/orchestrator/message", { text, attachments }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),

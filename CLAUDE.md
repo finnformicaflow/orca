@@ -223,6 +223,53 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 (frontend+backend) on assigned ports via
 `server/preview.ts`.
 
+## The orchestrator (one conversation that delegates)
+
+The header's **Orchestrator** button opens one conversation you talk to; it starts and steers
+workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
+workstreams the board already shows (each worker is a Claude Code session that can spawn its own
+subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
+
+- **It is not a new runtime.** A wake is the same headless one-shot as every board action, recorded
+  as turns under a reserved pointer (`ORCHESTRATOR_REPO` `@orca` / branch `orchestrator` — no git
+  repo behind it), so the chat panel, the SSE stream, the queue and Stop all work on it unchanged.
+  Its cwd is `~/.orca/orchestrator`, never a worktree.
+- **Its only authority is the `orca` command** (`bin/orca` → `POST /api/orchestrator/tool` →
+  `orchestrator.tool`): `board`, `spawn`, `send`, `address`, `chats`, `read`, `notes`. It runs with
+  `--allowedTools "Bash(orca *),Read,Grep,Glob"`, NOT `bypassPermissions` — verified against the
+  real CLI: `orca …` runs, anything else is denied. It **cannot promote, merge or Slack**; those stay
+  your buttons. Claude only (workers keep their per-card model).
+- **Server-side verbs** (`server/verbs.ts`): create / follow up / Address PR existed only in the
+  browser store, which a server-side caller can't reach. They are built from the same pure pieces —
+  the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by
+  the store too) — so the two callers can't disagree on a prompt or a rung. The browser still runs
+  its own I/O glue (optimistic cards, Undo, Follow); only the decisions are shared.
+- **A brief has three required parts** — objective, expected output, boundaries (`briefProblems`);
+  `spawn` refuses one without them, because a worker knows only its brief.
+- **Wake loop.** A workstream it spawned or sent to is marked `orchestrated` in enrichment (the bot
+  icon on the card). `agent.onRunFinished` fires when such a run ends *and nothing queued took over*
+  (an autofix is not "idle"), and the orchestrator is woken with `workerEvent`: the condensed
+  outcome, Orca's check verdict, and the run id as a reference — never the transcript. It is
+  asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
+- **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
+  worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
+  serialised so two workers finishing together can't race a launch.
+- **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
+  holds further events in the queue until you reply (the modal title says so). `MAX_WORKERS` (4)
+  running at once → `spawn` refuses. Each wake has a `--max-budget-usd`. All three are constants
+  until one needs tuning.
+- **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a
+  fresh board go into EVERY wake prompt; the role text only when a session starts. So the ladder
+  applies as for any conversation — resume while healthy, reset onto the portable transcript at 80%
+  context — and a reset loses nothing it was told to keep. If it seems amnesiac, read its notes
+  before blaming the model.
+- **Memory of past work** is the turn table: `orca chats "<terms>"` is Postgres full-text over every
+  instruction and response, archived workstreams included; `orca read` loads one on demand
+  (just-in-time retrieval, no embeddings, no index yet).
+- **Limits to know:** it acts only on repos its own instance runs (no forwarding); two instances
+  must not both drive it at once (the run lease is per host); a worker's outcome text is model
+  output fed to something that can spawn and send, which is why its authority stops there.
+
 ## Deploying (a cloud box + the laptop, one database)
 
 Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname)

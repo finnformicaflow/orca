@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -777,4 +777,155 @@ export function summarizeSync(results: SyncResult[]): string {
   const skipped = (["dirty", "diverged", "no upstream"] as const).filter((o) => n(o)).map((o) => `${o} ${n(o)}`);
   if (skipped.length) parts.push(`skipped: ${skipped.join(", ")}`);
   return parts.join(", ");
+}
+
+// ---- the handover ladder (CLAUDE.md) ----
+
+/** A Claude session this full is reset onto the portable transcript rather than resumed. */
+export const CONTEXT_RESET_PCT = 80;
+// A resumed session the provider can't find — claude "No conversation found…", codex "no rollout
+// found…", cursor "session not found". These mean the id points at nothing, so resuming it loops.
+const SESSION_MISSING = /no conversation found|no rollout found|session (?:id )?[^\n]*not found|unable to (?:find|resume)/i;
+
+/** Which rung the next run takes: native resume when the same provider's session is healthy, else a
+ *  new session seeded with the portable transcript. Pure, so the browser's actions and the bridge's
+ *  own verbs (server/verbs.ts) cannot disagree about it. Spread the result into the launch options. */
+export function continuation(input: {
+  provider: AgentProvider; from?: AgentProvider; sessionId?: string; contextPct?: number; transcript: AgentTurn[];
+}): { resume?: string; history?: AgentTurn[]; handoffFrom?: AgentProvider } {
+  const { provider, from, sessionId, transcript } = input;
+  const contextTooFull = typeof input.contextPct === "number" && input.contextPct >= CONTEXT_RESET_PCT;
+  const nativeTurns = sessionId ? transcript.filter((turn) => turn.provider === provider && turn.sessionId === sessionId) : [];
+  const repeatedFailures = nativeTurns.slice(-3).length === 3 && nativeTurns.slice(-3).every((turn) => turn.failed);
+  // Codex and Cursor report token usage but not their context-window occupancy.
+  // Reset only on observable bounded history, never a fabricated percentage.
+  const portableReset = provider !== "claude" && (nativeTurns.length >= 12 || repeatedFailures);
+  // A resume that reports the session doesn't exist can only keep failing: the id was never a real
+  // session (e.g. the first run died before creating it), so every follow-up resuming it re-fails
+  // with "No conversation found …" and bricks the card. Detect that SPECIFIC failure on the latest
+  // native turn and start fresh, seeded from the transcript + worktree, instead. A plain task failure
+  // must still resume (that's what portableReset's 3-strike rule is for) — only a missing session
+  // forces the reset. Text match because a turn carries no structured error kind; if a CLI reworded
+  // the message the fallback is merely today's behaviour, never something worse.
+  const lastNative = nativeTurns.at(-1);
+  const sessionMissing = Boolean(lastNative?.failed) && SESSION_MISSING.test(lastNative?.response ?? "");
+  if (from === provider && sessionId && !contextTooFull && !portableReset && !sessionMissing) return { resume: sessionId };
+  // No transcript (a chat started blank) → a plain first run, not a handoff over nothing.
+  return { history: transcript, handoffFrom: transcript.length ? from : undefined };
+}
+
+// ---- the orchestrator ----
+// One conversation you talk to, which delegates to worker agents (ordinary workstreams) through the
+// `orca` CLI and is woken when they finish. It is itself a headless one-shot like every other run:
+// its "workstream" is this reserved (repo, branch), which names no git repo.
+
+export const ORCHESTRATOR_REPO = "@orca";
+export const ORCHESTRATOR_BRANCH = "orchestrator";
+
+/** What a worker is told. Anthropic's multi-agent research system found a delegated task needs an
+ *  objective, an output format and boundaries — a vague brief is where duplicated and missing work
+ *  comes from — so `spawn` refuses one without all three. */
+export type WorkerBrief = { objective?: string; output?: string; boundaries?: string; context?: string };
+export function briefProblems(brief: WorkerBrief): string[] {
+  return (["objective", "output", "boundaries"] as const).filter((k) => !brief[k]?.trim()).map((k) => `--${k} is required`);
+}
+export function workerBrief(brief: WorkerBrief): string {
+  return [
+    brief.objective!.trim(),
+    "", "## Expected output", brief.output!.trim(),
+    "", "## Boundaries", brief.boundaries!.trim(),
+    ...(brief.context?.trim() ? ["", "## Context", brief.context.trim()] : []),
+  ].join("\n");
+}
+
+// First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
+// pending wakes is told apart from something the user typed (see server/orchestrator.ts).
+export const WORKER_EVENT_MARKER = "[worker finished]";
+export const isWorkerEvent = (text: string): boolean => text.startsWith(WORKER_EVENT_MARKER);
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+/** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token
+ *  summary a sub-agent hands back), Orca's own check verdict, and the run id as a reference to the
+ *  full turn — never the transcript itself. */
+export function workerEvent(input: {
+  repo: string; branch: string; title?: string; runId: string; status: string;
+  outcome?: AgentOutcome; response?: string; check?: TurnCheck;
+}): string {
+  const { outcome: o, check } = input;
+  const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
+  return [
+    `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""} — ${input.status}`,
+    ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
+    ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
+      : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
+    `Full turn: orca read --run ${input.runId}`,
+  ].join("\n");
+}
+
+/** One line of the board as the orchestrator reads it. */
+export type BoardRow = {
+  repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
+  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string };
+  check?: boolean; orchestrated?: boolean; last?: string;
+};
+export function boardText(rows: BoardRow[]): string {
+  if (!rows.length) return "(no workstreams)";
+  return rows.map((r) => {
+    const pr = r.pr
+      ? `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}`
+      : "no PR";
+    return [
+      `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,
+      pr, `agent:${r.agent}`,
+      ...(r.check === undefined ? [] : [`check:${r.check ? "passed" : "FAILED"}`]),
+      ...(r.orchestrated ? ["yours"] : []),
+      ...(r.worktreePath ? [r.worktreePath] : []),
+      ...(r.last ? [`last: ${clip(r.last.replace(/\s+/g, " "), 160)}`] : []),
+    ].join(" | ");
+  }).join("\n");
+}
+
+const ORCHESTRATOR_ROLE = [
+  "You are Orca's orchestrator. The user talks only to you. You get work done by delegating to worker",
+  "agents: each is a headless coding agent in its own git worktree, and one branch is one workstream",
+  "is one conversation. You never edit code yourself.",
+  "",
+  "Your tools are the `orca` command (run it with Bash; no other command is permitted) and Read/Grep/Glob",
+  "over the repos, whose worktree paths are on the board:",
+  "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca send --repo <repo> --branch <branch> \"<message>\"     continue an existing workstream",
+  "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
+  "  orca chats [\"<search terms>\"]   list conversations, or full-text search every past one (merged ones too)",
+  "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
+  "  orca notes                      print your notes",
+  "  orca notes set \"<the whole new text>\"",
+  "",
+  "How to work:",
+  "- A question you can answer from the board, your notes or past chats: answer it. Delegate real work only.",
+  "- One workstream per independent piece of work. Do not split tightly coupled work, and do not spawn",
+  "  for something an existing workstream owns: `orca send` to it instead.",
+  "- A worker knows ONLY its brief. Name the files, the acceptance check, and what to leave alone.",
+  "  Search past chats first when earlier work bears on it, and put what matters in --context.",
+  "- After you spawn or send, END YOUR TURN. You are woken with a `[worker finished]` message. Never",
+  "  poll, sleep or wait for a worker.",
+  "- On `[worker finished]`: Orca's check verdict is evidence; the worker's own Verification is a claim.",
+  "  Then report to the user, send ONE follow-up, or stop. If a workstream has failed the same way",
+  "  twice, stop and tell the user instead of trying a third time.",
+  "- You cannot promote, merge or post to Slack. Say when a workstream is ready for the user to do so.",
+  "- Your notes are the only memory that survives a context reset. Rewrite them whenever the plan, the",
+  "  open workstreams, a decision or a user preference changes. Keep them under about 1500 words.",
+  "- Reply briefly: what you did, what is running, what needs the user.",
+].join("\n");
+
+/** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
+ *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
+ *  what makes the session disposable — everything it needs to carry on is outside its context. */
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[] }): string {
+  return [
+    ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
+    "## Your notes", input.notes?.trim() || "(empty)",
+    "", "## Board", input.board,
+    "", "## New", input.messages.join("\n\n"),
+  ].join("\n");
 }

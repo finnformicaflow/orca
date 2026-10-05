@@ -1,0 +1,28 @@
+#!/usr/bin/env bun
+// The orchestrator's one tool: `orca <verb> [--flag value]… [words…]` → the bridge's
+// /api/orchestrator/tool, printed. All the logic is server-side (server/orchestrator.ts `tool`);
+// this only carries argv over, so the orchestrator's permission rule can be the single prefix
+// `Bash(orca *)` instead of bypassPermissions.
+import { API_PORT } from "../server/ports";
+
+const [verb = "", ...rest] = process.argv.slice(2);
+const args: Record<string, unknown> = {};
+const words: string[] = [];
+for (let i = 0; i < rest.length; i++) {
+  const a = rest[i]!;
+  // Only a bare `--name` is a flag: free text that happens to open with dashes (a `---` rule at the
+  // top of the notes) is still text.
+  if (/^--[a-z]+$/.test(a)) args[a.slice(2)] = rest[++i] ?? "";
+  else words.push(a);
+}
+const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/orchestrator/tool`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ verb, args: { ...args, _: words } }),
+});
+const out = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { text?: string; error?: string };
+if (!res.ok) {
+  console.error(out.error ?? `bridge answered ${res.status}`);
+  process.exit(1);
+}
+console.log(out.text ?? "");
