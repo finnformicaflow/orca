@@ -90,7 +90,7 @@ export const api = {
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
-  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number }> => fetch("/api/orchestrator").then(res),
+  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean }> => fetch("/api/orchestrator").then(res),
   orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
   orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments }),

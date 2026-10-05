@@ -228,8 +228,8 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 A floating launcher in the bottom-right corner (inverted against the theme, on every route) pops
 out a chat window — a popout like a site's chat widget, deliberately not a modal, so the board it
 is moving stays visible. Its composer sits on the terminal's own background and carries a model
-picker (Claude models only; changing it keeps the session) and a ring showing how full its
-context is. It is one conversation you talk to; it starts and steers
+picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
+full its context is (the percentage is in its hover popover). It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
@@ -243,6 +243,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   `--allowedTools "Bash(orca *),Read,Grep,Glob"`, NOT `bypassPermissions` — verified against the
   real CLI: `orca …` runs, anything else is denied. It **cannot promote, merge or Slack**; those stay
   your buttons. Claude only (workers keep their per-card model).
+- **`orchestratorShell: true`** (app config, off unless set) trades that rule for a full shell on
+  the machine (`bypassPermissions`), for machine-level work that belongs to no workstream — a
+  missing toolchain version, a preview that won't start. It is off by default because the
+  orchestrator reads every worker's output, so a shell makes that output a path to commands run
+  outside any worktree. Its prompt states which mode it is in on EVERY wake (`## Access`), so a
+  change reaches a session that is being resumed.
 - **Server-side verbs** (`server/verbs.ts`): create / follow up / Address PR existed only in the
   browser store, which a server-side caller can't reach. They are built from the same pure pieces —
   the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by

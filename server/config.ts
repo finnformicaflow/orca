@@ -113,6 +113,11 @@ export type OrcaConfig = {
   /** Default model for every repo's headless Claude runs (`--model`), e.g. `claude-fable-5-1`. A
    *  repo's own `agentModel` overrides it. Unset → the `claude` CLI's own default. Claude only. */
   agentModel?: string;
+  /** Give the orchestrator a full shell on this machine (`bypassPermissions`) instead of only the
+   *  `orca` command and file reads. Off unless set: it reads every worker's output, so a shell makes
+   *  that output a path to running commands outside any worktree. Turn it on for a machine you'd let
+   *  a card's agent loose on; leave it off on a shared box. */
+  orchestratorShell?: boolean;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -228,6 +233,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentModel !== undefined && (typeof d.agentModel !== "string" || !d.agentModel.trim())) {
     errors.push("agentModel must be a model id such as claude-fable-5-1");
   }
+  if (d.orchestratorShell !== undefined && typeof d.orchestratorShell !== "boolean") {
+    errors.push("orchestratorShell must be true or false");
+  }
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -238,6 +246,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
       agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
+      orchestratorShell: d.orchestratorShell as boolean | undefined,
     },
   };
 }
@@ -291,6 +300,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       staleHours: file.staleHours,
       ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
       ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
+      ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
     },
   });
 }
@@ -317,6 +327,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
+    orchestratorShell: app.orchestratorShell === true,
   };
   cached = config;
   return config;
@@ -340,6 +351,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
       ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
+      ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
     },
   });
   invalidateConfig();

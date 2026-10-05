@@ -65,12 +65,13 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean }> {
   const b = await blob();
   return {
     key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
     model: modelOf(cfg, b) ?? defaultModelOf("claude"),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
+    shell: cfg.orchestratorShell === true,
   };
 }
 
@@ -144,14 +145,16 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       provider: "claude", from: b.sessionId ? "claude" : undefined, sessionId: b.sessionId, contextPct: b.contextPct,
       transcript: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH),
     });
-    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages });
+    const shell = cfg.orchestratorShell === true;
+    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
       model: modelOf(cfg, b), maxBudgetUsd: WAKE_BUDGET_USD,
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
-      // NOT bypassPermissions: it may run `orca` and read files, and that is all.
-      permissionMode: "ask", allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob"],
+      // By default NOT bypassPermissions: it may run `orca` and read files, and that is all. The
+      // `orchestratorShell` setting trades that for a full shell on this machine.
+      ...(shell ? { permissionMode: "bypass" as const } : { permissionMode: "ask" as const, allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob"] }),
       env: {
         ORCA_URL: `http://${process.env.ORCA_BIND || "127.0.0.1"}:${API_PORT}`,
         PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,

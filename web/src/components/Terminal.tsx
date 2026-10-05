@@ -6,6 +6,7 @@ import type { Row } from "../store";
 import { CONTEXT_RESET_PCT, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -117,20 +118,38 @@ export function OrchestratorButton() {
   );
 }
 
-/** How full the orchestrator's session is, as a small ring; the number is on hover. It turns amber
- *  at the point the next wake resets the session onto its notes instead of resuming it. */
+/** How full the orchestrator's session is: an icon button holding a small ring, with the number in
+ *  a popover on hover (and on click or focus, for touch and keyboard). It turns amber at the point
+ *  the next wake resets the session onto its notes instead of resuming it. */
 function ContextRing({ pct }: { pct?: number }) {
+  const [open, setOpen] = useState(false);
   const value = Math.max(0, Math.min(100, Math.round(pct ?? 0)));
-  const label = pct === undefined
-    ? "Context: not measured yet (no finished run)"
-    : `Context ${value}% full${value >= CONTEXT_RESET_PCT ? " — the next message starts a fresh session from its notes" : ` — resets onto its notes at ${CONTEXT_RESET_PCT}%`}`;
+  const full = value >= CONTEXT_RESET_PCT;
   const r = 6, c = 2 * Math.PI * r;
   return (
-    <span role="img" aria-label={label} title={label} data-slot="context-ring" className={`shrink-0 p-1 ${value >= CONTEXT_RESET_PCT ? "text-amber-400" : "text-neutral-400"}`}>
-      <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
-        <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-        <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - value / 100)} />
-      </svg>
-    </span>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button" size="icon" variant="ghost" data-slot="context-ring"
+          aria-label={pct === undefined ? "Context: not measured yet" : `Context ${value}% full`}
+          className={`size-8 shrink-0 cursor-pointer ${full ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground"}`}
+          onPointerEnter={() => setOpen(true)} onPointerLeave={() => setOpen(false)}
+        >
+          <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
+            <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+            <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - value / 100)} />
+          </svg>
+        </Button>
+      </PopoverTrigger>
+      {/* Not focus-stealing: hovering the ring must not pull the caret out of the message box. */}
+      <PopoverContent side="top" align="start" className="w-56 p-2 text-xs" data-slot="context-ring-card" onOpenAutoFocus={(e) => e.preventDefault()}>
+        {pct === undefined ? <div className="font-medium">Context not measured yet</div> : <div className="font-medium">Context {value}% full</div>}
+        <div className="text-muted-foreground mt-0.5">
+          {pct === undefined ? "It is reported when a run finishes."
+            : full ? "The next message starts a fresh session from its notes."
+            : `Resets onto its notes at ${CONTEXT_RESET_PCT}%.`}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

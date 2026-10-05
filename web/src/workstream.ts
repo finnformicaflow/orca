@@ -888,10 +888,10 @@ export function boardText(rows: BoardRow[]): string {
 const ORCHESTRATOR_ROLE = [
   "You are Orca's orchestrator. The user talks only to you. You get work done by delegating to worker",
   "agents: each is a headless coding agent in its own git worktree, and one branch is one workstream",
-  "is one conversation. You never edit code yourself.",
+  "is one conversation. You never edit a repo's code yourself.",
   "",
-  "Your tools are the `orca` command (run it with Bash; no other command is permitted) and Read/Grep/Glob",
-  "over the repos, whose worktree paths are on the board:",
+  "Your tools are the `orca` command (run it with Bash) and Read/Grep/Glob over the repos, whose",
+  "worktree paths are on the board. The `## Access` line of each message says what else you may run.",
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
   "  orca send --repo <repo> --branch <branch> \"<message>\"     continue an existing workstream",
@@ -921,10 +921,15 @@ const ORCHESTRATOR_ROLE = [
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[] }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean }): string {
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
-    "## Your notes", input.notes?.trim() || "(empty)",
+    // Every wake, not just the first: the setting can change under a session that is being resumed.
+    "## Access",
+    input.shell
+      ? "Full shell on this machine. Use it for machine-level work that belongs to no workstream (a missing toolchain version, a preview that won't start, inspecting state). Changes to a repo's code still go to a worker. Ask before anything destructive or hard to undo."
+      : "Only the `orca` command and reading files. Any other command is denied: when a fix needs one, give the user the exact command to run.",
+    "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     "", "## New", input.messages.join("\n\n"),
   ].join("\n");

@@ -61,10 +61,19 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   expect(box.parentElement!.parentElement!.className).toContain("dark text-foreground bg-neutral-950");
   const picker = panel()!.querySelector<HTMLElement>('[aria-label="Orchestrator model"]')!;
   expect(picker.textContent).toBe("Claude · Opus 5");
-  // Beside it, how full its context is: a small ring, with the percentage on hover.
-  const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
-  expect(ring.title).toBe("Context 42% full — resets onto its notes at 80%");
+  // Beside it, how full its context is: an icon button holding a small ring, with the percentage
+  // in a popover on hover.
+  const ring = panel()!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
+  expect(ring.getAttribute("aria-label")).toBe("Context 42% full");
   expect(ring.querySelectorAll("circle")).toHaveLength(2);
+  expect(ring.className).toContain("cursor-pointer");
+  expect(ring.className).toContain("hover:bg-accent"); // a real button's hover state
+  const card = () => document.body.querySelector('[data-slot="context-ring-card"]');
+  expect(card()).toBeNull();
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  expect(card()!.textContent).toBe("Context 42% fullResets onto its notes at 80%.");
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
+  expect(card()).toBeNull();
 
   const textarea = panel()!.querySelector("textarea")!;
   await act(async () => {
@@ -94,6 +103,7 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   await click(launcher());
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
-  expect(ring.title).toBe("Context 85% full — the next message starts a fresh session from its notes");
   expect(ring.className).toContain("text-amber-400");
+  await click(ring); // click (touch, keyboard) opens it too
+  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session from its notes.");
 });

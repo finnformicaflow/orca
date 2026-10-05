@@ -11,7 +11,7 @@ import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
 import * as orchestrator from "../server/orchestrator";
-import type { OrcaConfig } from "../server/config";
+import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
   ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, workerEvent,
@@ -100,6 +100,30 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   const argv = (await launches()).find((a) => a.includes("You are Orca's orchestrator"))!;
   expect(argv).toContain("--allowedTools Bash(orca *),Read,Grep,Glob");
   expect(argv).toContain("--permission-mode default");
+  expect(wake!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
+});
+
+test("O10: orchestratorShell trades the orca-only rule for a full shell, and is off unless set", async () => {
+  expect((await orchestrator.status(cfg())).shell).toBe(false);
+  expect((await orchestrator.status({ ...cfg(), orchestratorShell: true })).shell).toBe(true);
+  await orchestrator.message({ ...cfg(), orchestratorShell: true }, "install node 24.21.0");
+  const [turn] = await settled(orchTurns, 1);
+  const argv = (await launches())[0]!;
+  expect(argv).toContain("--permission-mode bypassPermissions");
+  expect(argv).not.toContain("--allowedTools");
+  expect(turn!.prompt).toContain("## Access\nFull shell on this machine.");
+
+  // Said on EVERY wake, so turning it back off reaches a session that is being resumed.
+  await orchestrator.message(cfg(), "and now?");
+  const turns = await settled(orchTurns, 2);
+  expect((await launches())[1]).toContain("--allowedTools Bash(orca *),Read,Grep,Glob");
+  expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator"); // resumed
+  expect(turns[1]!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
+
+  const doc = (orchestratorShell: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" }], orchestratorShell });
+  expect(parseConfigDocument(doc("yes")).errors).toContain("orchestratorShell must be true or false");
+  expect(parseConfigDocument(doc(true)).config?.orchestratorShell).toBe(true);
+  expect(parseConfigDocument(doc(undefined)).config?.orchestratorShell).toBeUndefined();
 });
 
 test("O2: a brief missing a part, an unknown repo, and a fifth concurrent worker are all refused", async () => {
