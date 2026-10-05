@@ -40,7 +40,6 @@ export function App() {
                 <PreviewManagerMenu />
               </div>
             )}
-            {topLevel && <OrchestratorButton />}
             {topLevel && <RepoFilter />}
             {topLevel && <DensityToggle />}
             <ProfileMenu />
@@ -50,6 +49,7 @@ export function App() {
       {route.name === "pr" ? <PrDetail repo={route.repo} number={route.number} sub={route.sub} />
         : route.name === "local" ? <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />
         : <Board />}
+      <OrchestratorButton />
     </div>
   );
 }

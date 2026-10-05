@@ -225,7 +225,9 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 
 ## The orchestrator (one conversation that delegates)
 
-The header's **Orchestrator** button opens one conversation you talk to; it starts and steers
+A floating launcher in the bottom-right corner (inverted against the theme, on every route) pops
+out a chat window — a popout like a site's chat widget, deliberately not a modal, so the board it
+is moving stays visible. It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
@@ -255,7 +257,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
   serialised so two workers finishing together can't race a launch.
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
-  holds further events in the queue until you reply (the modal title says so). `MAX_WORKERS` (4)
+  holds further events in the queue until you reply (the window's title says so). `MAX_WORKERS` (4)
   running at once → `spawn` refuses. Each wake has a `--max-budget-usd`. All three are constants
   until one needs tuning.
 - **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a

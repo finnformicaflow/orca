@@ -183,8 +183,10 @@ function Turn({ turn }: { turn: AgentTurn }) {
 }
 
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
- *  orchestrator's, which goes to its own route. Everything else about the panel is the same. */
-export function ChatPanel({ row, send }: { row: Row; send?: (text: string, images: File[]) => Promise<void> }) {
+ *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
+ *  orchestrator's popout): the log runs edge to edge with no frame of its own, and only the composer
+ *  keeps a margin. Everything else about the panel is the same. */
+export function ChatPanel({ row, send, flush }: { row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean }) {
   const submit = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -265,11 +267,11 @@ export function ChatPanel({ row, send }: { row: Row; send?: (text: string, image
   };
 
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div className={`flex h-full flex-col ${flush ? "" : "gap-3"}`}>
       <div
         ref={scroller}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200"
+        className={`min-h-0 flex-1 overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -295,6 +297,7 @@ export function ChatPanel({ row, send }: { row: Row; send?: (text: string, image
           />
         ))}
       </div>
+      <div className={flush ? "p-2" : undefined}>
       <ChatComposer
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
@@ -320,6 +323,7 @@ export function ChatPanel({ row, send }: { row: Row; send?: (text: string, image
           },
         } : undefined}
       />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
-// The orchestrator's entry point in the UI: a header button opening the same conversation modal a
-// card's terminal uses, over the orchestrator's own turns, with the composer sending to its route
-// (never the branch follow-up launch). Rendered into a real DOM against the fake api.
+// The orchestrator's entry point in the UI: a floating launcher in the bottom-right corner that pops
+// out a chat window (the same ChatPanel a card's terminal uses) over the orchestrator's own turns,
+// with the composer sending to its route (never the branch follow-up launch). Rendered into a real DOM against the fake api.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -28,21 +28,32 @@ afterEach(async () => {
   localStorage.clear();
 });
 
-test("the Orchestrator button opens its conversation, and the composer sends to the orchestrator", async () => {
+const panel = () => container!.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
+const launcher = () => container!.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
+
+test("the floating launcher pops out the orchestrator's conversation, and the composer sends to it", async () => {
   apiFake.turnsData.set("@orca::orchestrator", [
     { id: "run-1", provider: "claude", instruction: "ship the cache", prompt: "p", response: "Spawned r/add-cache.", finishedAt: 2 },
   ]);
   await mount(<OrchestratorButton />);
-  const dialog = container!.querySelector("dialog")!;
-  expect(dialog.open).toBe(false);
+  expect(panel()).toBeNull(); // closed: only the launcher, pinned bottom-right
+  expect(container!.querySelector("dialog")).toBeNull(); // a popout, not a modal — the board stays usable
+  expect(launcher().parentElement!.className).toContain("fixed right-4 bottom-4");
+  // Inverted against the page in either theme: the foreground token is the fill.
+  expect(launcher().className).toContain("bg-foreground text-background");
 
-  const button = [...container!.querySelectorAll("button")].find((b) => /Orchestrator/.test(b.textContent ?? ""))!;
-  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
-  expect(dialog.open).toBe(true);
-  expect(dialog.textContent).toContain("ship the cache");
-  expect(dialog.textContent).toContain("Spawned r/add-cache.");
+  await click(launcher());
+  expect(launcher().getAttribute("aria-expanded")).toBe("true");
+  expect(panel()!.textContent).toContain("ship the cache");
+  expect(panel()!.textContent).toContain("Spawned r/add-cache.");
+  // The terminal log fills the window: no padding around it and no frame of its own.
+  const log = panel()!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  expect(log.parentElement!.parentElement!.className).toBe("min-h-0 flex-1");
+  expect(log.className).not.toContain("border");
+  expect(log.className).not.toContain("rounded");
 
-  const textarea = dialog.querySelector("textarea")!;
+  const textarea = panel()!.querySelector("textarea")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "what is running?");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -54,13 +65,19 @@ test("the Orchestrator button opens its conversation, and the composer sends to 
   });
   expect(apiFake.orchestratorMessages).toEqual([{ text: "what is running?", attachments: [] }]);
   expect(apiFake.agentLaunches).toEqual([]); // not a branch follow-up
+
+  // The launcher toggles, and Escape from inside the window closes it too.
+  await click(launcher());
+  expect(panel()).toBeNull();
+  await click(launcher());
+  await act(async () => { panel()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(panel()).toBeNull();
 });
 
 test("a paused orchestrator says so, and an orchestrated card is marked", async () => {
   apiFake.orchestratorState = { key: "/state/orchestrator", running: false, paused: true, notes: "" };
   await mount(<><OrchestratorButton /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);
   expect(container!.querySelector('[aria-label="Orchestrated"]')).toBeTruthy();
-  const button = [...container!.querySelectorAll("button")].find((b) => /^\s*Orchestrator/.test(b.textContent ?? ""))!;
-  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
-  expect(container!.querySelector("dialog")!.textContent).toContain("Orchestrator · paused until you reply");
+  await click(launcher());
+  expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
 });
