@@ -478,3 +478,16 @@ test("a message that fails to send is withdrawn from the log and handed back to 
   expect(container!.querySelector("textarea")!.value).toBe("add a retry");
   expect(text()).toContain("bridge down");
 });
+
+test("the log never scrolls sideways: prose wraps unbreakable tokens, code blocks scroll inside themselves", async () => {
+  // Measured in a real browser at the orchestrator window's width: an inline `branch/name-with-hash`
+  // wider than the line pushed the whole log 3px past its box. happy-dom has no layout, so this
+  // pins the rules that fixed it.
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response: "See `orca/surface-branch-review-checks-to-activity-27f26a`.", finishedAt: 2 }]);
+  await mount(base);
+  const log = container!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  expect(log.className).toContain("overflow-x-hidden");
+  const prose = log.querySelector<HTMLElement>(".prose")!;
+  expect(prose.className).toContain("wrap-anywhere");
+  expect(prose.className).toContain("prose-pre:wrap-normal");
+});

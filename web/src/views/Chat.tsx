@@ -26,7 +26,10 @@ const FOLLOW_SLACK = 48;
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the dark window rather than looking like a pasted document. */
 const ChatMarkdown = ({ children }: { children: string }) => (
-  <div className="prose prose-invert prose-sm max-w-none text-neutral-300
+  // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
+  // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
+  // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
+  <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300 prose-pre:wrap-normal
     prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
@@ -300,7 +303,7 @@ export function ChatPanel({ row, send, flush, controls }: {
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
