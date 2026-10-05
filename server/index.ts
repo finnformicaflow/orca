@@ -20,7 +20,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { checkGate, launchOptions, newWorktree } from "./verbs";
+import { checkGate, launchOptions, newWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
@@ -368,12 +368,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/preview") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
-    // Gitignored config (backend/.env) is only copied at worktree create/adopt, so a worktree made
-    // before the config listed it boots without one and the preview dies on "Error: .env not found".
-    // Re-copy what's missing here, leaving any worktree-local edit intact.
-    await git.copyToWorktree(repo.repoPath, body.worktree, repo.copyToWorktree, { keepExisting: true });
-    await preview.start(body.key, body.worktree, repo.previewServices, cfg.portRange);
-    return json(await preview.status(body.key));
+    return json(await startPreview(cfg, repo, body.key, body.worktree));
   }
   if (req.method === "POST" && p === "/api/preview/master") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");

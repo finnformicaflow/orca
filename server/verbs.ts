@@ -11,6 +11,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as db from "./db";
+import * as preview from "./preview";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
 import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
@@ -53,6 +54,17 @@ export async function ensureWorktree(repo: RepoConfig, branch: string): Promise<
   await git.copyToWorktree(repo.repoPath, wt.worktreePath, repo.copyToWorktree);
   await git.linkToWorktree(repo.repoPath, wt.worktreePath, repo.linkToWorktree);
   return wt.worktreePath;
+}
+
+/** Start (or restart) a worktree's preview — the one path behind the board's "Test locally" and the
+ *  orchestrator's `orca preview`. Returns once the services are spawned, not once they are up. */
+export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: string, worktree: string): Promise<preview.SvcStatus[]> {
+  // Gitignored config (backend/.env) is only copied at worktree create/adopt, so a worktree made
+  // before the config listed it boots without one and the preview dies on "Error: .env not found".
+  // Re-copy what's missing here, leaving any worktree-local edit intact.
+  await git.copyToWorktree(repo.repoPath, worktree, repo.copyToWorktree, { keepExisting: true });
+  await preview.start(key, worktree, repo.previewServices, cfg.portRange);
+  return preview.status(key);
 }
 
 /** The agent a branch's next run uses: its pin (when the repo allows that provider), else whoever

@@ -6,11 +6,15 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
 import * as orchestrator from "../server/orchestrator";
+import * as preview from "../server/preview";
+import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
@@ -267,6 +271,63 @@ test("O7: send continues a workstream on its native session, queues behind a liv
   expect((await launches())[1]).toContain(`--resume ${first!.sessionId}`);
   await expect(orchestrator.tool(cfg(), "send", { repo: "r", branch })).rejects.toThrow("the message is required");
   await expect(orchestrator.tool(cfg(), "address", { repo: "r", branch })).rejects.toThrow(`r/${branch} has no open PR to address`);
+});
+
+test("O11: preview starts a workstream's preview on the board's path, and --status reports state + the log tail", async () => {
+  const withService = (command: string): OrcaConfig => {
+    const c = cfg();
+    c.repos[0] = { ...c.repos[0]!, features: { previews: true }, previewServices: [{ name: "backend", command }] };
+    return c;
+  };
+  const failing = withService("echo '[orca] preview DB setup failed: no snapshot'; exit 1");
+  const { branch, worktreePath } = await verbs.newWorktree(failing.repos[0]!, "demo");
+  const at = { repo: "r", branch };
+  // The preloaded happy-dom swaps `fetch` for a browser one that CORS-blocks the readiness probe of a
+  // real port; the bridge runs on Bun's, so the probe gets Bun's here.
+  const browserFetch = globalThis.fetch;
+  globalThis.fetch = Bun.fetch as typeof fetch;
+  try {
+    await expect(orchestrator.tool(cfg(), "preview", at)).rejects.toThrow("Previews are not enabled for r");
+    await expect(orchestrator.tool(failing, "preview", { repo: "r" })).rejects.toThrow("--branch is required");
+    expect(await orchestrator.tool(failing, "preview", { ...at, status: "" })).toContain(`No preview for r/${branch}`);
+
+    // A boot that dies: the state says failed and the log says why.
+    expect(await orchestrator.tool(failing, "preview", at)).toContain(`Starting the preview for r/${branch}: backend http://localhost:`);
+    let status = "";
+    for (let i = 0; i < 200 && !status.includes(": failed"); i++, await Bun.sleep(25)) status = await orchestrator.tool(failing, "preview", { ...at, status: "" });
+    expect(status).toContain(`Preview r/${branch}: failed`);
+    expect(status).toContain("--- backend log (tail) ---\n[orca] preview DB setup failed: no snapshot");
+
+    // A restart that comes up: running, with the URL — and the log is there for a live service too.
+    const serving = withService(`echo booted; exec "${process.execPath}" -e 'Bun.serve({port:{port},fetch:()=>new Response("ok")})'`);
+    await orchestrator.tool(serving, "preview", at);
+    for (let i = 0; i < 200 && !status.includes(": running"); i++, await Bun.sleep(25)) status = await orchestrator.tool(serving, "preview", { ...at, status: "" });
+    const [svc] = await preview.status(worktreePath); // keyed by the worktree path, as the board's is
+    expect(status).toContain(`Preview r/${branch}: running\n  backend: running http://localhost:${svc!.port}`);
+    expect(status).toContain("--- backend log (tail) ---\nbooted");
+  } finally {
+    globalThis.fetch = browserFetch;
+    preview.stop(worktreePath);
+  }
+});
+
+test("O12: the orca command reads a flag followed by another flag as a switch", async () => {
+  let got: unknown;
+  // node:http, not Bun.serve: happy-dom's preloaded `Response` is not one Bun.serve accepts.
+  const bridge = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; }).on("end", () => { got = JSON.parse(body); res.end('{"text":"ok"}'); });
+  });
+  await new Promise<void>((r) => bridge.listen(0, "127.0.0.1", r));
+  try {
+    const run = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/orca"), "preview", "--status", "--repo", "r", "--branch", "b", "word"], {
+      env: { ...process.env, ORCA_URL: `http://127.0.0.1:${(bridge.address() as AddressInfo).port}` }, stdout: "pipe",
+    });
+    expect((await new Response(run.stdout).text()).trim()).toBe("ok");
+    expect(got).toEqual({ verb: "preview", args: { status: "", repo: "r", branch: "b", _: ["word"] } });
+  } finally {
+    bridge.close();
+  }
 });
 
 test("O8: the ladder decision and the orchestrator's views are pure", () => {

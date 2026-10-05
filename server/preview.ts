@@ -182,9 +182,14 @@ async function portReady(port: number): Promise<boolean> {
   }
 }
 
-const tail = async (path: string): Promise<string> => {
-  try { return (await Bun.file(path).text()).slice(-1500).trim(); } catch { return ""; }
+const tail = async (path: string, max = 1500): Promise<string> => {
+  try { return (await Bun.file(path).text()).slice(-max).trim(); } catch { return ""; }
 };
+
+/** The tail of each service's log whatever its state — `status` carries one only for a dead service,
+ *  and a boot that is failing slowly (a DB setup error under a live wrapper) is read from here. */
+export const logs = (key: string, max = 3000): Promise<{ name: string; log: string }[]> =>
+  Promise.all((previews.get(key) ?? []).map(async (s) => ({ name: s.name, log: await tail(s.logPath, max) })));
 
 export async function status(key: string): Promise<SvcStatus[]> {
   const svcs = previews.get(key) ?? [];
