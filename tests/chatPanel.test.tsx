@@ -409,3 +409,23 @@ test("a turn Orca verified shows the check's verdict apart from the agent's own 
   expect(checks[0]?.textContent).toContain("(fail) W3 promote"); // the evidence, foldable
   expect(checks[1]?.textContent).toContain("✓ bun run check passed");
 });
+
+test("the composer carries the card's model picker and context ring — the same controls the orchestrator's has", async () => {
+  await mount({ ...base, preferredModel: "gpt-5.5", agentMeta: { model: "GPT-5.5", contextPct: 61 } });
+
+  // The model the next message runs on, changeable where you type (every installed provider's models).
+  const picker = container!.querySelector<HTMLElement>('[data-slot="chat-composer-leading"] [aria-label="Model"]')!;
+  expect(picker.textContent).toBe("Codex · GPT-5.5");
+  // And how full the session is, from the card's last run.
+  const ring = container!.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
+  expect(ring.getAttribute("aria-label")).toBe("Context 61% full");
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 61% fullA fresh session starts at 80%.");
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
+});
+
+test("a card whose runs never report context (Codex, Cursor, or nothing run yet) says so", async () => {
+  await mount(base);
+  const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
+  expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
+});

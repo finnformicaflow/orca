@@ -229,7 +229,8 @@ A floating launcher in the bottom-right corner (inverted against the theme, on e
 out a chat window — a popout like a site's chat widget, deliberately not a modal, so the board it
 is moving stays visible. Its composer sits on the terminal's own background and carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
-full its context is (the percentage is in its hover popover). It is one conversation you talk to; it starts and steers
+full its context is (the percentage is in its hover popover) — the same `ChatControls` every card's
+terminal composer has, fed the orchestrator's values instead of the card's. It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.

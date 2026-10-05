@@ -6,17 +6,18 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
-import { followUp, modelFor, refresh, type Row } from "../store";
+import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
 import { promptInstruction } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -186,10 +187,11 @@ function Turn({ turn }: { turn: AgentTurn }) {
  *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
  *  orchestrator's popout): the log runs edge to edge with no frame of its own, and the composer sits
  *  on the SAME terminal background, so the window reads as one surface rather than a log with a
- *  differently coloured strip under it. `leading` goes in the composer's toolbar (a model picker).
- *  Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, leading }: {
-  row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; leading?: ReactNode;
+ *  differently coloured strip under it. The composer's toolbar always carries the model picker and
+ *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
+ *  row's card. Everything else about the panel is the same. */
+export function ChatPanel({ row, send, flush, controls }: {
+  row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
 }) {
   const submit = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
@@ -306,7 +308,9 @@ export function ChatPanel({ row, send, flush, leading }: {
       <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : undefined}>
       <ChatComposer
         className={flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
-        leading={leading}
+        leading={<ChatControls {...(controls ?? {
+          model: modelFor(row), onModel: (m) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
+        })} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}

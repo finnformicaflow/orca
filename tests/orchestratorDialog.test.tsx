@@ -59,7 +59,7 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   expect(box.className).toContain("bg-neutral-950");
   expect(box.className).not.toContain("bg-card");
   expect(box.parentElement!.parentElement!.className).toContain("dark text-foreground bg-neutral-950");
-  const picker = panel()!.querySelector<HTMLElement>('[aria-label="Orchestrator model"]')!;
+  const picker = panel()!.querySelector<HTMLElement>('[aria-label="Model"]')!;
   expect(picker.textContent).toBe("Claude · Opus 5");
   // Beside it, how full its context is: an icon button holding a small ring, with the percentage
   // in a popover on hover.
@@ -71,7 +71,7 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   const card = () => document.body.querySelector('[data-slot="context-ring-card"]');
   expect(card()).toBeNull();
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
-  expect(card()!.textContent).toBe("Context 42% fullResets onto its notes at 80%.");
+  expect(card()!.textContent).toBe("Context 42% fullA fresh session starts at 80%.");
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
   expect(card()).toBeNull();
 
@@ -105,5 +105,5 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
   await click(ring); // click (touch, keyboard) opens it too
-  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session from its notes.");
+  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session, carrying a summary of this one.");
 });
