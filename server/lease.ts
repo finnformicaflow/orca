@@ -88,6 +88,16 @@ export function sessionBusy(sessionId: string): boolean {
   });
 }
 
+/** Every live lease — what a restarted bridge adopts (see agent.adoptLeases). */
+export function live(): Lease[] {
+  let files: string[];
+  try { files = readdirSync(join(stateDir(), "leases")); } catch { return []; }
+  return files.filter((f) => f.endsWith(".json")).map((f) => readJsonSync<Lease>(join(stateDir(), "leases", f))).filter(isLive);
+}
+
+/** The lease a key currently holds, live or not (a dead one is what tells adoption the run ended). */
+export const current = (key: string): Lease | undefined => readJsonSync<Lease>(leaseFile(key));
+
 /** Run ids that currently hold a live lease. Lets a restart tell a genuinely still-running turn from
  *  one whose process died with the previous bridge (see db.reconcileRunning). */
 export function liveRunIds(): Set<string> {
