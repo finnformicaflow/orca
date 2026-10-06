@@ -51,6 +51,30 @@ createdb orca
 `bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
 throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
 
+**Push a preview back to its source.** A preview starts from a clone of the repo's template database
+(`PREVIEW_TEMPLATE_DB` in its env file) and a copy of the main checkout's env file (the `.env` in
+`copyToWorktree`), so whatever you set up on one preview (integrations, say) is gone in the next. Once
+a preview is configured the way you want every preview to start:
+
+```
+orca preview --repo branch-demo --branch <branch> --push-to-template            # plan + masked env diff, changes nothing
+orca preview --repo branch-demo --branch <branch> --push-to-template --confirm  # apply
+```
+
+- **Database:** the template is replaced by a whole copy of the preview's database (`pg_dump` into a
+  temporary database, then both renames in one transaction). The previous template is kept as
+  `<template>_bak_<timestamp>` and the output prints the `psql` command that renames it back. It refuses
+  while anything is connected to the template (stop the main checkout's backend first), and the
+  running preview database is only read. It needs a `pg_dump` at least as new as the server (`PG_DUMP`
+  overrides the lookup).
+- **Env:** integration-related variables (names matching Linear/GitHub/GitLab/Jira/Atlassian/Slack/…/
+  `_BASE_URL`) that the preview's env file has and the main checkout's lacks or holds differently are
+  written into the main checkout's file; other differing keys are listed by name, not copied. The
+  previous file is kept under `~/.orca/env-backups/`, and the output prints the `cp` that restores it.
+  Values are never printed in full.
+
+The orchestrator has the same command; it is told to dry-run first and to run it only when you ask.
+
 **Several Claude accounts** (to keep working when one hits its usage limit) are handled by
 [claude-hydra](https://github.com/finnformica/claude-hydra), not by Orca. Install it, register each
 login, and install its `claude` shim; from then on every `claude -p` Orca spawns is routed to the
