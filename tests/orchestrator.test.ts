@@ -400,6 +400,19 @@ test("O11: preview starts a workstream's preview on the board's path, and --stat
   }
 });
 
+test("O13: preview --push-to-template finds the branch's preview worktree and the repo's copied .env, read-only until --confirm", async () => {
+  const c = cfg();
+  c.repos[0] = { ...c.repos[0]!, features: { previews: true }, previewServices: [{ name: "backend", command: "true" }] };
+  const { branch, worktreePath } = await verbs.newWorktree(c.repos[0]!, "push");
+  const at = { repo: "r", branch, "push-to-template": "" };
+  await expect(orchestrator.tool(c, "preview", { ...at, branch: "nope" })).rejects.toThrow("No worktree for r/nope");
+  await expect(orchestrator.tool(c, "preview", at)).rejects.toThrow("r copies no .env file into its worktrees");
+  c.repos[0]!.copyToWorktree = ["config.json", "backend/.env"];
+  // Reached pushToTemplate with the preview worktree's env file (the DB half is tests/pushTemplate.test.ts).
+  await expect(orchestrator.tool(c, "preview", at)).rejects.toThrow(`${worktreePath}/backend/.env not found`);
+  await expect(orchestrator.tool(c, "nope")).rejects.toThrow("--push-to-template [--confirm]");
+});
+
 test("O12: the orca command reads a flag followed by another flag as a switch", async () => {
   let got: unknown;
   // node:http, not Bun.serve: happy-dom's preloaded `Response` is not one Bun.serve accepts.
@@ -409,11 +422,11 @@ test("O12: the orca command reads a flag followed by another flag as a switch", 
   });
   await new Promise<void>((r) => bridge.listen(0, "127.0.0.1", r));
   try {
-    const run = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/orca"), "preview", "--status", "--repo", "r", "--branch", "b", "word"], {
+    const run = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/orca"), "preview", "--push-to-template", "--status", "--repo", "r", "--branch", "b", "word"], {
       env: { ...process.env, ORCA_URL: `http://127.0.0.1:${(bridge.address() as AddressInfo).port}` }, stdout: "pipe",
     });
     expect((await new Response(run.stdout).text()).trim()).toBe("ok");
-    expect(got).toEqual({ verb: "preview", args: { status: "", repo: "r", branch: "b", _: ["word"] } });
+    expect(got).toEqual({ verb: "preview", args: { "push-to-template": "", status: "", repo: "r", branch: "b", _: ["word"] } });
   } finally {
     bridge.close();
   }
