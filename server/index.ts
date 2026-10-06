@@ -259,7 +259,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/config") {
     const available = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
-      name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
+      name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels, canPromote: !!r.previewPromote,
       hasRemote: await git.hasRemote(r.repoPath),
       defaultModel: modelFor(cfg, r), // what an unpinned card runs on (Claude), so the picker can show it
       // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
@@ -388,7 +388,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { worktreePath } = await git.baseWorktree(repo.repoPath, repo.worktreeRoot, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
-    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
+    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange, repo.previewEnv);
     return json({ worktreePath, svcs: await preview.status(worktreePath) });
   }
   if (req.method === "GET" && p === "/api/previews") {
@@ -397,6 +397,13 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
     return json(key ? await preview.status(key) : []);
+  }
+  if (req.method === "POST" && p === "/api/preview/promote") {
+    if (!repo.previewPromote) return json({ error: `${repo.name} has no previewPromote command` }, 400);
+    // The key becomes a shell's cwd: only a worktree of this repo (incl. the base-branch one) qualifies.
+    if (typeof body.key !== "string" || !body.key.startsWith(`${repo.worktreeRoot}/`) || body.key.includes("..")) return json({ error: "key must be a worktree of this repo" }, 400);
+    const r = await preview.promote(body.key, repo.previewPromote);
+    return r.ok ? json(r) : json({ error: r.output || "promote failed" }, 500);
   }
   if (req.method === "POST" && p === "/api/preview/stop") {
     preview.stop(body.key, true); // teardown: drop this preview's DB
