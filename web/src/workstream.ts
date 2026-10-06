@@ -853,6 +853,45 @@ export const MODEL_LADDER: { id: string; when: string }[] = [
   { id: "claude-fable-5-1", when: "ONLY work that has already defeated a cheaper model, or genuinely novel, ambiguous design work" },
 ];
 
+/** Why an orchestrator wake died before finishing its turn. `no-reply` is the CLI ending "cleanly"
+ *  on its own placeholder instead of an answer. */
+export type WakeExit =
+  | { kind: "budget"; budgetUsd: number }
+  | { kind: "timeout"; minutes: number }
+  | { kind: "restart" }
+  | { kind: "no-reply" }
+  | { kind: "error"; code: number; stderr: string };
+/** What the Claude CLI writes as the turn's result when a session ends with no assistant reply. */
+export const NO_REPLY_PLACEHOLDER = "No response requested.";
+/** The reason as a verb phrase — "Wake stopped: <this>" in the chat, "Your previous wake <this>" in
+ *  the next wake's prompt. Pure. */
+export function wakeExitReason(exit: WakeExit): string {
+  switch (exit.kind) {
+    case "budget": return `hit the ${exit.budgetUsd} USD budget cap`;
+    case "timeout": return `timed out at ${exit.minutes} minute${exit.minutes === 1 ? "" : "s"}`;
+    case "restart": return "was cut off by an Orca restart";
+    case "no-reply": return "ended without a reply";
+    case "error": return `exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr}` : ""}`;
+  }
+}
+/** The system line a dead wake's turn shows instead of nothing. `dropped` messages have now died
+ *  twice and are not retried again. Pure. */
+export function wakeStoppedLine(input: { reason: string; toolCalls: number; costUsd?: number; retried: number; dropped: number }): string {
+  const spent = input.costUsd === undefined ? "" : ` ($${input.costUsd.toFixed(2)} spent)`;
+  return [
+    `Wake stopped: ${input.reason} after ${input.toolCalls} tool call${input.toolCalls === 1 ? "" : "s"}${spent}.`,
+    ...(input.retried ? ["Re-queued what it was handling; the next wake is told why and finishes the reply."] : []),
+    ...(input.dropped ? ["Not retried again: the wake handling this has now died twice. Send it again to retry."] : []),
+  ].join("\n");
+}
+/** A resumed session re-reads its whole history on every wake, so cost per wake grows with it. Says
+ *  so once a wake costs half its cap or the context is half full — a hint only, nothing is reset. Pure. */
+export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; budgetUsd: number }): string | undefined {
+  const costly = (input.lastWakeUsd ?? 0) >= input.budgetUsd / 2;
+  if (!costly && (input.contextPct ?? 0) < 50) return undefined;
+  return "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.";
+}
+
 // First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).
 export const WORKER_EVENT_MARKER = "[worker finished]";
@@ -947,7 +986,7 @@ const ORCHESTRATOR_ROLE = [
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -957,6 +996,8 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
       : "Only the `orca` command and reading files. Any other command is denied: when a fix needs one, give the user the exact command to run.",
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
+    // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
+    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     "", "## New", input.messages.join("\n\n"),
   ].join("\n");
 }

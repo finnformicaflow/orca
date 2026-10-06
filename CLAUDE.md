@@ -281,8 +281,21 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   serialised so two workers finishing together can't race a launch.
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). `MAX_WORKERS` (4)
-  running at once → `spawn` refuses. Each wake has a `--max-budget-usd`. All three are constants
-  until one needs tuning.
+  running at once → `spawn` refuses. Each wake has a `--max-budget-usd`: `orchestratorWakeBudgetUsd`
+  in the app config, 5 unless set. The other two are constants until one needs tuning.
+- **A wake that dies says why, and its message is retried once.** `wakeExit` reads the exit the
+  agent's handler reports (`RunFinished.exit`): the CLI's budget result subtype, Orca's own timeout
+  timer, any other nonzero exit (with the stderr tail), or the CLI's "No response requested."
+  placeholder (a heuristic — exit 0, but no reply). The turn's response becomes a `Wake stopped: …`
+  line (`db.failTurn`), the messages it claimed (`handling` in its blob — the blob, so a death with
+  the bridge is covered) go back on the queue, and the next wake's prompt carries `## Previous wake
+  was cut off`. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
+  to send it again. A restart is detected at startup (`orchestrator.recover`): a claim with no live
+  lease whose turn did not end on text was cut off; one that outlived the bridge and finished is
+  just drained. Stop is not a death. The popout shows the last wake's spend and, once a wake costs
+  half the cap or the context is half full, a hint that a fresh session would be cheaper
+  (`sessionHint`) — a hint only, nothing is reset. The ledger records `costUsd` per run and
+  `errorKind` `budget` / `timeout` instead of one `nonzero-exit`.
 - **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a
   fresh board go into EVERY wake prompt; the role text only when a session starts. So the ladder
   applies as for any conversation — resume while healthy, reset onto the portable transcript at 80%

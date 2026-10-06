@@ -102,6 +102,8 @@ export type RunFinished = {
   key: string; cwd: string; runId: string; options: LaunchOptions;
   status: db.TurnStatus; sessionId?: string; result?: string; structured?: AgentOutcome;
   check?: TurnCheck; meta?: RunMeta;
+  /** How the process ended, uncollapsed: the orchestrator turns this into the reason a wake died. */
+  exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string };
   /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
   continued: boolean;
 };
@@ -522,7 +524,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
     { cwd, env: { ...agentEnv(), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
-  const timeout = options.timeoutMs ? setTimeout(() => proc.kill(), options.timeoutMs) : undefined;
+  let timedOut = false;
+  const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
   lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
@@ -606,8 +609,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       status: ok ? "done" : "error", durationMs: meta?.durationMs ?? finishedAt - startedAt,
       inputTokens: meta?.inputTokens, outputTokens: meta?.outputTokens,
       cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
-      evidenceChars: options.evidenceChars,
-      errorKind: ok ? undefined : code !== 0 ? "nonzero-exit" : "agent-error",
+      evidenceChars: options.evidenceChars, costUsd: meta?.costUsd,
+      errorKind: ok ? undefined : budgetReached ? "budget" : timedOut ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
     });
     // The verification gate: a run that committed gets the repo's check command run over it, and
     // the result lands on the turn as evidence. Only a successful run is checked — a failed one has
@@ -638,6 +641,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       await runFinished?.({
         key, cwd, runId, options, status: wasStopped ? "stopped" : ok ? "done" : "error",
         sessionId: resolvedSessionId, result: result ?? error, structured, check, meta, continued,
+        exit: { code, timedOut, budgetReached, stderr: err.trim().slice(-300) },
       });
     } catch (e) {
       console.error("orca: run-finished hook failed", e); // a listener must never break the run it heard about

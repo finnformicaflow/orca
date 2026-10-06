@@ -462,6 +462,21 @@ export async function finishTurn(runId: string, input: {
   if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
 }
 
+/** Replace a finished turn's outcome with Orca's own account of why it died (an orchestrator wake
+ *  that was cut off). The cost cap keeps its own stop reason; everything else is an `error`. */
+export async function failTurn(runId: string, response: string): Promise<void> {
+  const sql = await open();
+  const rows = await sql`
+    WITH updated AS (
+      UPDATE turn SET status = 'error', response = ${response}, structured = NULL,
+        stop_reason = CASE WHEN stop_reason = 'budget_reached' THEN stop_reason ELSE 'error' END
+      WHERE run_id = ${runId} RETURNING workstream_id
+    )
+    SELECT w.repo, w.branch FROM updated JOIN workstream w ON w.id = updated.workstream_id`;
+  const owner = rows[0] as { repo: string; branch: string | null } | undefined;
+  if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
+}
+
 /** Attach Orca's verification to a finished turn, and wake the chat watching its branch. */
 export async function setCheck(runId: string, check: TurnCheck): Promise<void> {
   const sql = await open();

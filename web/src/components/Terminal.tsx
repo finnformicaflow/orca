@@ -53,7 +53,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 // running drives Stop and the composer's placeholder.
 export function OrchestratorButton() {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   useEffect(() => {
     if (!open) return;
@@ -75,7 +75,15 @@ export function OrchestratorButton() {
         >
           <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
             {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-            <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+              {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
+              {state?.lastWakeUsd !== undefined && (
+                <div className={`truncate text-[10px] ${state.hint ? "text-amber-400" : "text-neutral-500"}`} title={state.hint} data-slot="orchestrator-spend">
+                  last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
+                </div>
+              )}
+            </div>
             <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
               <X className="size-4" />
             </Button>

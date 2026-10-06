@@ -2,6 +2,11 @@
 // (document, window, HTMLElement) to render React into and dispatch events against.
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
+// Bun's own, captured before happy-dom replaces the globals. A test that drives the BRIDGE's
+// network code (the preview readiness probe) needs both back: happy-dom's fetch CORS-blocks a real
+// port, and Bun's fetch (1.4+) rejects happy-dom's AbortSignal as "not of type AbortSignal".
+export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal };
+
 GlobalRegistrator.register();
 
 // happy-dom ships no EventSource, and the chat opens one for its live step feed — without this the
