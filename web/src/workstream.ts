@@ -886,8 +886,8 @@ export function wakeStoppedLine(input: { reason: string; toolCalls: number; cost
 }
 /** A resumed session re-reads its whole history on every wake, so cost per wake grows with it. Says
  *  so once a wake costs half its cap or the context is half full — a hint only, nothing is reset. Pure. */
-export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; budgetUsd: number }): string | undefined {
-  const costly = (input.lastWakeUsd ?? 0) >= input.budgetUsd / 2;
+export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; budgetUsd?: number }): string | undefined {
+  const costly = input.budgetUsd !== undefined && (input.lastWakeUsd ?? 0) >= input.budgetUsd / 2;
   if (!costly && (input.contextPct ?? 0) < 50) return undefined;
   return "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.";
 }

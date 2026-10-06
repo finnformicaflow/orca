@@ -78,6 +78,13 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
 });
 const { closed, recovered } = await reconcile();
 if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
+// Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
+// from the session file and the orchestrator hears about it, as if the bridge had never restarted.
+const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
+  const found = await backfillRun(runId, sessionId, worktreePath);
+  return found?.response ? { response: found.response, structured: found.outcome } : undefined;
+}, orchestrator.dir());
+if (adopted) console.log(`orca: adopted ${adopted} run(s) still going from the previous bridge`);
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.

@@ -769,6 +769,63 @@ async function dispatchQueued(repo: string, branch: string, options: LaunchOptio
   }
 }
 
+// How often an adopted run's lease is checked for its process having exited.
+export const adoptPoll = { ms: 5_000 }; // mutable so a test needn't wait five seconds
+
+/** Runs that outlived the previous bridge. Their processes are fine — only the bridge's view of them
+ *  died: the stdout reader, and the exit handler that records the result, wakes the orchestrator and
+ *  sends what was queued. So a restart used to turn a finishing run into a card stuck on "running"
+ *  and an orchestrator never told. Adopt each live lease instead: show it running, and when its
+ *  process exits, finish its turn from the provider's own session file (`recover`) and run the same
+ *  after-run path a watched run gets — minus the check gate, which needs the HEAD it started from.
+ *  `skip` keeps the orchestrator's own wake out of this; orchestrator.recover handles that one. */
+export function adoptLeases(
+  recover: (runId: string, sessionId?: string, worktreePath?: string) => Promise<{ response?: string; structured?: AgentOutcome } | undefined>,
+  skip?: string,
+): number {
+  const adopted = lease.live().filter((l) => l.key !== skip && !runs.has(l.key));
+  for (const l of adopted) {
+    runs.set(l.key, { status: "running", provider: l.provider, runId: l.runId, sessionId: l.sessionId, startedAt: l.startedAt });
+    const poll = setInterval(() => {
+      if (lease.leased(l.key) && lease.current(l.key)?.runId === l.runId) return; // still going
+      clearInterval(poll);
+      void finishAdopted(l, recover).catch((e) => console.error("orca: adopted run could not be finished", e));
+    }, adoptPoll.ms);
+    poll.unref();
+  }
+  return adopted.length;
+}
+
+async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {
+  if (runs.get(l.key)?.runId !== l.runId) return; // a new run took the key meanwhile
+  const owner = await db.turnOwner(l.runId).catch(() => undefined);
+  const found = await recover(l.runId, l.sessionId, l.worktreePath).catch(() => undefined);
+  const finishedAt = Date.now();
+  const ok = Boolean(found?.response);
+  const result = found?.response ?? "The bridge restarted during this run, and its result could not be recovered from the provider's session.";
+  const status: db.TurnStatus = ok ? "done" : "error";
+  if (owner) {
+    const pending = db.finishTurn(l.runId, { status, response: result, structured: found?.structured, stopReason: ok ? "end_turn" : "error", sessionId: l.sessionId, finishedAt })
+      .catch((e) => console.error("orca: chat history write failed", e));
+    historyWrites.add(pending);
+    void pending.finally(() => historyWrites.delete(pending));
+    await pending;
+  }
+  lease.release(l.key, l.runId);
+  runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
+  if (!owner) return;
+  const options: LaunchOptions = { repo: owner.repo, branch: owner.branch, provider: l.provider };
+  const continued = await dispatchQueued(owner.repo, owner.branch, options);
+  try {
+    await runFinished?.({
+      key: l.key, cwd: l.worktreePath, runId: l.runId, options, status, sessionId: l.sessionId, result, structured: found?.structured, continued,
+      exit: { code: ok ? 0 : 1, timedOut: false, budgetReached: false, stderr: "" },
+    });
+  } catch (e) {
+    console.error("orca: run-finished hook failed", e);
+  }
+}
+
 /** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
  *  any, so a caller can report what it interrupted. */
 export function stop(key: string): string | undefined {

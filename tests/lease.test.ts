@@ -68,3 +68,31 @@ test("a live run on a session blocks a second resume of it, across the lease fil
   release("/wt/a");
   expect(sessionBusy("s-shared")).toBe(false);
 });
+
+test("a run that outlived a bridge restart is adopted: finished from the session when its process exits, and the hook fires", async () => {
+  const { adoptLeases, onRunFinished, status, isRunning, adoptPoll } = await import("../server/agent");
+  adoptPoll.ms = 50;
+  const prevDb = process.env.ORCA_DATABASE_URL;
+  process.env.ORCA_DATABASE_URL = "postgres://127.0.0.1:1/none"; // no database here: the owner lookup fails fast and the hook has nothing to address
+  const { acquire, current } = await import("../server/lease");
+  // "The previous bridge": a lease for a process still running (a short sleep), with no in-memory run.
+  const proc = Bun.spawn(["sleep", "0.4"], { stdout: "ignore", stderr: "ignore" });
+  acquire({ key: "/wt/adopted", worktreePath: "/wt/adopted", branch: "feat", provider: "claude", runId: "run-adopted", sessionId: "s-a", pid: proc.pid, startedAt: Date.now() });
+  const finished: unknown[] = [];
+  onRunFinished(async (run) => { finished.push(run); });
+  const recovered: string[] = [];
+  expect(adoptLeases(async (runId) => { recovered.push(runId); return { response: "## Outcome\nRecovered from the session." }; })).toBe(1);
+  expect(isRunning("/wt/adopted")).toBe(true); // the card shows it running meanwhile
+  expect(adoptLeases(async () => undefined)).toBe(0); // idempotent
+
+  await proc.exited;
+  for (let i = 0; i < 200 && status("/wt/adopted").status === "running"; i++) await new Promise((r) => setTimeout(r, 50));
+  expect(status("/wt/adopted")).toMatchObject({ status: "done", result: "## Outcome\nRecovered from the session." });
+  expect(recovered).toEqual(["run-adopted"]);
+  expect(current("/wt/adopted")).toBeUndefined(); // the lease is released
+  // No turn row exists for it in this test (no database), so the hook is not fired — the owner is unknown.
+  expect(finished).toEqual([]);
+  onRunFinished(undefined);
+  if (prevDb === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDb;
+  await (await import("../server/db")).close();
+});

@@ -417,17 +417,17 @@ test("O13: a wake that hits its budget cap says so, and its message is retried b
 {"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":13.02}
 JSON
 exit 1`));
-  await orchestrator.message(cfg(), "ship the cache");
+  await orchestrator.message({ ...cfg(), orchestratorWakeBudgetUsd: 25 }, "ship the cache"); // a cap only when configured
   const [dead, retry] = await settled(orchTurns, 2);
   expect(dead).toMatchObject({ failed: true, stopReason: "budget_reached" });
-  expect(dead!.response).toBe(`Wake stopped: hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap after 1 tool call ($13.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.`);
+  expect(dead!.response).toBe(`Wake stopped: hit the 25 USD budget cap after 1 tool call ($13.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.`);
   // The retry is the same message on the same session, told what happened to the wake before it.
   expect(retry!.instruction).toBe("ship the cache");
   expect(retry).toMatchObject({ failed: undefined, response: "## Outcome\nDone." });
-  expect(retry!.prompt).toContain(`## Previous wake was cut off\nYour previous wake hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap before it finished its turn`);
+  expect(retry!.prompt).toContain(`## Previous wake was cut off\nYour previous wake hit the 25 USD budget cap before it finished its turn`);
   expect(retry!.prompt).toContain("check the board before you spawn or send");
   const [first, second] = await launches();
-  expect(first).toContain(`--max-budget-usd ${orchestrator.WAKE_BUDGET_USD} `);
+  expect(first).toContain(`--max-budget-usd 25 `);
   expect(second).toContain(`--resume ${dead!.sessionId}`);
   // It ended normally, so nothing is left to retry or to tell the next wake.
   const b = await orchBlob();
@@ -438,12 +438,15 @@ exit 1`));
 
   // Spend per wake: in the ledger (with the reason no longer collapsed), and on the popout with a hint.
   expect(ledger.all().find((e) => e.action === "orchestrate" && e.status === "error")).toMatchObject({ errorKind: "budget", costUsd: 13.02 });
-  expect(await orchestrator.status(cfg())).toMatchObject({ lastWakeUsd: 13.02, hint: expect.stringContaining("a fresh session would be much cheaper") });
+  expect(await orchestrator.status({ ...cfg(), orchestratorWakeBudgetUsd: 25 })).toMatchObject({ lastWakeUsd: 13.02, hint: expect.stringContaining("a fresh session would be much cheaper") });
 
-  // The cap is config, WAKE_BUDGET_USD unless set.
+  // The cap is config; no cap at all unless set.
   await orchestrator.message({ ...cfg(), orchestratorWakeBudgetUsd: 9 }, "again");
   await settled(orchTurns, 4);
   expect((await launches()).at(-1)).toContain("--max-budget-usd 9 ");
+  await orchestrator.message(cfg(), "and unbounded");
+  await settled(orchTurns, 5);
+  expect((await launches()).at(-1)).not.toContain("--max-budget-usd");
   const doc = (orchestratorWakeBudgetUsd: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" }], orchestratorWakeBudgetUsd });
   expect(parseConfigDocument(doc(0)).errors).toContain("orchestratorWakeBudgetUsd must be a positive number of dollars");
   expect(parseConfigDocument(doc(8)).config?.orchestratorWakeBudgetUsd).toBe(8);
@@ -527,6 +530,7 @@ test("O17: the exit line and the large-session hint are pure", () => {
   expect(wakeStoppedLine({ reason: "hit the 5 USD budget cap", toolCalls: 2, retried: 0, dropped: 0 })).toBe("Wake stopped: hit the 5 USD budget cap after 2 tool calls.");
   // Hint once a wake costs half its cap, or the context is half full; never below both.
   expect(sessionHint({ budgetUsd: 5 })).toBeUndefined();
+  expect(sessionHint({ lastWakeUsd: 40 })).toBeUndefined(); // no cap configured → spend alone is not a hint
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.4, contextPct: 49 })).toBeUndefined();
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.5 })).toContain("fresh session");
   expect(sessionHint({ budgetUsd: 10, lastWakeUsd: 2.5, contextPct: 50 })).toContain("fresh session");

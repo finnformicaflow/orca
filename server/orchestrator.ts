@@ -36,8 +36,10 @@ import { providerOfModel } from "../shared/models";
 export const MAX_WAKES = 12;
 /** `--max-budget-usd` for one wake unless `orchestratorWakeBudgetUsd` says otherwise. Deciding what
  *  to delegate is cheap; a wake that isn't has gone wrong — or its session has grown (see sessionHint). */
-export const WAKE_BUDGET_USD = 25; // was 5: a long resumed session pays its cached context every turn and was cut off mid-reply several times a day
-const budgetOf = (cfg: OrcaConfig): number => cfg.orchestratorWakeBudgetUsd ?? WAKE_BUDGET_USD;
+/** `--max-budget-usd` for a wake — ONLY when `orchestratorWakeBudgetUsd` is set. There was a default
+ *  (5, then 25): a long resumed session pays its cached context every turn and was cut off mid-reply
+ *  several times a day. The user's call: it should work without worrying about dying. */
+const budgetOf = (cfg: OrcaConfig): number | undefined => cfg.orchestratorWakeBudgetUsd;
 /** How often startup recovery looks again at a wake that outlived the previous bridge. */
 const RECOVER_POLL_MS = 5_000;
 const NOTES_MAX = 20_000;
@@ -164,7 +166,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
  *  are exact; `no-reply` is a heuristic over the CLI's placeholder text. */
 function wakeExit(cfg: OrcaConfig, run: agent.RunFinished): WakeExit | undefined {
   if (run.status === "stopped") return undefined;
-  if (run.exit.budgetReached) return { kind: "budget", budgetUsd: run.options.maxBudgetUsd ?? budgetOf(cfg) };
+  if (run.exit.budgetReached) return { kind: "budget", budgetUsd: run.options.maxBudgetUsd ?? budgetOf(cfg) ?? 0 };
   if (run.exit.timedOut) return { kind: "timeout", minutes: (run.options.timeoutMs ?? 0) / 60_000 };
   if (run.status === "error") return { kind: "error", code: run.exit.code, stderr: run.exit.stderr || (run.result ?? "").slice(-300) };
   if (run.result?.trim() === NO_REPLY_PLACEHOLDER) return { kind: "no-reply" };
