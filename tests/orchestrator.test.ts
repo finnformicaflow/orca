@@ -414,20 +414,20 @@ test("O13: a wake that hits its budget cap says so, and its message is retried b
   // One tool call, then the CLI's own budget result — the subtype is how the cap is told apart.
   await fakeClaude(firstLaunch(`cat <<'JSON'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"orca board"}}]}}
-{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":5.02}
+{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":13.02}
 JSON
 exit 1`));
   await orchestrator.message(cfg(), "ship the cache");
   const [dead, retry] = await settled(orchTurns, 2);
   expect(dead).toMatchObject({ failed: true, stopReason: "budget_reached" });
-  expect(dead!.response).toBe(`Wake stopped: hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap after 1 tool call ($5.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.`);
+  expect(dead!.response).toBe(`Wake stopped: hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap after 1 tool call ($13.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.`);
   // The retry is the same message on the same session, told what happened to the wake before it.
   expect(retry!.instruction).toBe("ship the cache");
   expect(retry).toMatchObject({ failed: undefined, response: "## Outcome\nDone." });
   expect(retry!.prompt).toContain(`## Previous wake was cut off\nYour previous wake hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap before it finished its turn`);
   expect(retry!.prompt).toContain("check the board before you spawn or send");
   const [first, second] = await launches();
-  expect(first).toContain("--max-budget-usd 5 ");
+  expect(first).toContain(`--max-budget-usd ${orchestrator.WAKE_BUDGET_USD} `);
   expect(second).toContain(`--resume ${dead!.sessionId}`);
   // It ended normally, so nothing is left to retry or to tell the next wake.
   const b = await orchBlob();
@@ -437,10 +437,10 @@ exit 1`));
   expect((await settled(orchTurns, 3))[2]!.prompt).not.toContain("Previous wake was cut off");
 
   // Spend per wake: in the ledger (with the reason no longer collapsed), and on the popout with a hint.
-  expect(ledger.all().find((e) => e.action === "orchestrate" && e.status === "error")).toMatchObject({ errorKind: "budget", costUsd: 5.02 });
-  expect(await orchestrator.status(cfg())).toMatchObject({ lastWakeUsd: 5.02, hint: expect.stringContaining("a fresh session would be much cheaper") });
+  expect(ledger.all().find((e) => e.action === "orchestrate" && e.status === "error")).toMatchObject({ errorKind: "budget", costUsd: 13.02 });
+  expect(await orchestrator.status(cfg())).toMatchObject({ lastWakeUsd: 13.02, hint: expect.stringContaining("a fresh session would be much cheaper") });
 
-  // The cap is config, 5 USD unless set.
+  // The cap is config, WAKE_BUDGET_USD unless set.
   await orchestrator.message({ ...cfg(), orchestratorWakeBudgetUsd: 9 }, "again");
   await settled(orchTurns, 4);
   expect((await launches()).at(-1)).toContain("--max-budget-usd 9 ");
