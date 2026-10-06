@@ -257,8 +257,10 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   its own I/O glue (optimistic cards, Undo, Follow); only the decisions are shared.
 - **It chooses the worker's model.** Its role text carries `MODEL_LADDER` (`workstream.ts`): Haiku
   for mechanical edits, Sonnet as the default, Opus for substantial work, Fable ONLY for what has
-  already defeated a cheaper model or is genuinely novel — Fable is the scarce resource. `spawn
-  --model` sets it; `send --model` moves a workstream up (or down) the ladder, by re-pinning the
+  already defeated a cheaper model or is genuinely novel — Fable is the scarce resource. The ladder
+  rides EVERY wake (`## Models`), not just the role text, because a resumed session sees the role
+  once; and `spawn` REQUIRES `--model` — when it was optional, every worker silently got the config
+  default, which was Fable. `spawn --model` sets it; `send --model` moves a workstream up (or down) the ladder, by re-pinning the
   card's `preferredModel` before the follow-up. The orchestrator itself runs on **Sonnet** unless its
   picker says otherwise (`ORCHESTRATOR_DEFAULT_MODEL`): triage and brief-writing don't need the
   workers' model.

@@ -98,7 +98,7 @@ while [ -f "$ORCA_FAKE_HOLD" ]; do sleep 0.02; done
 ${OK}`;
 const orchBlob = async () => (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {};
 const orchQueue = () => db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
-const brief = { repo: "r", title: "Add cache", objective: "Add a response cache", output: "One commit", boundaries: "Only touch src/cache" };
+const brief = { repo: "r", title: "Add cache", model: "claude-sonnet-5", objective: "Add a response cache", output: "One commit", boundaries: "Only touch src/cache" };
 
 test("O1: spawn creates a briefed workstream, and the worker finishing wakes the orchestrator", async () => {
   wire();
@@ -124,6 +124,7 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(argv).toContain("--permission-mode default");
   expect(wake!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
   // It is told how to choose a worker's model, and what a New-draft message is.
+  expect(wake!.prompt).toContain("## Models\n`spawn` requires --model.");
   expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated a cheaper model");
   expect(wake!.prompt).toContain("A message opening with `[new draft]` is the user's New-draft box");
 });
@@ -171,6 +172,9 @@ test("O10: orchestratorShell trades the orca-only rule for a full shell, and is 
 test("O2: a brief missing a part and an unknown repo are refused; there is no cap on concurrent workers", async () => {
   await expect(orchestrator.tool(cfg(), "spawn", { repo: "r", objective: "Do it" })).rejects.toThrow("--output is required; --boundaries is required");
   await expect(orchestrator.tool(cfg(), "spawn", { ...brief, repo: "nope" })).rejects.toThrow("--repo must be one of: r");
+  // No model → no spawn: the config default is the biggest model, and that is how every worker ended up on it.
+  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, model: undefined })).rejects.toThrow("--model is required (choose from the ladder): claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5-1");
+  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, model: "gpt-9" })).rejects.toThrow('--model is required ("gpt-9" is not a model)');
   await expect(orchestrator.tool(cfg(), "bogus")).rejects.toThrow('unknown command "bogus"');
   expect(await db.enrichment("r")).toEqual({});
 
@@ -196,6 +200,7 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect((await launches())[1]).toContain(`--resume ${turns[0]!.sessionId}`);
   expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator");
   expect(turns[1]!.prompt).toContain("## Board\n(no workstreams)");
+  expect(turns[1]!.prompt).toContain("## Models\n`spawn` requires --model."); // the model rule rides every wake, resumed or not
 });
 
 test("O4: the wake cap pauses self-waking; your next message resumes it with what was held", async () => {

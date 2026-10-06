@@ -957,12 +957,6 @@ const ORCHESTRATOR_ROLE = [
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
   "",
-  "Choosing a worker's model — match the model to the task, never the biggest by default:",
-  ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
-  "Step a workstream UP the ladder (send --model) when a run fails or stalls; say which model you chose and why.",
-  `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo`,
-  "it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.",
-  "",
   "How to work:",
   "- A question you can answer from the board, your notes or past chats: answer it. Delegate real work only.",
   "- One workstream per independent piece of work. Do not split tightly coupled work, and do not spawn",
@@ -994,6 +988,14 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     input.shell
       ? "Full shell on this machine. Use it for machine-level work that belongs to no workstream (a missing toolchain version, a preview that won't start, inspecting state). Changes to a repo's code still go to a worker. Ask before anything destructive or hard to undo."
       : "Only the `orca` command and reading files. Any other command is denied: when a fix needs one, give the user the exact command to run.",
+    // Every wake too — not just the role text — because a resumed session only ever sees the role
+    // once, and the model rule is the one most worth repeating: without it every worker got the
+    // config default, which was the biggest model.
+    "", "## Models",
+    "`spawn` requires --model. Match the model to the task, never the biggest by default:",
+    ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
+    "Step a workstream UP the ladder (send --model) when a run fails or stalls; say which model you chose and why.",
+    `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.

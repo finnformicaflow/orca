@@ -23,7 +23,7 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
-  NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
+  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
   orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
@@ -313,6 +313,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const brief = { objective: args.objective, output: args.output, boundaries: args.boundaries, context: args.context } as Record<string, string | undefined>;
       const problems = briefProblems(brief);
       if (problems.length) throw new Error(`${problems.join("; ")}. A worker knows only its brief.`);
+      // Required, not defaulted: left out, every worker got the config default — the biggest model.
+      if (typeof args.model !== "string" || !providerOfModel(args.model)) {
+        throw new Error(`--model is required (${args.model ? `"${args.model}" is not a model` : "choose from the ladder"}): ${MODEL_LADDER.map((m) => m.id).join(", ")}`);
+      }
       const ws = await verbs.createWorkstream(cfg, repo, {
         prompt: workerBrief(brief), title: typeof args.title === "string" ? args.title : undefined,
         model: typeof args.model === "string" ? args.model : undefined, fields: { orchestrated: true },
