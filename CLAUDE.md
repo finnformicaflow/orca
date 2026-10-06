@@ -304,8 +304,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   the condensed outcome, Orca's check verdict, and the run id as a reference — never the transcript.
   A **problem** (the run failed, was stopped, or its commit failed the check) wakes the orchestrator
   at once. A **clean finish** is queued and delivered when the last of its running workers finishes
-  or when the user next speaks, whichever is first — one wake carrying every report since. Between
-  wakes it checks in itself with `orca board` / `orca read`. (It used to be woken per completion;
+  or when the user next speaks, whichever is first — one wake carrying every report since. The same
+  rule applies when its OWN run ends (`drain`): clean reports that queued while it worked wait too,
+  or its exit re-delivered them one wake at a time. "Problem" is read off the report text
+  (`isWorkerProblem`), so a queued report can be judged later; a held report shows in the chat as a
+  muted `⚙ … held for the batch` line. Between wakes it checks in itself with `orca board` /
+  `orca read`. (It used to be woken per completion;
   the user found that noisy and wanted it to operate like a manager.) In the chat, a wake whose
   message was only worker reports renders as muted `⚙` system lines with the report folded, not as
   a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.

@@ -506,3 +506,15 @@ test("the orchestrator's worker reports render as muted system lines, not as som
   expect([...container!.querySelectorAll("span")].some((s) => s.textContent === "❯")).toBe(true);
   expect(text()).toContain("❯what now?");
 });
+
+test("a worker report waiting in the queue is a muted system line too, not a queued prompt", async () => {
+  apiFake.queuedData.set("feat", [
+    { id: 1, repo: "r", branch: "feat", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.', attachments: [], createdAt: 1 },
+    { id: 2, repo: "r", branch: "feat", instruction: "and then deploy it", attachments: [], createdAt: 2 },
+  ]);
+  await mount(base);
+  const held = container!.querySelector('[data-slot="worker-report-held"]')!;
+  expect(held.textContent).toBe('⚙ r/a "A" — doneheld for the batch');
+  expect(text()).toContain("❯and then deploy it"); // a message of yours still shows as queued
+  expect(text()).toContain("queued — sends when the current run finishes");
+});
