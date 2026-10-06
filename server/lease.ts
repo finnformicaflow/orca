@@ -29,9 +29,15 @@ const DEFAULT_TTL_MS = 6 * 60 * 60_000;
 const leaseFile = (key: string) =>
   statePath("leases", `${createHash("sha1").update(key).digest("hex")}.json`);
 
-/** Is a pid still a running process? `kill(pid, 0)` sends no signal — it just probes existence. */
+/** Is a pid still a running process? `kill(pid, 0)` sends no signal — it just probes existence, and
+ *  a ZOMBIE passes it: a process that exited but was never reaped. That is exactly what a run that
+ *  outlived a `bun --watch` restart becomes — the watcher re-execs in place (same pid, new image),
+ *  so nothing waits on the old image's children and each one's exit leaves a zombie. Counting that
+ *  as live kept a finished run's lease "running" until expiry, its turn open and its worker's finish
+ *  unannounced. So a pid that answers is asked once more, of `ps`, whether it is a zombie. */
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); } catch { return false; }
+  return !new TextDecoder().decode(Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout).trim().startsWith("Z");
 }
 
 function isLive(lease: Lease | undefined): lease is Lease {
