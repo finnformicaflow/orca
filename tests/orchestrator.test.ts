@@ -168,16 +168,15 @@ test("O10: orchestratorShell trades the orca-only rule for a full shell, and is 
   expect(parseConfigDocument(doc(undefined)).config?.orchestratorShell).toBeUndefined();
 });
 
-test("O2: a brief missing a part, an unknown repo, and a fifth concurrent worker are all refused", async () => {
+test("O2: a brief missing a part and an unknown repo are refused; there is no cap on concurrent workers", async () => {
   await expect(orchestrator.tool(cfg(), "spawn", { repo: "r", objective: "Do it" })).rejects.toThrow("--output is required; --boundaries is required");
   await expect(orchestrator.tool(cfg(), "spawn", { ...brief, repo: "nope" })).rejects.toThrow("--repo must be one of: r");
   await expect(orchestrator.tool(cfg(), "bogus")).rejects.toThrow('unknown command "bogus"');
   expect(await db.enrichment("r")).toEqual({});
 
   await writeFile(hold, ""); // workers stay running
-  for (let i = 0; i < orchestrator.MAX_WORKERS; i++) await orchestrator.tool(cfg(), "spawn", brief);
-  await expect(orchestrator.tool(cfg(), "spawn", brief)).rejects.toThrow(`${orchestrator.MAX_WORKERS} of your workers are already running`);
-  expect(Object.keys(await db.enrichment("r"))).toHaveLength(orchestrator.MAX_WORKERS);
+  for (let i = 0; i < 5; i++) await orchestrator.tool(cfg(), "spawn", brief);
+  expect(Object.keys(await db.enrichment("r"))).toHaveLength(5); // (a cap of 4 once refused the fifth)
 });
 
 test("O3: messages that arrive mid-run are queued and drained as ONE resumed wake", async () => {

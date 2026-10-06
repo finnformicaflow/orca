@@ -34,8 +34,6 @@ import { providerOfModel } from "../shared/models";
 /** Wakes in a row with no message from you before it stops waking itself. The loop guard: an
  *  orchestrator and a worker can otherwise hand each other work indefinitely while you're away. */
 export const MAX_WAKES = 12;
-/** Workers it may have running at once; `spawn` refuses past this. */
-export const MAX_WORKERS = 4;
 /** `--max-budget-usd` for one wake unless `orchestratorWakeBudgetUsd` says otherwise. Deciding what
  *  to delegate is cheap; a wake that isn't has gone wrong — or its session has grown (see sessionHint). */
 export const WAKE_BUDGET_USD = 5;
@@ -315,8 +313,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const brief = { objective: args.objective, output: args.output, boundaries: args.boundaries, context: args.context } as Record<string, string | undefined>;
       const problems = briefProblems(brief);
       if (problems.length) throw new Error(`${problems.join("; ")}. A worker knows only its brief.`);
-      const running = (await board(cfg)).filter((r) => r.orchestrated && r.agent === "running").length;
-      if (running >= MAX_WORKERS) throw new Error(`${running} of your workers are already running (the limit is ${MAX_WORKERS}). End your turn; you are woken as each finishes.`);
       const ws = await verbs.createWorkstream(cfg, repo, {
         prompt: workerBrief(brief), title: typeof args.title === "string" ? args.title : undefined,
         model: typeof args.model === "string" ? args.model : undefined, fields: { orchestrated: true },

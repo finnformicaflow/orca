@@ -280,9 +280,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
   serialised so two workers finishing together can't race a launch.
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
-  holds further events in the queue until you reply (the window's title says so). `MAX_WORKERS` (4)
-  running at once → `spawn` refuses. Each wake has a `--max-budget-usd`: `orchestratorWakeBudgetUsd`
-  in the app config, 5 unless set. The other two are constants until one needs tuning.
+  holds further events in the queue until you reply (the window's title says so). Each wake has a
+  `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
+  deliberately NO cap on concurrent workers (there was one, of 4; the user removed it).
 - **A wake that dies says why, and its message is retried once.** `wakeExit` reads the exit the
   agent's handler reports (`RunFinished.exit`): the CLI's budget result subtype, Orca's own timeout
   timer, any other nonzero exit (with the stderr tail), or the CLI's "No response requested."
