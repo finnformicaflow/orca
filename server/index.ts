@@ -72,10 +72,11 @@ await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-k
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
 // writing one off, try to recover what it actually did from the provider's own session file — the
 // agent usually kept working after the bridge died, and its answer is on disk.
-const { closed, recovered } = await db.reconcileRunning(lease.liveRunIds(), async ({ runId, sessionId }) => {
+const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, sessionId }) => {
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
+const { closed, recovered } = await reconcile();
 if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
@@ -97,6 +98,8 @@ agent.onQueuedMessage(async (message) => {
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
 // ending drains what queued up meanwhile. Config is read per event, like every request.
 agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig(), run));
+// A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
+void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
 
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;

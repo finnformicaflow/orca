@@ -12,13 +12,16 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
+import * as ledger from "../server/ledger";
+import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, workerEvent,
+  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, sessionHint, wakeExitReason,
+  wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
@@ -80,6 +83,19 @@ async function settled(read: () => Promise<AgentTurn[]>, n: number): Promise<Age
   }
   throw new Error(`never settled at ${n} turn(s)`);
 }
+/** Replace the fake claude: `body` runs after the argv is logged. `$ORCA_FAKE_HOLD.once` is free for
+ *  a body that must behave differently on its first launch. */
+const fakeClaude = (body: string) => writeFile(join(shim, "claude"), `#!/bin/sh
+printf '%s' "$*" > "$ORCA_FAKE_LOG/$(date +%s%N)-$$"
+${body}
+`);
+const OK = `printf '{"type":"result","subtype":"success","result":"## Outcome\\\\nDone.","is_error":false}'`;
+const firstLaunch = (body: string) => `if [ ! -f "$ORCA_FAKE_HOLD.once" ]; then touch "$ORCA_FAKE_HOLD.once"
+${body}
+fi
+${OK}`;
+const orchBlob = async () => (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {};
+const orchQueue = () => db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
 const brief = { repo: "r", title: "Add cache", objective: "Add a response cache", output: "One commit", boundaries: "Only touch src/cache" };
 
 test("O1: spawn creates a briefed workstream, and the worker finishing wakes the orchestrator", async () => {
@@ -184,7 +200,7 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
 test("O4: the wake cap pauses self-waking; your next message resumes it with what was held", async () => {
   const finished = (branch: string, extra: Partial<agent.RunFinished> = {}): agent.RunFinished => ({
     key: "k", cwd: "k", runId: `run-${branch}`, status: "error", result: "boom", continued: false,
-    options: { repo: "r", branch }, ...extra,
+    options: { repo: "r", branch }, exit: { code: 1, timedOut: false, budgetReached: false, stderr: "" }, ...extra,
   });
   await db.patchEnrichment("r", "mine", { orchestrated: true, title: "Mine" });
   await db.patchEnrichment("r", "theirs", { title: "Made by hand" });
@@ -383,4 +399,128 @@ test("O8: the ladder decision and the orchestrator's views are pure", () => {
     pr: { number: 7, isDraft: true, reviewStatus: "changes_requested", ciStatus: "failing", mergeable: "CONFLICTING" },
     last: "Added the\ncache.",
   }])).toBe('r/b "Cache" | PR #7 draft review:changes_requested ci:failing CONFLICTS | agent:done | check:FAILED | yours | /wt/b | last: Added the cache.');
+});
+
+test("O13: a wake that hits its budget cap says so, and its message is retried by a wake told why", async () => {
+  wire();
+  ledger.clear(); // the module loaded whatever the state dir held at import
+  // One tool call, then the CLI's own budget result — the subtype is how the cap is told apart.
+  await fakeClaude(firstLaunch(`cat <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"orca board"}}]}}
+{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":5.02}
+JSON
+exit 1`));
+  await orchestrator.message(cfg(), "ship the cache");
+  const [dead, retry] = await settled(orchTurns, 2);
+  expect(dead).toMatchObject({ failed: true, stopReason: "budget_reached" });
+  expect(dead!.response).toBe("Wake stopped: hit the 5 USD budget cap after 1 tool call ($5.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.");
+  // The retry is the same message on the same session, told what happened to the wake before it.
+  expect(retry!.instruction).toBe("ship the cache");
+  expect(retry).toMatchObject({ failed: undefined, response: "## Outcome\nDone." });
+  expect(retry!.prompt).toContain("## Previous wake was cut off\nYour previous wake hit the 5 USD budget cap before it finished its turn");
+  expect(retry!.prompt).toContain("check the board before you spawn or send");
+  const [first, second] = await launches();
+  expect(first).toContain("--max-budget-usd 5 ");
+  expect(second).toContain(`--resume ${dead!.sessionId}`);
+  // It ended normally, so nothing is left to retry or to tell the next wake.
+  const b = await orchBlob();
+  expect([b.handling, b.died, b.cutOff]).toEqual([undefined, undefined, undefined]);
+  expect(await orchQueue()).toEqual([]);
+  await orchestrator.message(cfg(), "thanks");
+  expect((await settled(orchTurns, 3))[2]!.prompt).not.toContain("Previous wake was cut off");
+
+  // Spend per wake: in the ledger (with the reason no longer collapsed), and on the popout with a hint.
+  expect(ledger.all().find((e) => e.action === "orchestrate" && e.status === "error")).toMatchObject({ errorKind: "budget", costUsd: 5.02 });
+  expect(await orchestrator.status(cfg())).toMatchObject({ lastWakeUsd: 5.02, hint: expect.stringContaining("a fresh session would be much cheaper") });
+
+  // The cap is config, 5 USD unless set.
+  await orchestrator.message({ ...cfg(), orchestratorWakeBudgetUsd: 9 }, "again");
+  await settled(orchTurns, 4);
+  expect((await launches()).at(-1)).toContain("--max-budget-usd 9 ");
+  const doc = (orchestratorWakeBudgetUsd: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" }], orchestratorWakeBudgetUsd });
+  expect(parseConfigDocument(doc(0)).errors).toContain("orchestratorWakeBudgetUsd must be a positive number of dollars");
+  expect(parseConfigDocument(doc(8)).config?.orchestratorWakeBudgetUsd).toBe(8);
+});
+
+test("O14: a message whose wake dies twice is not queued a third time", async () => {
+  wire();
+  await fakeClaude(`echo "boom: not logged in" >&2; exit 3`);
+  await orchestrator.message(cfg(), "do the thing");
+  const [first, second] = await settled(orchTurns, 2);
+  expect(first!.response).toBe("Wake stopped: exited with code 3: boom: not logged in after 0 tool calls.\nRe-queued what it was handling; the next wake is told why and finishes the reply.");
+  expect(second!.instruction).toBe("do the thing");
+  expect(second!.response).toBe("Wake stopped: exited with code 3: boom: not logged in after 0 tool calls.\nNot retried again: the wake handling this has now died twice. Send it again to retry.");
+  await new Promise((r) => setTimeout(r, 200));
+  expect(await orchTurns()).toHaveLength(2);
+  expect(await orchQueue()).toEqual([]);
+  // Sending it again is a new message: it gets its own two attempts.
+  await orchestrator.message(cfg(), "do the thing");
+  expect((await settled(orchTurns, 4))[3]!.response).toContain("Not retried again");
+});
+
+test("O15: a timed-out wake and one that ends on the CLI's placeholder are retried; one you stop is not", async () => {
+  wire();
+  ledger.clear(); // the module loaded whatever the state dir held at import
+  const slow = { ...cfg(), agentTimeoutMinutes: 0.02 };
+  await writeFile(hold, "");
+  await orchestrator.message(slow, "think hard");
+  for (let i = 0; i < 400 && !(await orchTurns())[0]?.finishedAt; i++) await new Promise((r) => setTimeout(r, 25));
+  await rm(hold, { force: true }); // the retry answers
+  const [dead, retry] = await settled(orchTurns, 2);
+  expect(dead!.response).toStartWith("Wake stopped: timed out at 0.02 minutes after 0 tool calls.\nRe-queued");
+  expect(retry!.prompt).toContain("Your previous wake timed out at 0.02 minutes");
+  expect(ledger.all().find((e) => e.action === "orchestrate" && e.status === "error")!.errorKind).toBe("timeout");
+
+  // Exit 0 with the CLI's "No response requested." is still no reply to the user.
+  await fakeClaude(firstLaunch(`printf '{"type":"result","subtype":"success","result":"No response requested.","is_error":false}'; exit 0`));
+  await orchestrator.message(cfg(), "and the docs?");
+  const turns = await settled(orchTurns, 4);
+  expect(turns[2]).toMatchObject({ failed: true, response: expect.stringContaining("Wake stopped: ended without a reply after 0 tool calls.") });
+  expect(turns[3]).toMatchObject({ instruction: "and the docs?", response: "## Outcome\nDone." });
+
+  // Stop is your decision, not a death: nothing is re-queued.
+  await writeFile(hold, "");
+  await orchestrator.message(cfg(), "never mind");
+  agent.stop(orchestrator.dir());
+  await rm(hold, { force: true });
+  const stopped = (await settled(orchTurns, 5))[4]!;
+  expect(stopped.stopped).toBe(true);
+  expect(await orchQueue()).toEqual([]);
+});
+
+test("O16: a wake in flight when the bridge restarted is re-queued at startup — unless it finished on its own", async () => {
+  wire();
+  const inFlight = async (runId: string, instance = db.instanceName()) => {
+    await db.startTurn({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, runId, provider: "claude", instruction: "finish the plan", prompt: "p", startedAt: Date.now() });
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { handling: { runId, instance, messages: ["finish the plan"] } });
+  };
+  // Another instance's wake is not ours to judge.
+  await inFlight("run-a", "elsewhere");
+  await orchestrator.recover(cfg(), () => db.reconcileRunning(new Set()));
+  expect((await orchTurns())[0]!.finishedAt).toBeUndefined();
+
+  // It outlived the bridge and finished (reconcile recovered its answer): nothing to retry.
+  await inFlight("run-a");
+  await transcript.append("run-a", [{ at: 1, kind: "tool", id: "t", name: "Bash" }, { at: 2, kind: "text", text: "All done." }]);
+  await orchestrator.recover(cfg(), () => db.finishTurn("run-a", { status: "done", response: "All done.", finishedAt: Date.now() }));
+  expect((await orchBlob()).handling).toBeUndefined();
+  expect(await orchTurns()).toHaveLength(1);
+
+  // It died with the bridge: the turn says so, and the message is handled by a new wake.
+  await inFlight("run-b");
+  await orchestrator.recover(cfg(), () => db.reconcileRunning(new Set()));
+  const turns = await settled(orchTurns, 3);
+  expect(turns[1]!.response).toStartWith("Wake stopped: was cut off by an Orca restart after 0 tool calls.\nRe-queued");
+  expect(turns[2]!.instruction).toBe("finish the plan");
+  expect(turns[2]!.prompt).toContain("Your previous wake was cut off by an Orca restart");
+});
+
+test("O17: the exit line and the large-session hint are pure", () => {
+  expect(wakeExitReason({ kind: "timeout", minutes: 45 })).toBe("timed out at 45 minutes");
+  expect(wakeStoppedLine({ reason: "hit the 5 USD budget cap", toolCalls: 2, retried: 0, dropped: 0 })).toBe("Wake stopped: hit the 5 USD budget cap after 2 tool calls.");
+  // Hint once a wake costs half its cap, or the context is half full; never below both.
+  expect(sessionHint({ budgetUsd: 5 })).toBeUndefined();
+  expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.4, contextPct: 49 })).toBeUndefined();
+  expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.5 })).toContain("fresh session");
+  expect(sessionHint({ budgetUsd: 10, lastWakeUsd: 2.5, contextPct: 50 })).toContain("fresh session");
 });

@@ -118,6 +118,10 @@ export type OrcaConfig = {
    *  that output a path to running commands outside any worktree. Turn it on for a machine you'd let
    *  a card's agent loose on; leave it off on a shared box. */
   orchestratorShell?: boolean;
+  /** `--max-budget-usd` for ONE orchestrator wake (default 5). A wake on a long resumed session
+   *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
+   *  says so in the chat and its message is retried. Workers are capped per repo (`agentMaxBudgetUsd`). */
+  orchestratorWakeBudgetUsd?: number;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -236,6 +240,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.orchestratorShell !== undefined && typeof d.orchestratorShell !== "boolean") {
     errors.push("orchestratorShell must be true or false");
   }
+  if (d.orchestratorWakeBudgetUsd !== undefined && (typeof d.orchestratorWakeBudgetUsd !== "number" || !(d.orchestratorWakeBudgetUsd > 0))) {
+    errors.push("orchestratorWakeBudgetUsd must be a positive number of dollars");
+  }
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -247,6 +254,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
       orchestratorShell: d.orchestratorShell as boolean | undefined,
+      orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
     },
   };
 }
@@ -301,6 +309,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: file.agentTimeoutMinutes }),
       ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
+      ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
     },
   });
 }
@@ -328,6 +337,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
     orchestratorShell: app.orchestratorShell === true,
+    orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
   };
   cached = config;
   return config;
@@ -352,6 +362,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
+      ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
     },
   });
   invalidateConfig();

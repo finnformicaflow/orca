@@ -23,8 +23,9 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
-  orchestratorPrompt, withAttachments, workerBrief, workerEvent, type BoardRow,
+  NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
+  orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -35,8 +36,12 @@ import { providerOfModel } from "../shared/models";
 export const MAX_WAKES = 12;
 /** Workers it may have running at once; `spawn` refuses past this. */
 export const MAX_WORKERS = 4;
-/** `--max-budget-usd` for one wake. Deciding what to delegate is cheap; a wake that isn't has gone wrong. */
-const WAKE_BUDGET_USD = 5;
+/** `--max-budget-usd` for one wake unless `orchestratorWakeBudgetUsd` says otherwise. Deciding what
+ *  to delegate is cheap; a wake that isn't has gone wrong — or its session has grown (see sessionHint). */
+export const WAKE_BUDGET_USD = 5;
+const budgetOf = (cfg: OrcaConfig): number => cfg.orchestratorWakeBudgetUsd ?? WAKE_BUDGET_USD;
+/** How often startup recovery looks again at a wake that outlived the previous bridge. */
+const RECOVER_POLL_MS = 5_000;
 const NOTES_MAX = 20_000;
 
 /** Its working directory, and the key its run is tracked under. Under the state dir — never a
@@ -47,7 +52,15 @@ export function dir(): string {
   return d;
 }
 
-type Blob = { notes?: string; wakes?: number; sessionId?: string; contextPct?: number; preferredModel?: string };
+type Blob = {
+  notes?: string; wakes?: number; sessionId?: string; contextPct?: number; preferredModel?: string;
+  lastWakeUsd?: number; // what its last wake cost, as the CLI reported it
+  /** The wake in flight and the messages it took off the queue — in the blob, not memory, so a wake
+   *  that dies with the bridge can still have them re-queued. */
+  handling?: { runId: string; instance: string; messages: string[] };
+  died?: string[]; // messages whose wake has died once and are being retried; a second death drops them
+  cutOff?: string; // why the last wake died, for the next wake's prompt
+};
 /** The model it runs on: its pin, else Sonnet. Its own work — triage, writing briefs, reading
  *  outcomes — does not need the model the workers get, and the point of routing work through it is
  *  to spend the big model only where it counts. Always a Claude model: its tool permissions are
@@ -69,13 +82,15 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string }> {
   const b = await blob();
   return {
     key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
     model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell === true,
+    lastWakeUsd: b.lastWakeUsd,
+    hint: sessionHint({ contextPct: b.contextPct, lastWakeUsd: b.lastWakeUsd, budgetUsd: budgetOf(cfg) }),
   };
 }
 
@@ -105,8 +120,18 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
-    await patch({ sessionId: run.sessionId, ...(run.meta?.contextPct === undefined ? {} : { contextPct: run.meta.contextPct }) });
-    await serial(() => drain(cfg));
+    await patch({
+      sessionId: run.sessionId,
+      ...(run.meta?.contextPct === undefined ? {} : { contextPct: run.meta.contextPct }),
+      ...(run.meta?.costUsd === undefined ? {} : { lastWakeUsd: run.meta.costUsd }),
+    });
+    const exit = wakeExit(cfg, run);
+    await serial(async () => {
+      if (exit) await died(run.runId, exit, run.meta?.costUsd);
+      // Only its own claim: a message of yours may have launched the next wake already.
+      else if ((await blob()).handling?.runId === run.runId) await patch({ handling: null, died: null });
+      await drain(cfg);
+    });
     return;
   }
   const e = (await db.enrichment(repo))[branch] ?? {};
@@ -124,6 +149,60 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     if (agent.isRunning(dir()) || wakes >= MAX_WAKES) return void (await enqueue(text));
     await patch({ wakes: wakes + 1 });
     await wake(cfg, [text]);
+  });
+}
+
+/** Why a wake died before finishing its turn, or undefined when it ended normally (or you stopped
+ *  it). The budget is the CLI's own result subtype and the timeout is our own timer firing, so both
+ *  are exact; `no-reply` is a heuristic over the CLI's placeholder text. */
+function wakeExit(cfg: OrcaConfig, run: agent.RunFinished): WakeExit | undefined {
+  if (run.status === "stopped") return undefined;
+  if (run.exit.budgetReached) return { kind: "budget", budgetUsd: run.options.maxBudgetUsd ?? budgetOf(cfg) };
+  if (run.exit.timedOut) return { kind: "timeout", minutes: (run.options.timeoutMs ?? 0) / 60_000 };
+  if (run.status === "error") return { kind: "error", code: run.exit.code, stderr: run.exit.stderr || (run.result ?? "").slice(-300) };
+  if (run.result?.trim() === NO_REPLY_PLACEHOLDER) return { kind: "no-reply" };
+  return undefined;
+}
+
+/** A wake died mid-turn: say why on its turn, and put what it was handling back on the queue — once.
+ *  A message whose wake has now died twice is not retried again; the turn's line says so instead. */
+async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<void> {
+  const b = await blob();
+  const messages = b.handling?.runId === runId ? b.handling.messages : [];
+  const before = new Set(b.died ?? []);
+  const retry = messages.filter((m) => !before.has(m));
+  for (const m of retry) await enqueue(m);
+  const reason = wakeExitReason(exit);
+  const toolCalls = (await agent.runSteps(runId).catch(() => [])).filter((s) => s.kind === "tool" && s.name !== "result").length;
+  await agent.flushHistory(); // the exit handler's own finish write lands first, or it would overwrite the line
+  await db.failTurn(runId, wakeStoppedLine({ reason, toolCalls, costUsd, retried: retry.length, dropped: messages.length - retry.length }));
+  await patch({ handling: null, died: retry, cutOff: retry.length ? reason : null });
+}
+
+/** Startup: a wake that was in flight when the previous bridge stopped has nobody to report its
+ *  exit. If it died with the bridge (a service manager kills the whole process group) its messages
+ *  are re-queued like any other death; if it outlived the bridge and finished, the queue it left is
+ *  drained. `reconcile` is index.ts's turn reconciliation, re-run once the wake is really gone. */
+export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>): Promise<void> {
+  const { handling } = await blob();
+  if (!handling || handling.instance !== db.instanceName()) return; // none, or another instance's wake
+  if (agent.isRunning(dir())) {
+    // Still going under its lease, and its `orca` calls reach this bridge — let it finish, look again.
+    setTimeout(() => void recover(cfg, reconcile).catch((e) => console.error("orca: orchestrator recovery failed", e)), RECOVER_POLL_MS).unref();
+    return;
+  }
+  await reconcile();
+  const turn = await db.turn(handling.runId);
+  // ponytail: "finished" = its recovered transcript ends on text, not a tool call. A wake killed
+  // right after narrating would pass as finished; read the session file's stop_reason if that bites.
+  const last = (await agent.runSteps(handling.runId).catch(() => [])).at(-1);
+  // (A wake you stopped never reaches the run-finished hook, so its claim is still here: not a death.)
+  const finished = Boolean(turn?.finishedAt) && !turn?.failed && (turn?.stopped || last?.kind === "text");
+  await serial(async () => {
+    if ((await blob()).handling?.runId !== handling.runId) return;
+    if (finished) await patch({ handling: null, died: null });
+    else await died(handling.runId, { kind: "restart" });
+    await drain(cfg);
   });
 }
 
@@ -150,11 +229,11 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       transcript: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH),
     });
     const shell = cfg.orchestratorShell === true;
-    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell });
+    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
-      model: modelOf(cfg, b), maxBudgetUsd: WAKE_BUDGET_USD,
+      model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // By default NOT bypassPermissions: it may run `orca` and read files, and that is all. The
       // `orchestratorShell` setting trades that for a full shell on this machine.
@@ -164,7 +243,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
         PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
       },
     });
-    await patch({ sessionId: receipt.sessionId });
+    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null });
   } catch (e) {
     // The messages were claimed off the queue; a launch that never happened must not eat them.
     for (const m of claimed) await enqueue(m.instruction, m.attachments).catch(() => {});

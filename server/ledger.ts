@@ -25,9 +25,10 @@ export type LedgerEntry = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  costUsd?: number; // run only: what the provider reported the run cost (claude)
   evidenceChars?: number; // size of CI/review evidence handed to the agent
   prDescriptionAvoided?: boolean; // pr-description: a fresh full-context model call was avoided
-  errorKind?: string; // coarse category, never the raw message
+  errorKind?: string; // coarse category (budget | timeout | nonzero-exit | agent-error | …), never the raw message
 };
 
 const MAX_ENTRIES = 500;
