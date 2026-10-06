@@ -38,8 +38,14 @@ export function providerOfModel(id: string | undefined): AgentProvider | undefin
   return undefined;
 }
 
+/** Not a model: "let the orchestrator choose" — a New draft sent this way goes through the
+ *  orchestrator, which picks the worker's model for the task (web/src/workstream.ts MODEL_LADDER). */
+export const AUTO_MODEL = "auto";
+export const AUTO_LABEL = "Auto · orchestrator picks";
+
 /** What the picker shows for an id: "Claude · Fable 5.1", or the prettified raw id for one off-catalog. */
 export function modelLabel(id: string): string {
+  if (id === AUTO_MODEL) return AUTO_LABEL;
   const provider = providerOfModel(id) ?? "claude";
   const known = MODELS.find((m) => m.id === id);
   return `${agentLabel(provider)} · ${known?.label ?? prettyModel(id)}`;

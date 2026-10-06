@@ -4,7 +4,7 @@ import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/
 import type { ChangeSummary } from "../../../server/git";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, markReady, merge, promote,
-  defaultModelFor, modelFor, rerunAgent, resolveConflicts, sendSlack, setCardModel,
+  modelFor, rerunAgent, resolveConflicts, sendSlack, setCardModel,
   staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
@@ -19,7 +19,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, D
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
-import { modelLabel, providerOfModel } from "../../../shared/models";
+import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
 import { ModelPicker } from "@/components/ModelPicker";
 
 const LANES: { lane: Lane; title: string }[] = [
@@ -303,10 +303,12 @@ function NewDraft() {
   const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
   const active = repo || repos[0]?.name || "";
-  // The model for the new draft; the repo's default unless you pick another. Falls back when the
-  // config arrives (or changes) and the current choice's CLI isn't installed here.
-  const [model, setModel] = useState<string>(() => defaultModelFor(active));
-  useEffect(() => { if (providers.length && !providers.includes(providerOfModel(model) ?? "claude")) setModel(defaultModelFor(active)); }, [providers, model, active]);
+  // The model for the new draft. "Auto" by default: the draft goes through the orchestrator, which
+  // writes the brief and picks the model for the task (the scarce one only where it counts). Pick a
+  // model to bypass it and launch directly, as before. Falls back when the config arrives (or
+  // changes) and the chosen model's CLI isn't installed here.
+  const [model, setModel] = useState<string>(AUTO_MODEL);
+  useEffect(() => { if (model !== AUTO_MODEL && providers.length && !providers.includes(providerOfModel(model) ?? "claude")) setModel(AUTO_MODEL); }, [providers, model]);
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
   // draft (wrong repo) can be reverted; Undo discards it (kills the run, removes the worktree+branch).
@@ -348,7 +350,7 @@ function NewDraft() {
               {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
             </SelectContent>
           </Select>
-          <ModelPicker label="Model" value={model} onChange={setModel} className="max-w-40 flex-1" />
+          <ModelPicker auto label="Model" value={model} onChange={setModel} className="max-w-40 flex-1" />
         </div>
       }
       action={

@@ -27,7 +27,7 @@ import {
   orchestratorPrompt, withAttachments, workerBrief, workerEvent, type BoardRow,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
-import { defaultModelOf, providerOfModel } from "../shared/models";
+import { providerOfModel } from "../shared/models";
 
 // ponytail: constants, not config — promote one to OrcaConfig the first time it needs tuning.
 /** Wakes in a row with no message from you before it stops waking itself. The loop guard: an
@@ -48,10 +48,13 @@ export function dir(): string {
 }
 
 type Blob = { notes?: string; wakes?: number; sessionId?: string; contextPct?: number; preferredModel?: string };
-/** The model it runs on: its pin, else the config's default. Always a Claude model — its tool
- *  permissions are Claude Code's. */
-const modelOf = (cfg: OrcaConfig, b: Blob): string | undefined =>
-  (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel : undefined) ?? cfg.agentModel;
+/** The model it runs on: its pin, else Sonnet. Its own work — triage, writing briefs, reading
+ *  outcomes — does not need the model the workers get, and the point of routing work through it is
+ *  to spend the big model only where it counts. Always a Claude model: its tool permissions are
+ *  Claude Code's. */
+export const ORCHESTRATOR_DEFAULT_MODEL = "claude-sonnet-5";
+const modelOf = (cfg: OrcaConfig, b: Blob): string =>
+  (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel! : undefined) ?? ORCHESTRATOR_DEFAULT_MODEL;
 const blob = async (): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {}) as Blob;
 const patch = (fields: db.Fields) => db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, fields);
 const enqueue = (instruction: string, attachments: string[] = []) =>
@@ -70,7 +73,7 @@ export async function status(cfg: OrcaConfig): Promise<{ key: string; running: b
   const b = await blob();
   return {
     key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
-    model: modelOf(cfg, b) ?? defaultModelOf("claude"),
+    model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell === true,
   };
@@ -244,6 +247,13 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const branch = required(args, "branch");
       const text = words.join(" ").trim();
       if (!text) throw new Error('the message is required: orca send --repo <repo> --branch <branch> "<message>"');
+      // A new pin is read by followUp, so the move happens on this message (the ladder decides
+      // resume vs handoff from the pinned provider as it does for the card's own picker).
+      if (typeof args.model === "string") {
+        const provider = providerOfModel(args.model);
+        if (!provider) throw new Error(`unknown model "${args.model}"`);
+        await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
+      }
       const { status } = await verbs.followUp(cfg, repo, branch, { instruction: text });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;

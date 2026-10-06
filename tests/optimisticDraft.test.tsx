@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
+import { AUTO_MODEL } from "../shared/models";
 import * as store from "@/store";
 import type { OptimisticDraft } from "@/store";
 
@@ -91,5 +92,48 @@ describe("optimistic draft creation", () => {
     expect(apiFake.calls).toContain("discard:oops-1");
     expect(items()).toHaveLength(0); // stayed gone
     expect(apiFake.calls).not.toContain("runAgent"); // cancelled — the agent was never launched
+  });
+});
+
+describe("a New draft left to the orchestrator (Auto)", () => {
+  test("paints the card at once, sends the prompt to the orchestrator instead of launching, and adopts the branch it spawns", async () => {
+    store.spawnPoll.ms = 10;
+    mount();
+    const created: string[] = [];
+    act(() => { store.createWorkstream("r", "Add a fancy widget", [], AUTO_MODEL, { onCreated: (b) => created.push(b) }); });
+    expect(items().map((li) => li.textContent)).toEqual(["Add a fancy widget"]); // the optimistic card
+    await act(async () => { await flush(); await flush(); });
+    expect(apiFake.orchestratorMessages).toEqual([{ text: "[new draft] repo: r\n\nAdd a fancy widget", attachments: [] }]);
+    expect(apiFake.calls).not.toContain("runAgent"); // nothing launched directly: the orchestrator decides the brief and the model
+    expect(apiFake.pending).toBeNull(); // and no worktree was made here
+
+    // The orchestrator spawns; the poll shows a branch this repo didn't have, and the card hands over to it.
+    apiFake.worktrees.set("orca/fancy-widget-ab12", { branch: "orca/fancy-widget-ab12", worktreePath: "/wt/orca/fancy-widget-ab12" });
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)); await flush(); });
+    expect(created).toEqual(["orca/fancy-widget-ab12"]);
+    expect(items().map((li) => li.dataset.branch)).toEqual(["orca/fancy-widget-ab12"]); // one card, the real one
+  });
+
+  test("Undo before the orchestrator has spawned discards what it then makes", async () => {
+    store.spawnPoll.ms = 10;
+    mount();
+    let draft!: store.OptimisticDraft;
+    act(() => { draft = store.createWorkstream("r", "Oops wrong repo", [], AUTO_MODEL); });
+    await act(async () => { await flush(); });
+    await act(async () => { await store.undoDraft(draft); });
+    expect(items()).toHaveLength(0);
+    apiFake.worktrees.set("orca/oops-1234", { branch: "orca/oops-1234", worktreePath: "/wt/orca/oops-1234" });
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)); await flush(); await flush(); });
+    // The branch the orchestrator then spawns is torn down, like a direct draft undone mid-create.
+    expect(apiFake.calls.filter((c) => c.startsWith("discard:"))).toEqual(["discard:orca/oops-1234"]);
+    expect(items()).toHaveLength(0);
+  });
+
+  test("a New chat never goes through the orchestrator: Auto falls back to the repo's model", async () => {
+    mount();
+    act(() => { store.createWorkstream("r", "Thinking out loud", [], AUTO_MODEL, { chat: true }); });
+    await act(async () => { await flush(); await flush(); });
+    expect(apiFake.orchestratorMessages).toEqual([]);
+    expect(apiFake.pending).not.toBeNull(); // the worktree is being made directly
   });
 });

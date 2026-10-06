@@ -255,6 +255,20 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by
   the store too) — so the two callers can't disagree on a prompt or a rung. The browser still runs
   its own I/O glue (optimistic cards, Undo, Follow); only the decisions are shared.
+- **It chooses the worker's model.** Its role text carries `MODEL_LADDER` (`workstream.ts`): Haiku
+  for mechanical edits, Sonnet as the default, Opus for substantial work, Fable ONLY for what has
+  already defeated a cheaper model or is genuinely novel — Fable is the scarce resource. `spawn
+  --model` sets it; `send --model` moves a workstream up (or down) the ladder, by re-pinning the
+  card's `preferredModel` before the follow-up. The orchestrator itself runs on **Sonnet** unless its
+  picker says otherwise (`ORCHESTRATOR_DEFAULT_MODEL`): triage and brief-writing don't need the
+  workers' model.
+- **New draft goes through it by default.** The New-draft box's picker starts at `AUTO_MODEL`
+  ("Auto · orchestrator picks"): the prompt is sent as a `[new draft] repo: <name>` message
+  (`newDraftMessage`), which the role text says to answer with exactly ONE spawn, briefed and
+  modelled by it. The optimistic card is still painted at once and hands over to the first branch
+  the repo didn't have before (`createViaOrchestrator`; Undo tears that spawn down). Picking a real
+  model in the box bypasses the orchestrator and launches directly, as before. "New chat" never goes
+  through it — a chat is a conversation with a model you chose.
 - **A brief has three required parts** — objective, expected output, boundaries (`briefProblems`);
   `spawn` refuses one without them, because a worker knows only its brief.
 - **Wake loop.** A workstream it spawned or sent to is marked `orchestrated` in enrichment (the bot

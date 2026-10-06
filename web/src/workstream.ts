@@ -838,6 +838,21 @@ export function workerBrief(brief: WorkerBrief): string {
   ].join("\n");
 }
 
+// What a New draft becomes when its model is left to the orchestrator (AUTO_MODEL): a message that
+// opens with this marker, which the role text tells it to answer with exactly one spawn.
+export const NEW_DRAFT_MARKER = "[new draft]";
+export const newDraftMessage = (repo: string, prompt: string): string => `${NEW_DRAFT_MARKER} repo: ${repo}\n\n${prompt}`;
+
+/** Which model a worker should get, cheapest first. Fable is the scarce resource: the orchestrator
+ *  is told to reach for it only when a cheaper model has already failed or the work is genuinely
+ *  novel. Model ids are the catalog's (shared/models.ts), so a rename there is a rename here. */
+export const MODEL_LADDER: { id: string; when: string }[] = [
+  { id: "claude-haiku-4-5-20251001", when: "mechanical edits, renames, one-file fixes with a clear spec" },
+  { id: "claude-sonnet-5", when: "routine features and bug fixes in a known area — the default" },
+  { id: "claude-opus-5", when: "substantial features, cross-cutting refactors, hard debugging" },
+  { id: "claude-fable-5-1", when: "ONLY work that has already defeated a cheaper model, or genuinely novel, ambiguous design work" },
+];
+
 // First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).
 export const WORKER_EVENT_MARKER = "[worker finished]";
@@ -893,8 +908,8 @@ const ORCHESTRATOR_ROLE = [
   "Your tools are the `orca` command (run it with Bash) and Read/Grep/Glob over the repos, whose",
   "worktree paths are on the board. The `## Access` line of each message says what else you may run.",
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
-  "  orca spawn --repo <repo> --title \"<2-5 words>\" --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
-  "  orca send --repo <repo> --branch <branch> \"<message>\"     continue an existing workstream",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
   "  orca preview --repo <repo> --branch <branch> [--status]   start (or restart) its local preview; --status prints",
   "                                  starting / running + URL / failed, and the tail of each service's log",
@@ -902,6 +917,12 @@ const ORCHESTRATOR_ROLE = [
   "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
+  "",
+  "Choosing a worker's model — match the model to the task, never the biggest by default:",
+  ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
+  "Step a workstream UP the ladder (send --model) when a run fails or stalls; say which model you chose and why.",
+  `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo`,
+  "it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.",
   "",
   "How to work:",
   "- A question you can answer from the board, your notes or past chats: answer it. Delegate real work only.",

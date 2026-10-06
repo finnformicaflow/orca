@@ -10,10 +10,10 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
-  rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
+  newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
-import { defaultModelOf, providerOfModel } from "../../shared/models";
+import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 
 const KEY = "orca.enrichment";
@@ -494,10 +494,12 @@ export function assembleRows(): Row[] {
  *  "New chat" path. Same optimistic card + background worktree; `onCreated` fires with the branch
  *  once it exists so the caller can open its terminal. */
 export function createWorkstream(repo: string, prompt: string, images: File[] = [], model: string = defaultModelFor(repo), opts: { chat?: boolean; onCreated?: (branch: string) => void } = {}): OptimisticDraft {
-  const provider = providerOfModel(model) ?? "claude";
   const draft: OptimisticDraft = { id: `opt-${optSeq++}`, repo, prompt, title: titleFromPrompt(prompt) };
   optimistic = [...optimistic, draft];
   notify();
+  if (model === AUTO_MODEL && !opts.chat) { void createViaOrchestrator(draft, images, opts); return draft; }
+  if (model === AUTO_MODEL) model = defaultModelFor(repo); // a chat is a conversation with a model you chose, not a task to triage
+  const provider = providerOfModel(model) ?? "claude";
   void (async () => {
     try {
       const [paths, created] = await Promise.all([
@@ -524,6 +526,42 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
     }
   })();
   return draft;
+}
+
+// How long the optimistic card waits for the orchestrator to spawn the workstream before giving up
+// on matching it (the card then simply appears from the poll like any other).
+const ORCHESTRATOR_SPAWN_WAIT_MS = 3 * 60_000;
+export const spawnPoll = { ms: 3000 }; // mutable so a test needn't wait three seconds per tick
+/** A New draft left to the orchestrator: the prompt goes to it as a `[new draft]` message and it
+ *  writes the brief, picks the model and spawns — so the card is still painted at once here, and
+ *  stands in until a worktree this repo didn't have before shows up in the poll.
+ *  ponytail: "the first new branch in this repo" is the match; a worker the orchestrator spawned
+ *  for something else in the same minute would be taken for it. Tag the spawn if that bites. */
+async function createViaOrchestrator(draft: OptimisticDraft, images: File[], opts: { onCreated?: (branch: string) => void }) {
+  const before = new Set(live.find((r) => r.repo === draft.repo)?.agents.map((a) => a.branch));
+  // After an Undo, keep watching for the spawn it was for (so it can be torn down), but not forever.
+  let undoneAt: number | undefined;
+  const cancelledUntil = () => (undoneAt ??= Date.now()) + 60_000;
+  try {
+    const paths = images.length ? await api.uploadAttachments(images) : [];
+    await api.orchestratorMessage(newDraftMessage(draft.repo, draft.prompt), paths);
+    const deadline = Date.now() + ORCHESTRATOR_SPAWN_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, spawnPoll.ms));
+      if (draft.cancelled && Date.now() > cancelledUntil()) break; // undone, and its spawn never showed
+      await refresh();
+      const fresh = live.find((r) => r.repo === draft.repo)?.agents.find((a) => !before.has(a.branch));
+      if (!fresh) continue;
+      draft.created = { branch: fresh.branch, worktreePath: fresh.worktreePath };
+      opts.onCreated?.(fresh.branch);
+      break;
+    }
+    // Undo pressed while the orchestrator was still at it: the workstream it made is torn down.
+    if (draft.cancelled && draft.created) await discardDraft({ repo: draft.repo, branch: draft.created.branch, worktreePath: draft.created.worktreePath } as Row);
+  } finally {
+    optimistic = optimistic.filter((o) => o.id !== draft.id);
+    notify();
+  }
 }
 
 /** Undo a just-created draft: kill the run + remove the worktree/branch if it exists yet, else flag
