@@ -71,7 +71,10 @@ export function OrchestratorButton() {
       {open && (
         <div
           role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
-          className="dark bg-neutral-950 text-foreground flex h-[min(640px,calc(100vh-6rem))] w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border shadow-xl"
+          // One step smaller than the worker cards' terminal: scoped to this panel's log (text-xs
+          // → text-[11px]) and composer textarea (text-sm → text-xs) only, via descendant
+          // selectors, so ChatPanel/ChatComposer stay untouched for everyone else.
+          className="dark bg-neutral-950 text-foreground flex h-[min(640px,calc(100vh-6rem))] w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[11px] [&_textarea]:text-xs"
         >
           <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
             {/* Paused = it has woken itself as many times as it may without hearing from you. */}
