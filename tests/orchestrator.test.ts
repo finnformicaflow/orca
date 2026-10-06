@@ -24,6 +24,7 @@ import {
   wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
+import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
 let state: string, shim: string, repo: string, worktrees: string, log: string, hold: string;
@@ -93,6 +94,7 @@ const OK = `printf '{"type":"result","subtype":"success","result":"## Outcome\\\
 const firstLaunch = (body: string) => `if [ ! -f "$ORCA_FAKE_HOLD.once" ]; then touch "$ORCA_FAKE_HOLD.once"
 ${body}
 fi
+while [ -f "$ORCA_FAKE_HOLD" ]; do sleep 0.02; done
 ${OK}`;
 const orchBlob = async () => (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {};
 const orchQueue = () => db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
@@ -320,9 +322,10 @@ test("O11: preview starts a workstream's preview on the board's path, and --stat
   const { branch, worktreePath } = await verbs.newWorktree(failing.repos[0]!, "demo");
   const at = { repo: "r", branch };
   // The preloaded happy-dom swaps `fetch` for a browser one that CORS-blocks the readiness probe of a
-  // real port; the bridge runs on Bun's, so the probe gets Bun's here.
-  const browserFetch = globalThis.fetch;
-  globalThis.fetch = Bun.fetch as typeof fetch;
+  // real port, and `AbortSignal` for one Bun's fetch refuses; the bridge runs on Bun's, so the probe
+  // gets Bun's here.
+  const browser = { fetch: globalThis.fetch, AbortSignal: globalThis.AbortSignal };
+  Object.assign(globalThis, native);
   try {
     await expect(orchestrator.tool(cfg(), "preview", at)).rejects.toThrow("Previews are not enabled for r");
     await expect(orchestrator.tool(failing, "preview", { repo: "r" })).rejects.toThrow("--branch is required");
@@ -343,7 +346,7 @@ test("O11: preview starts a workstream's preview on the board's path, and --stat
     expect(status).toContain(`Preview r/${branch}: running\n  backend: running http://localhost:${svc!.port}`);
     expect(status).toContain("--- backend log (tail) ---\nbooted");
   } finally {
-    globalThis.fetch = browserFetch;
+    Object.assign(globalThis, browser);
     preview.stop(worktreePath);
   }
 });

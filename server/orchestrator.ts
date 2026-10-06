@@ -120,13 +120,15 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
-    await patch({
-      sessionId: run.sessionId,
-      ...(run.meta?.contextPct === undefined ? {} : { contextPct: run.meta.contextPct }),
-      ...(run.meta?.costUsd === undefined ? {} : { lastWakeUsd: run.meta.costUsd }),
-    });
     const exit = wakeExit(cfg, run);
     await serial(async () => {
+      // Inside the chain: a patch is read-modify-write, and one racing the next wake's own would
+      // write back a blob without that wake's `handling` claim — and with it the retry guard.
+      await patch({
+        sessionId: run.sessionId,
+        ...(run.meta?.contextPct === undefined ? {} : { contextPct: run.meta.contextPct }),
+        ...(run.meta?.costUsd === undefined ? {} : { lastWakeUsd: run.meta.costUsd }),
+      });
       if (exit) await died(run.runId, exit, run.meta?.costUsd);
       // Only its own claim: a message of yours may have launched the next wake already.
       else if ((await blob()).handling?.runId === run.runId) await patch({ handling: null, died: null });
