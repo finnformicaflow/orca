@@ -59,11 +59,11 @@ type Blob = {
   died?: string[]; // messages whose wake has died once and are being retried; a second death drops them
   cutOff?: string; // why the last wake died, for the next wake's prompt
 };
-/** The model it runs on: its pin, else Sonnet. Its own work — triage, writing briefs, reading
- *  outcomes — does not need the model the workers get, and the point of routing work through it is
- *  to spend the big model only where it counts. Always a Claude model: its tool permissions are
- *  Claude Code's. */
-export const ORCHESTRATOR_DEFAULT_MODEL = "claude-sonnet-5";
+/** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
+ *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
+ *  stays for the work itself where Opus has failed. Always a Claude model: its tool permissions are
+ *  Claude Code's. (The user's call: Sonnet was tried first.) */
+export const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
 const modelOf = (cfg: OrcaConfig, b: Blob): string =>
   (providerOfModel(b.preferredModel) === "claude" ? b.preferredModel! : undefined) ?? ORCHESTRATOR_DEFAULT_MODEL;
 const blob = async (): Promise<Blob> => ((await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {}) as Blob;

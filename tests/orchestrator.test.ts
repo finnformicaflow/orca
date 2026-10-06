@@ -125,7 +125,7 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
   // It is told how to choose a worker's model, and what a New-draft message is.
   expect(wake!.prompt).toContain("## Models\n`spawn` requires --model.");
-  expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated a cheaper model");
+  expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated Opus");
   expect(wake!.prompt).toContain("A message opening with `[new draft]` is the user's New-draft box");
 });
 
@@ -136,14 +136,14 @@ test("O11: send --model moves a workstream to another model for this and later m
   expect((await launches())[0]).toContain("--model claude-haiku-4-5-20251001");
 
   await expect(orchestrator.tool(cfg(), "send", { repo: "r", branch, model: "gpt-9", _: ["again"] })).rejects.toThrow('unknown model "gpt-9"');
-  await orchestrator.tool(cfg(), "send", { repo: "r", branch, model: "claude-opus-5", _: ["Harder", "than", "it", "looked"] });
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, model: "claude-opus-5-5", _: ["Harder", "than", "it", "looked"] });
   await settled(() => db.turns("r", branch), 2);
-  expect((await launches())[1]).toContain("--model claude-opus-5");
-  expect((await db.enrichment("r"))[branch]).toMatchObject({ preferredModel: "claude-opus-5", preferredProvider: "claude" });
+  expect((await launches())[1]).toContain("--model claude-opus-5-5");
+  expect((await db.enrichment("r"))[branch]).toMatchObject({ preferredModel: "claude-opus-5-5", preferredProvider: "claude" });
   // The card's picker shows the move, and the next message keeps it.
   await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and again"] });
   await settled(() => db.turns("r", branch), 3);
-  expect((await launches())[2]).toContain("--model claude-opus-5");
+  expect((await launches())[2]).toContain("--model claude-opus-5-5");
 });
 
 test("O10: orchestratorShell trades the orca-only rule for a full shell, and is off unless set", async () => {
@@ -173,7 +173,7 @@ test("O2: a brief missing a part and an unknown repo are refused; there is no ca
   await expect(orchestrator.tool(cfg(), "spawn", { repo: "r", objective: "Do it" })).rejects.toThrow("--output is required; --boundaries is required");
   await expect(orchestrator.tool(cfg(), "spawn", { ...brief, repo: "nope" })).rejects.toThrow("--repo must be one of: r");
   // No model → no spawn: the config default is the biggest model, and that is how every worker ended up on it.
-  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, model: undefined })).rejects.toThrow("--model is required (choose from the ladder): claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5-1");
+  await expect(orchestrator.tool(cfg(), "spawn", { ...brief, model: undefined })).rejects.toThrow("--model is required (choose from the ladder): claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5-5, claude-fable-5-1");
   await expect(orchestrator.tool(cfg(), "spawn", { ...brief, model: "gpt-9" })).rejects.toThrow('--model is required ("gpt-9" is not a model)');
   await expect(orchestrator.tool(cfg(), "bogus")).rejects.toThrow('unknown command "bogus"');
   expect(await db.enrichment("r")).toEqual({});
@@ -258,21 +258,21 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
 
 test("O9: its model can be changed mid-conversation — Claude only, and the session carries over", async () => {
   wire();
-  // Nothing pinned → Sonnet, whatever the workers' default is: its own work is triage.
+  // Nothing pinned → Opus, whatever the workers' default is.
   expect((await orchestrator.status(cfg())).model).toBe(orchestrator.ORCHESTRATOR_DEFAULT_MODEL);
-  expect((await orchestrator.status({ ...cfg(), agentModel: "claude-fable-5-1" })).model).toBe("claude-sonnet-5");
+  expect((await orchestrator.status({ ...cfg(), agentModel: "claude-fable-5-1" })).model).toBe("claude-opus-5-5");
   await expect(orchestrator.setModel("gpt-5.5")).rejects.toThrow("runs on a Claude model");
 
   await orchestrator.message(cfg(), "hello");
   const [first] = await settled(orchTurns, 1);
-  expect((await launches())[0]).toContain("--model claude-sonnet-5");
+  expect((await launches())[0]).toContain("--model claude-opus-5-5");
 
-  await orchestrator.setModel("claude-opus-5");
-  expect((await orchestrator.status(cfg())).model).toBe("claude-opus-5");
+  await orchestrator.setModel("claude-sonnet-5");
+  expect((await orchestrator.status(cfg())).model).toBe("claude-sonnet-5");
   await orchestrator.message(cfg(), "and again");
   await settled(orchTurns, 2);
   const argv = (await launches())[1]!;
-  expect(argv).toContain("--model claude-opus-5");
+  expect(argv).toContain("--model claude-sonnet-5");
   expect(argv).toContain(`--resume ${first!.sessionId}`); // rung 1 survives a model change
 });
 

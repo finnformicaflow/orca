@@ -10,7 +10,7 @@ export type AgentModel = { id: string; label: string; provider: AgentProvider };
 // per-account: `cursor-agent models`). An id outside this list still works — the picker just shows it raw.
 export const MODELS: AgentModel[] = [
   { id: "claude-fable-5-1", label: "Fable 5.1", provider: "claude" },
-  { id: "claude-opus-5", label: "Opus 5", provider: "claude" },
+  { id: "claude-opus-5-5", label: "Opus 5.5", provider: "claude" },
   { id: "claude-sonnet-5", label: "Sonnet 5", provider: "claude" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", provider: "claude" },
   { id: "gpt-5.5", label: "GPT-5.5", provider: "codex" },
@@ -41,7 +41,7 @@ export function providerOfModel(id: string | undefined): AgentProvider | undefin
 /** Not a model: "let the orchestrator choose" — a New draft sent this way goes through the
  *  orchestrator, which picks the worker's model for the task (web/src/workstream.ts MODEL_LADDER). */
 export const AUTO_MODEL = "auto";
-export const AUTO_LABEL = "Auto · orchestrator picks";
+export const AUTO_LABEL = "Auto";
 
 /** What the picker shows for an id: "Claude · Fable 5.1", or the prettified raw id for one off-catalog. */
 export function modelLabel(id: string): string {

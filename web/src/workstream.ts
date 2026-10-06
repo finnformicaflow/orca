@@ -848,9 +848,9 @@ export const newDraftMessage = (repo: string, prompt: string): string => `${NEW_
  *  novel. Model ids are the catalog's (shared/models.ts), so a rename there is a rename here. */
 export const MODEL_LADDER: { id: string; when: string }[] = [
   { id: "claude-haiku-4-5-20251001", when: "mechanical edits, renames, one-file fixes with a clear spec" },
-  { id: "claude-sonnet-5", when: "routine features and bug fixes in a known area — the default" },
-  { id: "claude-opus-5", when: "substantial features, cross-cutting refactors, hard debugging" },
-  { id: "claude-fable-5-1", when: "ONLY work that has already defeated a cheaper model, or genuinely novel, ambiguous design work" },
+  { id: "claude-sonnet-5", when: "small, well-specified tasks in a known area" },
+  { id: "claude-opus-5-5", when: "most tasks — the DEFAULT: features, bug fixes, refactors, debugging" },
+  { id: "claude-fable-5-1", when: "ONLY work that has already defeated Opus, or genuinely novel, ambiguous design work" },
 ];
 
 /** Why an orchestrator wake died before finishing its turn. `no-reply` is the CLI ending "cleanly"
@@ -992,9 +992,9 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // once, and the model rule is the one most worth repeating: without it every worker got the
     // config default, which was the biggest model.
     "", "## Models",
-    "`spawn` requires --model. Match the model to the task, never the biggest by default:",
+    "`spawn` requires --model. Start from Opus; step DOWN to Sonnet for small, clear tasks and UP to Fable only when Opus has failed:",
     ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
-    "Step a workstream UP the ladder (send --model) when a run fails or stalls; say which model you chose and why.",
+    "Move a workstream along the ladder with send --model when a run fails, stalls, or turns out smaller than it looked; say which model you chose and why.",
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,

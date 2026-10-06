@@ -36,7 +36,7 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   apiFake.turnsData.set("@orca::orchestrator", [
     { id: "run-1", provider: "claude", instruction: "ship the cache", prompt: "p", response: "Spawned r/add-cache.", finishedAt: 2 },
   ]);
-  apiFake.orchestratorState = { ...apiFake.orchestratorState, model: "claude-opus-5", contextPct: 42 };
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, model: "claude-opus-5-5", contextPct: 42 };
   await mount(<OrchestratorButton />);
   expect(panel()).toBeNull(); // closed: only the launcher, pinned bottom-right
   expect(container!.querySelector("dialog")).toBeNull(); // a popout, not a modal — the board stays usable
@@ -60,7 +60,7 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   expect(box.className).not.toContain("bg-card");
   expect(box.parentElement!.parentElement!.className).toContain("dark text-foreground bg-neutral-950");
   const picker = panel()!.querySelector<HTMLElement>('[aria-label="Model"]')!;
-  expect(picker.textContent).toBe("Claude · Opus 5");
+  expect(picker.textContent).toBe("Claude · Opus 5.5");
   // Beside it, how full its context is: an icon button holding a small ring, with the percentage
   // in a popover on hover.
   const ring = panel()!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
