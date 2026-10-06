@@ -11,15 +11,12 @@ set -euo pipefail
 #
 #   preview-db.sh create <db>   clone PREVIEW_TEMPLATE_DB (default branch_demo) -> <db>, then migrate <db>
 #   preview-db.sh drop   <db>   terminate connections + drop <db>
-#   preview-db.sh promote-integrations <db>   upsert <db>'s integration settings rows into
-#                               PREVIEW_TEMPLATE_DB, so future previews start with them
-#                               (scripts/promote-integrations.ts decides which rows)
 #
 # Config (env): PREVIEW_TEMPLATE_DB, PREVIEW_ENV_FILE (default .env); DB_HOST/DB_PORT/DB_MASTER_USER/
 # PGPASSWORD come from the worktree .env.
 
 CMD="${1:-}"; DB="${2:-}"
-[[ -n "${CMD}" && -n "${DB}" ]] || { echo "Usage: $0 <create|drop|promote-integrations> <db-name>" >&2; exit 1; }
+[[ -n "${CMD}" && -n "${DB}" ]] || { echo "Usage: $0 <create|drop> <db-name>" >&2; exit 1; }
 
 # --- validate: DDL-safe identifier (interpolated into DDL, no bind params), and Orca's own preview
 #     namespace ONLY, so a bad name can never touch the shared dev database. ---
@@ -84,13 +81,7 @@ SQL
     DB_NAME="${DB}" bash scripts/migrate-local.sh # the worktree's migrator; applies this branch's migrations
     echo "Preview DB ready: ${DB} (cloned from ${TEMPLATE})"
     ;;
-  promote-integrations)
-    TEMPLATE="${PREVIEW_TEMPLATE_DB:-branch_demo}"
-    valid_ident "${TEMPLATE}" || { echo "Error: invalid template database '${TEMPLATE}'" >&2; exit 1; }
-    # PGPASSWORD etc. are exported above; the script reads them for both connections.
-    "${BUN:-bun}" "$(dirname "$0")/promote-integrations.ts" "${DB}" "${TEMPLATE}"
-    ;;
   *)
-    echo "Unknown command '${CMD}' (use create|drop|promote-integrations)" >&2; exit 1
+    echo "Unknown command '${CMD}' (use create|drop)" >&2; exit 1
     ;;
 esac

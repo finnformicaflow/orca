@@ -51,17 +51,6 @@ export type RepoConfig = {
   previewServices: PreviewService[];
   /** Channel the Slack notify/bump message names (the agent posts to it via its Slack tool). */
   slackChannel?: string;
-  /** Env vars set on every preview service of this repo, over the bridge's own environment — the
-   *  per-machine settings a fresh worktree's copied env file lacks (e.g. integration base URLs).
-   *  An app whose env loader doesn't override exported vars (dotenv's default) sees these win over
-   *  its `.env`, so nothing in the target repo or its worktrees is edited. Not for secrets: the
-   *  config is shared between instances and shown in the settings UI. */
-  previewEnv?: Record<string, string>;
-  /** Command that promotes a preview's integration settings into the repo's preview template database
-   *  (`orca preview --promote-integrations`, the preview's Promote button). `{db}` = this preview's
-   *  database name; runs in the worktree. What counts as an integration row is the command's call —
-   *  see scripts/promote-integrations.ts. Unset = not offered. */
-  previewPromote?: string;
   /** Label that triggers the deploy-preview action (added by the "Add preview" button). */
   previewLabel?: string;
   /** Labels offered as toggles in the Promote-to-PR menu; `default: true` starts checked. */
@@ -216,14 +205,6 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
           else if (typeof v !== "boolean") errors.push(`${where}.features.${k} must be true or false`);
         }
       }
-    }
-    if (r.previewEnv !== undefined) {
-      const ok = r.previewEnv && typeof r.previewEnv === "object" && !Array.isArray(r.previewEnv)
-        && Object.entries(r.previewEnv as Record<string, unknown>).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string");
-      if (!ok) errors.push(`${where}.previewEnv must map env var names to string values`);
-    }
-    if (r.previewPromote !== undefined && (typeof r.previewPromote !== "string" || !r.previewPromote.trim())) {
-      errors.push(`${where}.previewPromote must be a shell command`);
     }
     if (r.previewServices !== undefined && !Array.isArray(r.previewServices)) {
       errors.push(`${where}.previewServices must be an array`);

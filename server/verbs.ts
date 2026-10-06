@@ -63,7 +63,7 @@ export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: strin
   // before the config listed it boots without one and the preview dies on "Error: .env not found".
   // Re-copy what's missing here, leaving any worktree-local edit intact.
   await git.copyToWorktree(repo.repoPath, worktree, repo.copyToWorktree, { keepExisting: true });
-  await preview.start(key, worktree, repo.previewServices, cfg.portRange, repo.previewEnv);
+  await preview.start(key, worktree, repo.previewServices, cfg.portRange);
   return preview.status(key);
 }
 

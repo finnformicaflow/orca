@@ -367,14 +367,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const branch = required(args, "branch");
       if (!featuresOf(repo).previews || !repo.previewServices.length) throw new Error(`Previews are not enabled for ${repo.name}; the user turns them on in the repo's config`);
       const at = `--repo ${repo.name} --branch ${branch}`;
-      if ("promote-integrations" in args) {
-        if (!repo.previewPromote) throw new Error(`${repo.name} has no previewPromote command in its config; the user sets one`);
-        const key = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch)?.worktreePath;
-        if (!key) throw new Error(`No worktree for ${repo.name}/${branch}, so no preview database to promote from`);
-        const { ok, output } = await preview.promote(key, repo.previewPromote);
-        if (!ok) throw new Error(output || "promote failed");
-        return output;
-      }
       if ("status" in args) {
         // Read-only: look the worktree up rather than `ensureWorktree`, which would check one out.
         const key = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch)?.worktreePath;
@@ -430,6 +422,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, preview [--status | --promote-integrations], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, preview, chats, read, notes`);
   }
 }

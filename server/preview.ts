@@ -131,10 +131,7 @@ export function killTree(pid: number): void {
   try { process.kill(pid); } catch { /* already gone */ }
 }
 
-/** `start`'s spawn environment: the bridge's own, with the repo's `previewEnv` on top. Pure. */
-export const serviceEnv = (base: Record<string, string | undefined>, overrides: Record<string, string> = {}): Record<string, string | undefined> => ({ ...base, ...overrides });
-
-export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number], env: Record<string, string> = {}): Promise<void> {
+export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
   stop(key); // reap tracked procs + orphaned servers for this worktree so we never serve stale code
   const ports: Record<string, number> = {};
   for (const s of services) ports[s.name] = await freePort(portRange);
@@ -146,7 +143,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
       .replace(/\{db\}/g, db);
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
-    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: serviceEnv(process.env, env), stdout: logFd, stderr: logFd });
+    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
     const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
     const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false };
     void proc.exited.then(() => { svc.exited = true; });
@@ -244,15 +241,6 @@ export function stop(key: string, teardown = false): void {
   killWorktree(key); // key === worktree path; sweeps orphans from a prior run (narrow pattern)
   previews.delete(key);
   persist();
-}
-
-/** Run a repo's `previewPromote` for one preview: `{db}` = this preview's database, cwd = its
- *  worktree. Needs the database, not the services, so it works on a stopped preview too. `BUN` lets
- *  the command run a Bun script without relying on the login shell's PATH. */
-export async function promote(key: string, command: string): Promise<{ ok: boolean; output: string }> {
-  const proc = Bun.spawn(["sh", "-lc", command.replace(/\{db\}/g, previewDbName(key))], { cwd: key, env: { ...process.env, BUN: process.execPath }, stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  return { ok: code === 0, output: `${out}${err}`.trim().slice(-3000) };
 }
 
 /** Kill all preview services — call on server shutdown. Not a teardown: leaves per-preview DBs intact

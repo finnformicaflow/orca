@@ -3,7 +3,6 @@ import { Check, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, 
 import { api, type PreviewSvc } from "../api";
 import { baseBranch, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { Button } from "@/components/ui/button";
-import { ActionButton } from "@/components/ActionButton";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
@@ -307,15 +306,12 @@ export function PreviewManagerMenu() {
 /** Full panel for the detail Preview tab: embeds the running frontend once it's ready. */
 export function PreviewPanel({ row }: { row: Row }) {
   const { open, active, ready, failed, busy, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
-  const canPromote = useRepos().find((r) => r.name === row.repo)?.canPromote;
 
   return (
     <div className="space-y-2 pt-3">
       <div className="flex items-center gap-2">
         {!active && <Button size="sm" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : failed ? "Retry preview" : "Start preview"}</Button>}
         {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
-        {/* Copy the integrations configured on this preview into the template every later preview clones. */}
-        {active && canPromote && row.worktreePath && <ActionButton onRun={() => api.previewPromote(row.repo, row.worktreePath!)}>Keep integrations for future previews</ActionButton>}
         {active && !ready && <span className="text-muted-foreground text-sm">starting the frontend + backend… (~10s)</span>}
         {failed && <span className="text-destructive text-sm">a service failed to start — expand the log for details</span>}
         {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={open.url} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}

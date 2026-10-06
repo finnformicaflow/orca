@@ -400,19 +400,6 @@ test("O11: preview starts a workstream's preview on the board's path, and --stat
   }
 });
 
-test("O13: preview --promote-integrations runs the repo's previewPromote on that branch's preview database", async () => {
-  const c = cfg();
-  c.repos[0] = { ...c.repos[0]!, features: { previews: true }, previewServices: [{ name: "backend", command: "true" }] };
-  const { branch, worktreePath } = await verbs.newWorktree(c.repos[0]!, "promote");
-  const at = { repo: "r", branch, "promote-integrations": "" };
-  await expect(orchestrator.tool(c, "preview", at)).rejects.toThrow("r has no previewPromote command");
-  c.repos[0]!.previewPromote = "echo promoted {db} from $(basename \"$PWD\")";
-  expect(await orchestrator.tool(c, "preview", at)).toBe(`promoted ${preview.previewDbName(worktreePath)} from ${worktreePath.split("/").pop()}`);
-  c.repos[0]!.previewPromote = "echo 'r.linear_integration: violates foreign key' >&2; exit 1";
-  await expect(orchestrator.tool(c, "preview", at)).rejects.toThrow("violates foreign key"); // the script's reason reaches the model
-  await expect(orchestrator.tool(c, "preview", { ...at, branch: "nope" })).rejects.toThrow("No worktree for r/nope");
-});
-
 test("O12: the orca command reads a flag followed by another flag as a switch", async () => {
   let got: unknown;
   // node:http, not Bun.serve: happy-dom's preloaded `Response` is not one Bun.serve accepts.
@@ -422,11 +409,11 @@ test("O12: the orca command reads a flag followed by another flag as a switch", 
   });
   await new Promise<void>((r) => bridge.listen(0, "127.0.0.1", r));
   try {
-    const run = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/orca"), "preview", "--promote-integrations", "--status", "--repo", "r", "--branch", "b", "word"], {
+    const run = Bun.spawn([process.execPath, join(import.meta.dir, "../bin/orca"), "preview", "--status", "--repo", "r", "--branch", "b", "word"], {
       env: { ...process.env, ORCA_URL: `http://127.0.0.1:${(bridge.address() as AddressInfo).port}` }, stdout: "pipe",
     });
     expect((await new Response(run.stdout).text()).trim()).toBe("ok");
-    expect(got).toEqual({ verb: "preview", args: { "promote-integrations": "", status: "", repo: "r", branch: "b", _: ["word"] } });
+    expect(got).toEqual({ verb: "preview", args: { status: "", repo: "r", branch: "b", _: ["word"] } });
   } finally {
     bridge.close();
   }

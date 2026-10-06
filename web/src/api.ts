@@ -42,7 +42,7 @@ async function res(r: Response) {
   return data;
 }
 
-export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[]; defaultModel?: string; canPromote?: boolean };
+export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[]; defaultModel?: string };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
@@ -122,7 +122,6 @@ export const api = {
   previewStatus: (key: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}`).then(res),
   previews: (): Promise<{ key: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
   previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
-  previewPromote: (repo: string, key: string): Promise<{ ok: true; output: string }> => post("/api/preview/promote", { repo, key }),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),

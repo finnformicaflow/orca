@@ -98,21 +98,6 @@ const config: OrcaConfig = {
       // provider/AWS keys. Copied on create + checkout. (The per-preview DB scripts now live in the
       // Orca repo — see `previewDb` — so they no longer need copying into each worktree.)
       copyToWorktree: ["backend/.env"],
-      // Integration base URLs every preview backend gets, whatever its copied .env holds (src/env.ts
-      // loads .env with dotenv, which never overrides an exported var). Values from branch-demo's
-      // config/integration-urls.json (aws.backend). Public URLs only — keys stay in the databases.
-      previewEnv: {
-        LINEAR_API_BASE_URL: "https://api.linear.app/graphql",
-        GITHUB_API_BASE_URL: "https://api.github.com",
-        GITHUB_WEB_BASE_URL: "https://github.com",
-        GITLAB_API_BASE_URL: "https://gitlab.com/api/v4",
-        JIRA_SITE_HOST_SUFFIX: "atlassian.net",
-        ATLASSIAN_OAUTH_BASE_URL: "https://auth.atlassian.com",
-        ATLASSIAN_API_BASE_URL: "https://api.atlassian.com",
-      },
-      // `orca preview --promote-integrations` / the Preview tab's button: upsert this preview's
-      // `*_integration` rows (every tenant schema) into PREVIEW_TEMPLATE_DB, so the next preview has them.
-      previewPromote: `cd backend && bash '${previewDb}' promote-integrations {db}`,
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)

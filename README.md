@@ -51,29 +51,6 @@ createdb orca
 `bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
 throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
 
-**Preview integration settings.** A preview starts from a fresh clone of the repo's template
-database and a copied env file, so anything set up on one preview is gone in the next. Two per-repo
-config keys (in the repo's entry of the config document, which lives in Orca's database) carry it:
-
-- `previewEnv` — env vars set on every preview service, over the bridge's own environment, e.g.
-  `{ "LINEAR_API_BASE_URL": "https://api.linear.app/graphql" }`. An app whose env loader does not
-  override exported variables (dotenv's default) sees these win over the worktree's `.env`; nothing
-  in the target repo is edited. Base URLs and switches only: the config is shared and shown in the
-  settings UI, so no secrets.
-- `previewPromote` — the command that copies a preview's integration settings into the template
-  database (`{db}` = that preview's database; it runs in the worktree). For a repo using
-  `scripts/preview-db.sh`: `cd backend && bash '<orca>/scripts/preview-db.sh' promote-integrations {db}`.
-  It upserts, by primary key, every row of every table whose name matches `_integration$`
-  (override the regex with `PREVIEW_INTEGRATION_TABLES`), in every schema, into the
-  `PREVIEW_TEMPLATE_DB` from the worktree `.env`. Only the columns both sides have are copied,
-  nothing in the template is deleted, and it is one transaction, so a failure leaves the template
-  unchanged. Activity logs, OAuth state, per-user credentials, users and projects are never touched.
-  It prints table names and row counts, never values: the copied rows (API keys included) exist only
-  in the two local databases.
-
-Run it from the detail page's Preview tab (**Keep integrations for future previews**) or have the
-orchestrator do it: `orca preview --repo <repo> --branch <branch> --promote-integrations`.
-
 **Several Claude accounts** (to keep working when one hits its usage limit) are handled by
 [claude-hydra](https://github.com/finnformica/claude-hydra), not by Orca. Install it, register each
 login, and install its `claude` shim; from then on every `claude -p` Orca spawns is routed to the
