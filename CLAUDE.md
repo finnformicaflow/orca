@@ -298,11 +298,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   through it — a chat is a conversation with a model you chose.
 - **A brief has three required parts** — objective, expected output, boundaries (`briefProblems`);
   `spawn` refuses one without them, because a worker knows only its brief.
-- **Wake loop.** A workstream it spawned or sent to is marked `orchestrated` in enrichment (the bot
-  icon on the card). `agent.onRunFinished` fires when such a run ends *and nothing queued took over*
-  (an autofix is not "idle"), and the orchestrator is woken with `workerEvent`: the condensed
-  outcome, Orca's check verdict, and the run id as a reference — never the transcript. It is
-  asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
+- **Wake loop — management by exception.** A workstream it spawned or sent to is marked
+  `orchestrated` in enrichment (the bot icon on the card). `agent.onRunFinished` fires when such a
+  run ends *and nothing queued took over* (an autofix is not "idle"), producing a `workerEvent`:
+  the condensed outcome, Orca's check verdict, and the run id as a reference — never the transcript.
+  A **problem** (the run failed, was stopped, or its commit failed the check) wakes the orchestrator
+  at once. A **clean finish** is queued and delivered when the last of its running workers finishes
+  or when the user next speaks, whichever is first — one wake carrying every report since. Between
+  wakes it checks in itself with `orca board` / `orca read`. (It used to be woken per completion;
+  the user found that noisy and wanted it to operate like a manager.) In the chat, a wake whose
+  message was only worker reports renders as muted `⚙` system lines with the report folded, not as
+  a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
 - **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
   worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
   serialised so two workers finishing together can't race a launch.

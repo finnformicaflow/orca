@@ -491,3 +491,18 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   expect(prose.className).toContain("wrap-anywhere");
   expect(prose.className).toContain("prose-pre:wrap-normal");
 });
+
+test("the orchestrator's worker reports render as muted system lines, not as something you typed", async () => {
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.\nFull turn: orca read --run x\n\n[worker finished] r/b "B" — error\nResponse: boom', prompt: "p", response: "A is done; B failed, I've resent it.", finishedAt: 2 },
+    { id: "run-2", provider: "claude", instruction: "what now?", prompt: "p", response: "Waiting on C.", finishedAt: 4 },
+  ]);
+  await mount(base);
+  const reports = container!.querySelector('[data-slot="worker-reports"]')!;
+  expect([...reports.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
+  expect(reports.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
+  expect(text()).toContain("A is done; B failed, I've resent it.");
+  // A message you typed is still a prompt line.
+  expect([...container!.querySelectorAll("span")].some((s) => s.textContent === "❯")).toBe(true);
+  expect(text()).toContain("❯what now?");
+});

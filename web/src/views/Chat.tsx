@@ -13,7 +13,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { promptInstruction } from "../workstream";
+import { WORKER_EVENT_MARKER, isWorkerEvent, promptInstruction } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -140,17 +140,37 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
   );
 }
 
+/** The orchestrator's wake messages that were worker reports, not something you typed: each shown
+ *  as one muted system line (what finished, how), with the full report behind a toggle. Only when
+ *  EVERY part of the instruction is a report — a wake that also carried your message stays a prompt. */
+function WorkerReports({ instruction }: { instruction: string }) {
+  const parts = instruction.split("\n\n");
+  return (
+    <div data-slot="worker-reports" className="space-y-0.5 text-neutral-500">
+      {parts.map((part, i) => (
+        <details key={i}>
+          <summary className="cursor-pointer select-none">⚙ {part.split("\n")[0]!.slice(WORKER_EVENT_MARKER.length).trim()}</summary>
+          <pre className="mt-1 ml-4 whitespace-pre-wrap break-words text-neutral-600">{part.split("\n").slice(1).join("\n")}</pre>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 /** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
 function Turn({ turn }: { turn: AgentTurn }) {
   const pending = !turn.finishedAt;
+  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   return (
     <div className="mb-3">
-      <div className="flex gap-2 text-emerald-400">
-        <span className="shrink-0 select-none">❯</span>
-        {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
-            trimming the scaffolding off the prompt by its known marker lines. */}
-        <span className="min-w-0 whitespace-pre-wrap break-words">{turn.instruction ?? promptInstruction(turn.prompt)}</span>
-      </div>
+      {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports instruction={instruction} /> : (
+        <div className="flex gap-2 text-emerald-400">
+          <span className="shrink-0 select-none">❯</span>
+          {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
+              trimming the scaffolding off the prompt by its known marker lines. */}
+          <span className="min-w-0 whitespace-pre-wrap break-words">{instruction}</span>
+        </div>
+      )}
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
           {agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}

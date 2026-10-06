@@ -152,10 +152,17 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,
   });
+  // Management by exception. A manager is interrupted for a problem, not for every completion: a
+  // worker that failed, was stopped, or whose commit failed Orca's check wakes the orchestrator now.
+  // A clean finish is queued and delivered when the batch is done — the last of its running
+  // workers finishing — or when the user next speaks, whichever is first; in between, the board
+  // and `orca read` are there whenever it wants to check in.
+  const exception = run.status !== "done" || run.check?.ok === false;
   await serial(async () => {
     const wakes = (await blob()).wakes ?? 0;
+    const othersRunning = !exception && (await board(cfg)).some((r) => r.orchestrated && r.agent === "running" && r.worktreePath !== run.key);
     // Held, not dropped: a paused orchestrator hears about it with your next message.
-    if (agent.isRunning(dir()) || wakes >= MAX_WAKES) return void (await enqueue(text));
+    if (agent.isRunning(dir()) || wakes >= MAX_WAKES || othersRunning) return void (await enqueue(text));
     await patch({ wakes: wakes + 1 });
     await wake(cfg, [text]);
   });

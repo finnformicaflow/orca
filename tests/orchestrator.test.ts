@@ -27,7 +27,7 @@ import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
-let state: string, shim: string, repo: string, worktrees: string, log: string, hold: string;
+let state: string, shim: string, repo: string, worktrees: string, log: string, hold: string, holdWorkers: string;
 let pg: TestDb;
 let prev: Record<string, string | undefined> = {};
 
@@ -37,10 +37,12 @@ const cfg = (): OrcaConfig => ({
 });
 
 beforeEach(async () => {
-  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_FAKE_LOG", "ORCA_FAKE_HOLD"].map((k) => [k, process.env[k]]));
+  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_FAKE_LOG", "ORCA_FAKE_HOLD", "ORCA_FAKE_HOLD_WORKERS"].map((k) => [k, process.env[k]]));
   [state, shim, worktrees, log] = await Promise.all(["state", "claude", "wt", "log"].map(async (n) => realpathSync(await mkdtemp(join(tmpdir(), `orca-orch-${n}-`))))) as [string, string, string, string];
   repo = await makeScratchRepo();
   hold = join(state, "hold");
+  holdWorkers = join(state, "hold-workers"); // holds workers but lets the orchestrator answer
+  process.env.ORCA_FAKE_HOLD_WORKERS = holdWorkers;
   process.env.ORCA_STATE_DIR = state;
   process.env.ORCA_FAKE_LOG = log;
   process.env.ORCA_FAKE_HOLD = hold;
@@ -51,6 +53,7 @@ beforeEach(async () => {
   await writeFile(join(shim, "claude"), `#!/bin/sh
 printf '%s' "$*" > "$ORCA_FAKE_LOG/$(date +%s%N)-$$"
 while [ -f "$ORCA_FAKE_HOLD" ]; do sleep 0.02; done
+case "$PWD" in */orchestrator) ;; *) while [ -f "$ORCA_FAKE_HOLD_WORKERS" ]; do sleep 0.02; done ;; esac
 printf '{"type":"result","subtype":"success","result":"## Outcome\\\\nDone.","is_error":false}'
 `);
   await chmod(join(shim, "claude"), 0o755);
@@ -60,6 +63,7 @@ printf '{"type":"result","subtype":"success","result":"## Outcome\\\\nDone.","is
 });
 afterEach(async () => {
   await rm(hold, { force: true });
+  await rm(holdWorkers, { force: true });
   for (let i = 0; i < 200 && (await anyRunning()); i++) await new Promise((r) => setTimeout(r, 25));
   agent.onRunFinished(undefined);
   await agent.flushHistory();
@@ -95,6 +99,7 @@ const firstLaunch = (body: string) => `if [ ! -f "$ORCA_FAKE_HOLD.once" ]; then 
 ${body}
 fi
 while [ -f "$ORCA_FAKE_HOLD" ]; do sleep 0.02; done
+case "$PWD" in */orchestrator) ;; *) while [ -f "$ORCA_FAKE_HOLD_WORKERS" ]; do sleep 0.02; done ;; esac
 ${OK}`;
 const orchBlob = async () => (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH] ?? {};
 const orchQueue = () => db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
@@ -167,6 +172,46 @@ test("O10: orchestratorShell trades the orca-only rule for a full shell, and is 
   expect(parseConfigDocument(doc("yes")).errors).toContain("orchestratorShell must be true or false");
   expect(parseConfigDocument(doc(true)).config?.orchestratorShell).toBe(true);
   expect(parseConfigDocument(doc(undefined)).config?.orchestratorShell).toBeUndefined();
+});
+
+test("O17: a clean finish waits for the batch (or the user); a failure wakes it at once", async () => {
+  wire();
+  const finished = (branch: string, status: "done" | "error", check?: boolean): agent.RunFinished => ({
+    key: `/wt/${branch}`, cwd: `/wt/${branch}`, runId: `run-${branch}`, status, result: status === "done" ? "## Outcome\nDone." : "boom", continued: false,
+    options: { repo: "r", branch }, exit: { code: 0, timedOut: false, budgetReached: false, stderr: "" },
+    check: check === undefined ? undefined : { command: "bun run check", ok: check, exitCode: check ? 0 : 1, output: "", durationMs: 1 },
+  });
+  // (not `settled`: a worker is deliberately still running here — wait on the orchestrator alone)
+  const orchSettled = async (n: number) => {
+    for (let i = 0; i < 400; i++) {
+      const turns = await orchTurns();
+      if (turns.length >= n && turns.every((t) => t.finishedAt) && !agent.isRunning(orchestrator.dir())) return turns;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`orchestrator never settled at ${n}`);
+  };
+  for (const b of ["a", "b", "c"]) await db.patchEnrichment("r", b, { orchestrated: true, title: b.toUpperCase() });
+  await writeFile(holdWorkers, "");
+  await orchestrator.tool(cfg(), "spawn", brief); // one worker genuinely running
+  // A clean finish while another worker runs: a report on the queue, no wake.
+  await orchestrator.onRunFinished(cfg(), finished("a", "done"));
+  expect(await orchTurns()).toEqual([]);
+  expect((await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).map((m) => m.instruction.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done']);
+  // A failed check is an exception: woken now, and the held report rides along.
+  await orchestrator.onRunFinished(cfg(), finished("b", "done", false));
+  const [wake] = await orchSettled(1);
+  expect(wake!.instruction).toContain('[worker finished] r/a "A" — done');
+  expect(wake!.instruction).toContain('[worker finished] r/b "B" — done\nOrca\'s check `bun run check` FAILED');
+  // Another clean finish while the spawned worker still runs: held again…
+  await orchestrator.onRunFinished(cfg(), finished("c", "done"));
+  expect(await orchTurns()).toHaveLength(1);
+  // …until the last running worker finishes, which delivers both in ONE wake.
+  await rm(holdWorkers);
+  const turns = await settled(orchTurns, 2);
+  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual([
+    '[worker finished] r/c "C" — done',
+    expect.stringMatching(/^\[worker finished\] r\/orca\/add-cache-\w+ "Add cache" — done$/),
+  ]);
 });
 
 test("O2: a brief missing a part and an unknown repo are refused; there is no cap on concurrent workers", async () => {
