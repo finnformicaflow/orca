@@ -819,3 +819,12 @@ export async function cancelQueuedMessage(id: number): Promise<void> {
   const sql = await open();
   await sql`DELETE FROM queued_message WHERE id = ${id} AND user_id = ${currentUser()} AND dispatched_at IS NULL`;
 }
+
+/** Drop every undispatched message for a branch — so archiving a cancelled workstream can't be
+ *  resurrected by a message that was queued behind its running agent. */
+export async function dropQueuedMessages(repo: string, branch: string): Promise<void> {
+  const sql = await open();
+  await sql`
+    DELETE FROM queued_message
+    WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL`;
+}
