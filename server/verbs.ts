@@ -125,6 +125,30 @@ export async function followUp(
   return { status: "running", worktreePath };
 }
 
+/** Stop a worktree's agent and preview and remove it, deleting (and archiving) its branch when asked
+ *  — the Discard button's body, also the route's own, so a second caller can't drift from it. Never
+ *  deletes a branch with an open PR. */
+export async function removeWorktree(repo: RepoConfig, worktreePath: string, branch: string | undefined, deleteBranch: boolean): Promise<void> {
+  agent.stop(worktreePath);
+  if (branch) await agent.killByBranch(branch);
+  preview.stop(worktreePath);
+  await git.removeWorktree(repo.repoPath, worktreePath).catch(() => {});
+  if (deleteBranch && branch) await git.deleteBranch(repo.repoPath, branch);
+  if (deleteBranch && branch) await db.archive(repo.name, branch);
+}
+
+/** Archive a workstream: stop its agent, drop anything queued for it (so a queued message can't
+ *  restart a cancelled worker), and reap its worktree — the `orca archive` behind cancelling a
+ *  workstream from the orchestrator, built from the same `removeWorktree` the Discard button runs. */
+export async function archiveWorkstream(repo: RepoConfig, branch: string): Promise<void> {
+  await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
+  const hasPr = (await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch);
+  const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
+  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr);
+  else await agent.killByBranch(branch);
+  await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
+}
+
 /** THE agent action for a PR — one run for conflicts, failing CI and the review, whichever apply —
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */

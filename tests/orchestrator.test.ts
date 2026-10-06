@@ -580,3 +580,47 @@ test("O17: the exit line and the large-session hint are pure", () => {
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.5 })).toContain("fresh session");
   expect(sessionHint({ budgetUsd: 10, lastWakeUsd: 2.5, contextPct: 50 })).toContain("fresh session");
 });
+
+test("O18: archive removes an idle workstream's worktree and card, keeping its transcript readable", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+  const convBefore = (await db.conversations()).find((c) => c.branch === branch)!;
+
+  expect(await orchestrator.tool(cfg(), "archive", { repo: "r", branch })).toContain(`Archived r/${branch}`);
+
+  expect(await db.enrichment("r")).toEqual({}); // dropped from the board
+  expect(await git.listWorktrees(repo, worktrees)).toEqual([]); // worktree reaped
+  const convAfter = (await db.conversations()).find((c) => c.branch === branch);
+  expect(convAfter).toMatchObject({ archived: true }); // nothing deleted — archived
+  expect(await db.conversationTurns(convAfter!.id)).toHaveLength(1); // transcript stays readable
+  expect(convAfter!.id).toBe(convBefore.id);
+  expect(await orchestrator.tool(cfg(), "chats", { _: [] })).toContain("[archived]");
+});
+
+test("O19: archive stops a running worker first and drops anything queued for it", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+  const worktreePath = (await git.listWorktrees(repo, worktrees)).find((w) => w.branch === branch)!.worktreePath;
+
+  await writeFile(hold, ""); // the next run blocks until released
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["keep", "going"] })).toContain(`Sent to r/${branch}`);
+  expect(agent.isRunning(worktreePath)).toBe(true);
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and", "then", "this"] })).toContain("Queued behind the run in flight");
+  expect((await db.queuedMessages("r", branch)).map((m) => m.instruction)).toEqual(["and then this"]);
+
+  expect(await orchestrator.tool(cfg(), "archive", { repo: "r", branch })).toContain(`Archived r/${branch}`);
+
+  expect(agent.isRunning(worktreePath)).toBe(false); // the running agent was stopped, not left to finish
+  expect(await db.queuedMessages("r", branch)).toEqual([]); // nothing left to resurrect it
+  expect(existsSync(worktreePath)).toBe(false);
+});
+
+test("O20: archive refuses a branch this orchestrator isn't responsible for", async () => {
+  const { branch } = await verbs.newWorktree(cfg().repos[0]!, "manual"); // as if the user made it by hand
+  await db.patchEnrichment("r", branch, { title: "Manual" }); // no orchestrated flag
+  await expect(orchestrator.tool(cfg(), "archive", { repo: "r", branch })).rejects.toThrow("is not an orchestrated workstream");
+  expect(await db.enrichment("r")).toHaveProperty(branch); // left untouched
+  await expect(orchestrator.tool(cfg(), "archive", { repo: "r" })).rejects.toThrow("--branch is required");
+});
