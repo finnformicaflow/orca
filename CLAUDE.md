@@ -91,7 +91,11 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   chat history (git/gh/worktrees still hold the code, so nothing unrecoverable is at stake). The whole
   dir is kept OUT of every worktree so none of it can leak into a diff or PR body. Leases persist
   across shutdown by design (the bridge leaves agents running; the lease is how the restart sees
-  them). For everything except the chat history, live system + git + gh remain the sources of truth.
+  them). A run that outlives a restart ends unheard — `bun --watch` re-execs the bridge in place, so
+  its old children become zombies (which `lease.ts` counts as dead) — and `agent.reconcile`, at
+  startup and every 30s, closes its turn from the provider's session and announces it like any
+  finish (queued follow-up, `[worker finished]`). For everything except the chat history, live
+  system + git + gh remain the sources of truth.
 - **Source of truth for lanes is the LIVE system.** Draft column is driven by
   `GET /api/agents` (git worktrees + in-memory run status); the PR lanes by `GET /api/prs`
   (`gh pr list --author @me`). **Enrichment** only decorates that live data with what

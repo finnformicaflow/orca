@@ -118,6 +118,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
+    if (run.outlived) return; // its own wake across a restart is recover()'s to judge
     const exit = wakeExit(cfg, run);
     await serial(async () => {
       // Inside the chain: a patch is read-modify-write, and one racing the next wake's own would
@@ -140,7 +141,10 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   const text = workerEvent({
-    repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
+    repo, branch, title: e.title as string | undefined, runId: run.runId,
+    // Said outright: a run Orca lost sight of across a restart is the one case its outcome is
+    // recovered from the provider's session rather than heard from the process.
+    status: run.outlived ? `${run.status}, ended while Orca was restarting` : run.status,
     outcome: run.structured, response: run.result, check: run.check,
   });
   await serial(async () => {

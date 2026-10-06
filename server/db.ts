@@ -496,31 +496,42 @@ export async function setCheck(runId: string, check: TurnCheck): Promise<void> {
  *  runs hold no lease here, and closing them would kill a working board from a machine that has
  *  nothing to do with it. Rows predating the instance column belong to whoever is reconciling — a
  *  single-machine history, which is what they are. */
+/** A turn reconciliation closed: enough to announce it as if its exit handler had run. */
+export type EndedTurn = {
+  runId: string; repo: string; branch: string; provider: AgentProvider; sessionId?: string;
+  status: "done" | "error"; response: string; structured?: AgentOutcome;
+};
+
+/** What a turn says when its run ended out of Orca's sight and left no final answer to recover. */
+export const LOST_RUN_RESPONSE = "Orca restarted while this run was going, so it never saw the run end, and the provider's session holds no final answer. Check the worktree before relying on it.";
+
 export async function reconcileRunning(
   liveRunIds: Set<string>,
   // Given an orphan, try to recover what it actually did from the provider's own session file. Passed
   // in rather than imported so this module keeps knowing nothing about providers.
   recover?: (turn: { runId: string; sessionId?: string }) => Promise<{ response?: string; structured?: AgentOutcome } | undefined>,
-): Promise<{ closed: number; recovered: number }> {
+): Promise<{ closed: number; recovered: number; ended: EndedTurn[] }> {
   const sql = await open();
   const stuck = await sql`
-    SELECT run_id, session_id FROM turn
-    WHERE user_id = ${currentUser()} AND status = 'running'
-      AND (instance IS NULL OR instance = ${instanceName()})`;
-  const orphans = (stuck as { run_id: string; session_id: string | null }[])
+    SELECT t.run_id, t.session_id, t.provider, w.repo, w.branch FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${currentUser()} AND t.status = 'running'
+      AND (t.instance IS NULL OR t.instance = ${instanceName()})`;
+  const orphans = (stuck as { run_id: string; session_id: string | null; provider: AgentProvider; repo: string; branch: string | null }[])
     .filter((t) => !liveRunIds.has(t.run_id));
-  let recovered = 0;
-  for (const { run_id, session_id } of orphans) {
+  const ended: EndedTurn[] = [];
+  for (const { run_id, session_id, provider, repo, branch } of orphans) {
     // The run itself may well have finished its work — the bridge just wasn't there to hear it.
     const found = await recover?.({ runId: run_id, sessionId: session_id ?? undefined }).catch(() => undefined);
-    if (found?.response) {
-      recovered++;
-      await finishTurn(run_id, { status: "done", response: found.response, structured: found.structured, finishedAt: Date.now() });
-    } else {
-      await finishTurn(run_id, { status: "error", response: "The bridge stopped before this run finished.", finishedAt: Date.now() });
-    }
+    const turn: EndedTurn = found?.response
+      ? { runId: run_id, repo, branch: branch ?? "", provider, sessionId: session_id ?? undefined, status: "done", response: found.response, structured: found.structured }
+      : { runId: run_id, repo, branch: branch ?? "", provider, sessionId: session_id ?? undefined, status: "error", response: LOST_RUN_RESPONSE };
+    await finishTurn(run_id, {
+      status: turn.status, response: turn.response, structured: turn.structured,
+      stopReason: turn.status === "done" ? "end_turn" : "error", finishedAt: Date.now(),
+    });
+    ended.push(turn);
   }
-  return { closed: orphans.length, recovered };
+  return { closed: orphans.length, recovered: ended.filter((t) => t.status === "done").length, ended };
 }
 
 /** The (repo, branch) a run's turn belongs to, or undefined if the runId is unknown. */

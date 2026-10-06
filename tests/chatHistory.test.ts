@@ -287,7 +287,7 @@ test("turns orphaned by a dead bridge are closed at startup; genuinely live ones
   const byPrompt = Object.fromEntries((await db.turns("r", "feat")).map((t) => [t.prompt, t]));
   expect(byPrompt.interrupted?.finishedAt).toBeGreaterThan(0);
   expect(byPrompt.interrupted?.failed).toBe(true);
-  expect(byPrompt.interrupted?.response).toContain("bridge stopped");
+  expect(byPrompt.interrupted?.response).toBe(db.LOST_RUN_RESPONSE);
   expect(byPrompt["still going"]?.finishedAt).toBeUndefined(); // untouched — its process is alive
   expect(byPrompt.finished?.response).toBe("ok"); // already-closed turns aren't rewritten
 

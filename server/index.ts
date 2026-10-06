@@ -14,7 +14,6 @@ import * as db from "./db";
 import * as transcript from "./transcript";
 import { backfillRun } from "./backfill";
 import * as bus from "./bus";
-import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
@@ -72,12 +71,15 @@ await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-k
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
 // writing one off, try to recover what it actually did from the provider's own session file — the
 // agent usually kept working after the bridge died, and its answer is on disk.
-const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, sessionId }) => {
+// How often to look for runs that ended out of sight (see `reconcile`).
+const RECONCILE_MS = 30_000;
+// Not only at startup: a run that outlived a restart (`bun --watch` re-execs on every merge) is
+// still going now and ends later, unheard — so this runs on an interval too, and announces each turn
+// it closes like an exit handler would (queued follow-up, orchestrator wake).
+const reconcile = () => agent.reconcile(async ({ runId, sessionId }) => {
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
-const { closed, recovered } = await reconcile();
-if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.
@@ -98,6 +100,10 @@ agent.onQueuedMessage(async (message) => {
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
 // ending drains what queued up meanwhile. Config is read per event, like every request.
 agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig(), run));
+// After the hooks above, so a run that ended while the bridge was down is announced, not just closed.
+const { closed, recovered } = await reconcile();
+if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
+setInterval(() => void reconcile().catch((e) => console.error("orca: reconciliation failed", e)), RECONCILE_MS).unref();
 // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
 void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
 

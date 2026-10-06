@@ -102,3 +102,16 @@ export function liveBranches(branches: string[]): Set<string> {
   }
   return found;
 }
+
+/** The lease a run holds, live or not — so a run that ended out of sight can be told which worktree
+ *  it was in and have its lease freed. */
+export function byRunId(runId: string): Lease | undefined {
+  let files: string[];
+  try { files = readdirSync(join(stateDir(), "leases")); } catch { return undefined; }
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
+    if (lease?.runId === runId) return lease;
+  }
+  return undefined;
+}

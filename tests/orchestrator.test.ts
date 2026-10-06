@@ -3,7 +3,7 @@
 // because nothing it needs lives only in its context. Same harness as verifyGate.test.ts — a real
 // git scratch repo, a fake `claude` on PATH, real Postgres — plus the fake `gh` for the board's PRs.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
@@ -12,13 +12,14 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
+import * as lease from "../server/lease";
 import * as ledger from "../server/ledger";
 import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
-import type { AgentTurn } from "../shared/agent";
+import { parseAgentOutcome, type AgentTurn } from "../shared/agent";
 import {
   ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, sessionHint, wakeExitReason,
   wakeStoppedLine, workerEvent,
@@ -520,6 +521,50 @@ test("O16: a wake in flight when the bridge restarted is re-queued at startup �
   expect(turns[1]!.response).toStartWith("Wake stopped: was cut off by an Orca restart after 0 tool calls.\nRe-queued");
   expect(turns[2]!.instruction).toBe("finish the plan");
   expect(turns[2]!.prompt).toContain("Your previous wake was cut off by an Orca restart");
+});
+
+// The silent worker deaths: `bun --watch` restarts the bridge in place on every merge, so a worker
+// launched before it keeps running but its exit is never heard. Its turn stayed "(still running)",
+// the board said idle, and the orchestrator was never told. Reconciliation now finds the run once its
+// lease is dead (a zombie counts — see lease.test), closes the turn from the provider's session, and
+// announces it like any finish.
+test("O18: a worker that ended across a restart is closed with a reason, shown, and wakes the orchestrator", async () => {
+  wire();
+  const outlived = async (runId: string, branch: string, key: string) => {
+    await db.patchEnrichment("r", branch, { orchestrated: true, title: "Add cache" });
+    await db.startTurn({ repo: "r", branch, runId, provider: "claude", instruction: "build it", prompt: "p", startedAt: Date.now() });
+    lease.acquire({ key, worktreePath: key, branch, provider: "claude", runId, pid: 2 ** 30, startedAt: Date.now(), timeoutMs: 60_000 });
+  };
+
+  // It finished: its answer is recovered from the session, and the orchestrator hears the outcome.
+  await outlived("run-w1", "orca/add-cache", join(worktrees, "add-cache"));
+  const recovered = { response: "## Outcome\nShipped the cache.", structured: parseAgentOutcome("## Outcome\nShipped the cache.") };
+  expect((await agent.reconcile(async () => recovered)).closed).toBe(1);
+  const [worker] = await db.turns("r", "orca/add-cache");
+  expect(worker).toMatchObject({ finishedAt: expect.any(Number), response: "## Outcome\nShipped the cache." });
+  expect(agent.status(join(worktrees, "add-cache")).status).toBe("done"); // the board, not "idle"
+  expect(lease.byRunId("run-w1")).toBeUndefined();
+  const [wake] = await settled(orchTurns, 1);
+  expect(wake!.instruction).toStartWith(`${WORKER_EVENT_MARKER} r/orca/add-cache "Add cache" — done, ended while Orca was restarting`);
+  expect(wake!.instruction).toContain("Outcome: Shipped the cache.");
+
+  // Nothing recoverable: the turn, the board and the event all say the run was lost, not idle.
+  await outlived("run-w2", "orca/other", join(worktrees, "other"));
+  await agent.reconcile(async () => undefined);
+  expect((await db.turns("r", "orca/other"))[0]).toMatchObject({ failed: true, response: db.LOST_RUN_RESPONSE });
+  expect(agent.status(join(worktrees, "other"))).toMatchObject({ status: "error", error: db.LOST_RUN_RESPONSE });
+  const wakes = await settled(orchTurns, 2);
+  expect(wakes[1]!.instruction).toContain("— error, ended while Orca was restarting");
+  expect(wakes[1]!.instruction).toContain(`Response: ${db.LOST_RUN_RESPONSE}`);
+
+  // A run this bridge is still watching is never taken for one of those, and nothing is announced twice.
+  await writeFile(hold, "");
+  await mkdir(join(worktrees, "held"));
+  await agent.runAgent(join(worktrees, "held"), "p", { repo: "r", branch: "orca/held", provider: "claude" });
+  expect((await agent.reconcile(async () => recovered)).closed).toBe(0);
+  expect(await orchTurns()).toHaveLength(2);
+  await rm(hold);
+  expect((await settled(() => db.turns("r", "orca/held"), 1))[0]!.failed).toBeUndefined();
 });
 
 test("O17: the exit line and the large-session hint are pure", () => {

@@ -106,6 +106,9 @@ export type RunFinished = {
   exit: { code: number; timedOut: boolean; budgetReached: boolean; stderr: string };
   /** A queued follow-up (an autofix, a typed instruction) launched straight after: not idle yet. */
   continued: boolean;
+  /** It ended out of this bridge's sight (it outlived a restart) and reconciliation closed its turn:
+   *  `exit` is inferred, and `options` carries only the workstream. */
+  outlived?: boolean;
 };
 
 // Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
@@ -527,6 +530,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
+  inFlight.add(runId);
   lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
@@ -646,8 +650,55 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     } catch (e) {
       console.error("orca: run-finished hook failed", e); // a listener must never break the run it heard about
     }
-  })();
+  })().finally(() => inFlight.delete(runId));
   return { status: "running", provider, runId, sessionId };
+}
+
+// Runs whose exit handler is still ahead of them in THIS process. Their pid can already be gone (the
+// handler drains output for a moment after exit), so reconciliation must not take them for orphans.
+const inFlight = new Set<string>();
+let reconciling: Promise<unknown> = Promise.resolve();
+
+/** Close every turn whose run ended out of sight, and announce each as if its exit handler had run.
+ *  "Out of sight" is a bridge restart: `bun --watch` re-execs in place, so a run launched before it
+ *  keeps going but its exit is never heard — the turn stayed `running`, the board said idle, and an
+ *  orchestrator waiting on the worker was never woken. Run at startup and then on an interval;
+ *  serialised, so two passes can't close and announce the same turn twice. */
+export function reconcile(recover?: Parameters<typeof db.reconcileRunning>[1]): Promise<Awaited<ReturnType<typeof db.reconcileRunning>>> {
+  const pass = reconciling.then(async () => {
+    const result = await db.reconcileRunning(new Set([...lease.liveRunIds(), ...inFlight]), recover);
+    for (const turn of result.ended) await announceEnded(turn);
+    return result;
+  });
+  reconciling = pass.catch(() => undefined);
+  return pass;
+}
+
+async function announceEnded(turn: db.EndedTurn): Promise<void> {
+  const held = lease.byRunId(turn.runId);
+  if (held) {
+    lease.release(held.key, turn.runId);
+    // The board reads run state from memory, which a restart emptied: say how this one ended.
+    if (runs.get(held.key)?.status !== "running") {
+      runs.set(held.key, {
+        status: turn.status, provider: turn.provider, runId: turn.runId, sessionId: turn.sessionId, result: turn.response,
+        structured: turn.structured, error: turn.status === "error" ? turn.response : undefined, finishedAt: Date.now(),
+      });
+    }
+  }
+  ledger.record({ kind: "run", provider: turn.provider, status: turn.status, errorKind: turn.status === "error" ? "restart" : undefined });
+  if (!turn.branch) return;
+  const options: LaunchOptions = { provider: turn.provider, repo: turn.repo, branch: turn.branch };
+  const continued = await dispatchQueued(turn.repo, turn.branch, options);
+  try {
+    await runFinished?.({
+      key: held?.key ?? "", cwd: held?.worktreePath ?? "", runId: turn.runId, options, status: turn.status,
+      sessionId: turn.sessionId, result: turn.response, structured: turn.structured, continued, outlived: true,
+      exit: { code: turn.status === "done" ? 0 : 1, timedOut: false, budgetReached: false, stderr: "" },
+    });
+  } catch (e) {
+    console.error("orca: run-finished hook failed", e);
+  }
 }
 
 /** The worktree's HEAD, or undefined when it isn't a git checkout. */
