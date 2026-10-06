@@ -420,11 +420,11 @@ exit 1`));
   await orchestrator.message(cfg(), "ship the cache");
   const [dead, retry] = await settled(orchTurns, 2);
   expect(dead).toMatchObject({ failed: true, stopReason: "budget_reached" });
-  expect(dead!.response).toBe("Wake stopped: hit the 5 USD budget cap after 1 tool call ($5.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.");
+  expect(dead!.response).toBe(`Wake stopped: hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap after 1 tool call ($5.02 spent).\nRe-queued what it was handling; the next wake is told why and finishes the reply.`);
   // The retry is the same message on the same session, told what happened to the wake before it.
   expect(retry!.instruction).toBe("ship the cache");
   expect(retry).toMatchObject({ failed: undefined, response: "## Outcome\nDone." });
-  expect(retry!.prompt).toContain("## Previous wake was cut off\nYour previous wake hit the 5 USD budget cap before it finished its turn");
+  expect(retry!.prompt).toContain(`## Previous wake was cut off\nYour previous wake hit the ${orchestrator.WAKE_BUDGET_USD} USD budget cap before it finished its turn`);
   expect(retry!.prompt).toContain("check the board before you spawn or send");
   const [first, second] = await launches();
   expect(first).toContain("--max-budget-usd 5 ");

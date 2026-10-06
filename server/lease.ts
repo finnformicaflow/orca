@@ -18,6 +18,7 @@ export type Lease = {
   branch?: string;
   provider: AgentProvider;
   runId: string;
+  sessionId?: string; // the provider session the run is on — two live runs must never share one
   pid: number;
   startedAt: number;
   expiry: number; // ms epoch after which the lease is reclaimable even if the pid looks alive
@@ -29,9 +30,16 @@ const DEFAULT_TTL_MS = 6 * 60 * 60_000;
 const leaseFile = (key: string) =>
   statePath("leases", `${createHash("sha1").update(key).digest("hex")}.json`);
 
-/** Is a pid still a running process? `kill(pid, 0)` sends no signal — it just probes existence. */
-function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+/** Is a pid still a running process? `kill(pid, 0)` sends no signal — it just probes existence.
+ *  A zombie passes that probe: a child that exited after the bridge that spawned it restarted is
+ *  never reaped, so it sits `<defunct>` and its lease read as live until expiry — 45 minutes of a
+ *  card saying "running" about a run that had finished. `ps` tells a zombie (state Z) from a live one. */
+export function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    const out = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    return !out.stdout.toString().trim().startsWith("Z");
+  } catch { return true; } // no ps: the probe is all we have
 }
 
 function isLive(lease: Lease | undefined): lease is Lease {
@@ -46,11 +54,11 @@ export function leased(key: string): boolean {
 /** Record a live run. Callers gate on `leased(key)` first; this just persists the claim. */
 export function acquire(input: {
   key: string; worktreePath: string; branch?: string; provider: AgentProvider;
-  runId: string; pid: number; startedAt: number; timeoutMs?: number;
+  runId: string; sessionId?: string; pid: number; startedAt: number; timeoutMs?: number;
 }): void {
   const lease: Lease = {
     key: input.key, worktreePath: input.worktreePath, branch: input.branch, provider: input.provider,
-    runId: input.runId, pid: input.pid, startedAt: input.startedAt,
+    runId: input.runId, sessionId: input.sessionId, pid: input.pid, startedAt: input.startedAt,
     expiry: input.startedAt + (input.timeoutMs ?? DEFAULT_TTL_MS),
   };
   writeJsonSync(leaseFile(input.key), lease);
@@ -65,6 +73,19 @@ export function release(key: string, runId?: string): void {
     if (current && current.runId !== runId) return; // superseded — leave the new owner's lease
   }
   try { unlinkSync(path); } catch { /* already gone */ }
+}
+
+/** Is a live run already on this provider session? Two runs resuming one session at once each
+ *  append to the same transcript and end with the same reply — the orchestrator's "one message
+ *  behind" bug. Read from the lease files, so it holds across a bridge restart as well. */
+export function sessionBusy(sessionId: string): boolean {
+  let files: string[];
+  try { files = readdirSync(join(stateDir(), "leases")); } catch { return false; }
+  return files.some((file) => {
+    if (!file.endsWith(".json")) return false;
+    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
+    return isLive(lease) && lease.sessionId === sessionId;
+  });
 }
 
 /** Run ids that currently hold a live lease. Lets a restart tell a genuinely still-running turn from

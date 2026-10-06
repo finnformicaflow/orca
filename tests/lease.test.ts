@@ -52,3 +52,19 @@ describe("durable run leases", () => {
     expect(agent.isRunning("/wt/feat")).toBe(false);
   });
 });
+
+test("a live run on a session blocks a second resume of it, across the lease files, and a zombie is not alive", async () => {
+  const { sessionBusy, acquire, release, pidAlive } = await import("../server/lease");
+  // A child that has exited but not been reaped: `kill(pid, 0)` still succeeds, `ps` says Z.
+  const zombie = Bun.spawn(["sh", "-c", "exit 0"], { stdout: "ignore", stderr: "ignore" });
+  await new Promise((r) => setTimeout(r, 100));
+  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(zombie.pid)]).stdout.toString().trim();
+  if (stat.startsWith("Z")) expect(pidAlive(zombie.pid)).toBe(false); // (Bun may already have reaped it — then there is nothing to assert)
+  expect(pidAlive(process.pid)).toBe(true);
+
+  acquire({ key: "/wt/a", worktreePath: "/wt/a", provider: "claude", runId: "r1", sessionId: "s-shared", pid: process.pid, startedAt: Date.now() });
+  expect(sessionBusy("s-shared")).toBe(true);
+  expect(sessionBusy("s-other")).toBe(false);
+  release("/wt/a");
+  expect(sessionBusy("s-shared")).toBe(false);
+});

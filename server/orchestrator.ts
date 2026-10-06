@@ -36,7 +36,7 @@ import { providerOfModel } from "../shared/models";
 export const MAX_WAKES = 12;
 /** `--max-budget-usd` for one wake unless `orchestratorWakeBudgetUsd` says otherwise. Deciding what
  *  to delegate is cheap; a wake that isn't has gone wrong — or its session has grown (see sessionHint). */
-export const WAKE_BUDGET_USD = 5;
+export const WAKE_BUDGET_USD = 25; // was 5: a long resumed session pays its cached context every turn and was cut off mid-reply several times a day
 const budgetOf = (cfg: OrcaConfig): number => cfg.orchestratorWakeBudgetUsd ?? WAKE_BUDGET_USD;
 /** How often startup recovery looks again at a wake that outlived the previous bridge. */
 const RECOVER_POLL_MS = 5_000;
@@ -107,7 +107,14 @@ export function message(cfg: OrcaConfig, text: string, attachments: string[] = [
       await enqueue(text, attachments);
       return { status: "queued" as const };
     }
-    await wake(cfg, [withAttachments(text, attachments)]);
+    try {
+      await wake(cfg, [withAttachments(text, attachments)]);
+    } catch (e) {
+      // The launcher's own guard caught a run this process can't see (its session is still busy
+      // under a lease): wake() has put the message back on the queue, where the drain finds it.
+      if (e instanceof Error && /already running/.test(e.message)) return { status: "queued" as const };
+      throw e;
+    }
     return { status: "running" as const };
   });
 }

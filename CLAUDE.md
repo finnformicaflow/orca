@@ -250,6 +250,20 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   orchestrator reads every worker's output, so a shell makes that output a path to commands run
   outside any worktree. Its prompt states which mode it is in on EVERY wake (`## Access`), so a
   change reaches a session that is being resumed.
+- **Its role text is judgement-first.** It is told it is a senior engineer running a team, given
+  the trade-offs (send to an existing workstream vs spawn; one branch per mergeable unit) and left
+  to decide. An earlier, rule-shaped version ("do not spawn for something a workstream owns") made it
+  spawn a second workstream rather than ask the first to adapt — the user wants it free to decide.
+- **Stability.** Two things once made runs look like they died: (1) the dev launcher ran the bridge
+  under `bun --watch`, so every merge to `main` restarted it under in-flight runs — exit handlers
+  died with the process, finished runs showed as running, zombie children kept their leases live
+  until expiry, and a wake killed mid-turn (exit 143) looked like the orchestrator leaving. `dev.ts`
+  no longer watches; restart the bridge by hand after server changes. (2) The per-wake budget was
+  $5; a long resumed session pays its cached context every turn and hit it mid-reply several times a
+  day — it is 25 now (`orchestratorWakeBudgetUsd` overrides). Guards added: `lease.pidAlive` treats
+  a zombie as dead; a lease records its `sessionId` and `launch` refuses a resume while another
+  live run is on that session (`lease.sessionBusy`) — two runs on one session each append to the
+  same transcript and both end with the same reply, which was the "one message behind" bug.
 - **Server-side verbs** (`server/verbs.ts`): create / follow up / Address PR existed only in the
   browser store, which a server-side caller can't reach. They are built from the same pure pieces —
   the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by

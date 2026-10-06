@@ -1,9 +1,13 @@
 // Launch the bridge + Vite dev server together. Vite proxies /api to the bridge.
 const opts = { stdout: "inherit", stderr: "inherit", env: process.env } as const;
 const children = [
-  // --watch so editing server code (adapters, routes) restarts the bridge — otherwise Vite
-  // hot-reloads the UI but the API keeps serving stale logic until a manual restart.
-  Bun.spawn(["bun", "--watch", "run", "server/index.ts"], opts),
+  // NOT --watch. It restarted the bridge on every server-file change — and once the orchestrator's
+  // workers were merging to main all day, that meant a restart under every in-flight run: the
+  // exit handlers died with the process, so finished runs showed as "running" forever, their
+  // results came back only through session-file recovery, and a wake killed mid-turn (exit 143)
+  // read as the orchestrator "leaving". Restart the bridge yourself when server code changes;
+  // Vite still hot-reloads the UI.
+  Bun.spawn(["bun", "run", "server/index.ts"], opts),
   Bun.spawn(["bunx", "--bun", "vite"], { cwd: "web", ...opts }),
 ];
 
@@ -35,8 +39,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { consol
 // If EITHER child exits — a crash, an external kill, or a port reclaim by another checkout's bridge —
 // tear the whole launcher down and exit, instead of `await new Promise(() => {})`-ing forever as an
 // orphan that spins on a dead event loop (the 14-day zombie that burned CPU with no children left).
-// `bun --watch` restarts the server in-process on file edits, so this fires only when the watcher
-// PROCESS itself dies, not on a normal hot-restart. `bun run dev` then simply ends; restart it.
+// `bun run dev` then simply ends; restart it.
 await Promise.race(children.map((c) => c.exited));
 // A Ctrl-C also kills the children, so guard: don't print the scary line (or exit non-zero) when a
 // signal already began the teardown — only a genuine unexpected child exit reaches this.

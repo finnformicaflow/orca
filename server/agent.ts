@@ -511,6 +511,9 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   // Reject an overlap whether we remember the run in-process OR a durable lease from before a restart
   // says one is still live in this worktree.
   if (runs.get(key)?.status === "running" || lease.leased(key)) throw new Error("an agent is already running for this worktree");
+  // The same guard for the SESSION: a resume while another live run is on that session would have
+  // two processes appending to one transcript, and both end with the same reply.
+  if (options.resume && lease.sessionBusy(options.resume)) throw new Error("an agent is already running on this session");
   const provider = options.provider ?? "claude";
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
   const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
@@ -527,7 +530,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
   runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
-  lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
+  lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, sessionId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
   // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
