@@ -363,6 +363,14 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }
+    case "archive": {
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const e = (await db.enrichment(repo.name))[branch];
+      if (!e?.orchestrated) throw new Error(`${repo.name}/${branch} is not an orchestrated workstream; this command only archives ones this orchestrator spawned or sent to`);
+      await verbs.archiveWorkstream(repo, branch);
+      return `Archived ${repo.name}/${branch}. Its branch, commits and transcript stay readable with \`orca chats\` / \`orca read\`.`;
+    }
     case "preview": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
@@ -431,6 +439,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
   }
 }

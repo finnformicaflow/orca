@@ -240,7 +240,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   repo behind it), so the chat panel, the SSE stream, the queue and Stop all work on it unchanged.
   Its cwd is `~/.orca/orchestrator`, never a worktree.
 - **Its only authority is the `orca` command** (`bin/orca` → `POST /api/orchestrator/tool` →
-  `orchestrator.tool`): `board`, `spawn`, `send`, `address`, `preview` (`--status`; and
+  `orchestrator.tool`): `board`, `spawn`, `send`, `address`, `archive`, `preview` (`--status`; and
   `--push-to-template [--confirm]`, `server/pushTemplate.ts`, which makes a preview's whole database the
   repo's `PREVIEW_TEMPLATE_DB` — old one kept as `<template>_bak_<ts>` — and writes its integration env
   vars back to the main checkout's copied `.env`; dry run without `--confirm`, values masked — README),

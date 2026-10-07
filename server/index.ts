@@ -20,7 +20,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { checkGate, launchOptions, newWorktree, startPreview } from "./verbs";
+import { checkGate, launchOptions, newWorktree, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
@@ -428,12 +428,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(await git.syncWorktrees(repo.repoPath, repo.worktreeRoot));
   }
   if (req.method === "POST" && p === "/api/worktrees/remove") {
-    agent.stop(body.worktreePath); // kill any running agent before removing its worktree
-    if (body.branch) await agent.killByBranch(body.branch); // also catch ones orphaned by a restart
-    preview.stop(body.worktreePath);
-    await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
-    if (body.deleteBranch && body.branch) await git.deleteBranch(repo.repoPath, body.branch); // never for a PR branch
-    if (body.deleteBranch && body.branch) await db.archive(repo.name, body.branch);
+    await removeWorktree(repo, body.worktreePath, body.branch, Boolean(body.deleteBranch)); // never deletes a branch with an open PR
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
