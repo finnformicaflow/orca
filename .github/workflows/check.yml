@@ -35,4 +35,7 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      # `orca preview --push-to-template` needs a pg_dump at least as new as the server; the runner's
+      # client is older than the postgres:17 service.
+      - run: sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y && sudo apt-get install -y postgresql-client-17
       - run: bun run check

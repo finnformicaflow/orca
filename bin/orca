@@ -8,7 +8,7 @@ import { API_PORT } from "../server/ports";
 const [verb = "", ...rest] = process.argv.slice(2);
 const args: Record<string, unknown> = {};
 const words: string[] = [];
-const flag = /^--[a-z]+$/;
+const flag = /^--[a-z][a-z-]*$/; // `--promote-integrations`, but never a `---` rule
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i]!;
   // Only a bare `--name` is a flag: free text that happens to open with dashes (a `---` rule at the
