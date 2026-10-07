@@ -107,3 +107,25 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   await click(ring); // click (touch, keyboard) opens it too
   expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session, carrying a summary of this one.");
 });
+
+test("with tmux, opening the window starts Claude Code's live terminal; without it, the chat with a note", async () => {
+  await mount(<OrchestratorButton />);
+  await click(launcher());
+  // The fake bridge has no tmux: chat mode, and the header says why.
+  expect(panel()!.querySelector('[data-slot="live-terminal"]')).toBeNull();
+  expect(panel()!.querySelector('[data-slot="orchestrator-no-terminal"]')!.textContent).toBe("chat mode — tmux is not installed on this host");
+  expect(panel()!.querySelector("textarea")).toBeTruthy();
+  await click(launcher()); // close
+
+  apiFake.tmux = true;
+  await act(async () => { root?.unmount(); });
+  await mount(<OrchestratorButton />);
+  await click(launcher());
+  await act(async () => { await flush(); await flush(); });
+  expect(panel()!.textContent).toContain("Orchestrator · Claude Code");
+  expect(panel()!.querySelector('[data-slot="live-terminal"]')).toBeTruthy(); // xterm's mount point (happy-dom has no canvas, so it reports rather than draws)
+  expect(panel()!.querySelector('[data-slot="chat-composer-toolbar"]')).toBeNull(); // no composer: you type in the terminal (xterm has its own hidden textarea)
+  const end = panel()!.querySelector<HTMLButtonElement>('button[aria-label="End terminal"]')!;
+  await click(end);
+  expect(panel()!.querySelector('[data-slot="chat-composer-toolbar"]')).toBeTruthy(); // back to the chat on the same conversation
+});

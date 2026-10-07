@@ -90,9 +90,13 @@ export const api = {
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
-  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string }> => fetch("/api/orchestrator").then(res),
+  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; live?: boolean; session?: string; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string }> => fetch("/api/orchestrator").then(res),
   orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
-  orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
+  // The live terminal: Claude Code's TUI in a tmux session, streamed to LiveTerminal.tsx over
+  // /api/terminal/ws. 501 when tmux is missing, in which case the window stays a chat.
+  orchestratorTerminal: (): Promise<{ session: string }> => post("/api/orchestrator/terminal", {}),
+  orchestratorTerminalStop: (): Promise<{ ok: true }> => post("/api/orchestrator/terminal/stop", {}),
+  orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" | "live" }> =>
     post("/api/orchestrator/message", { text, attachments }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),

@@ -113,10 +113,10 @@ export type OrcaConfig = {
   /** Default model for every repo's headless Claude runs (`--model`), e.g. `claude-fable-5-1`. A
    *  repo's own `agentModel` overrides it. Unset → the `claude` CLI's own default. Claude only. */
   agentModel?: string;
-  /** Give the orchestrator a full shell on this machine (`bypassPermissions`) instead of only the
-   *  `orca` command and file reads. Off unless set: it reads every worker's output, so a shell makes
-   *  that output a path to running commands outside any worktree. Turn it on for a machine you'd let
-   *  a card's agent loose on; leave it off on a shared box. */
+  /** The orchestrator runs with Claude Code's full terminal toolset (`bypassPermissions`) — ON unless
+   *  set to false. `false` keeps it to the `orca` command, file reads, the web and read-only
+   *  subagents. Worth turning off on a shared box: it reads every worker's output, so a shell makes
+   *  that output a path to running commands outside any worktree. */
   orchestratorShell?: boolean;
   /** `--max-budget-usd` for ONE orchestrator wake (default 5). A wake on a long resumed session
    *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
@@ -336,7 +336,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
-    orchestratorShell: app.orchestratorShell === true,
+    orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
   };
   cached = config;
