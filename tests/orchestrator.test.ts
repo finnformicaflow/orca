@@ -12,6 +12,7 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
+import * as tmux from "../server/tmux";
 import * as ledger from "../server/ledger";
 import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
@@ -125,9 +126,10 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.prompt).toMatch(new RegExp(`r/${branch} "Add cache" \\| no PR \\| agent:done \\| yours`));
   // It may run `orca` and read files — never bypassPermissions.
   const argv = (await launches()).find((a) => a.includes("You are Orca's orchestrator"))!;
-  expect(argv).toContain("--allowedTools Bash(orca *),Read,Grep,Glob");
-  expect(argv).toContain("--permission-mode default");
-  expect(wake!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
+  // The terminal's full toolset by default; the orca-only allowlist is the opt-out (O10).
+  expect(argv).toContain("--permission-mode bypassPermissions");
+  expect(argv).not.toContain("--allowedTools");
+  expect(wake!.prompt).toContain("## Access\nEverything Claude Code has in a terminal");
   // It is told how to choose a worker's model, and what a New-draft message is.
   expect(wake!.prompt).toContain("## Models\n`spawn` requires --model.");
   expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated Opus");
@@ -151,22 +153,59 @@ test("O11: send --model moves a workstream to another model for this and later m
   expect((await launches())[2]).toContain("--model claude-opus-5-5");
 });
 
-test("O10: orchestratorShell trades the orca-only rule for a full shell, and is off unless set", async () => {
-  expect((await orchestrator.status(cfg())).shell).toBe(false);
-  expect((await orchestrator.status({ ...cfg(), orchestratorShell: true })).shell).toBe(true);
-  await orchestrator.message({ ...cfg(), orchestratorShell: true }, "install node 24.21.0");
+const tmuxTest = Bun.which("tmux") ? test : test.skip;
+tmuxTest("O20: the live terminal is Claude Code in tmux on the same session; messages and reports are typed in", async () => {
+  wire();
+  await writeFile(hold, ""); // the fake claude stays up, as the TUI would
+  await orchestrator.stopTerminal();
+  expect((await orchestrator.status(cfg())).live).toBe(false);
+  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { sessionId: "sess-1", preferredModel: "claude-sonnet-5" });
+  await db.patchEnrichment("r", "b", { orchestrated: true, title: "B" });
+  try {
+    expect(await orchestrator.startTerminal(cfg())).toEqual({ session: "orca/orchestrator" });
+    expect((await orchestrator.status(cfg())).live).toBe(true);
+    await orchestrator.startTerminal(cfg()); // idempotent
+    // Its cwd got standing orders the TUI reads as CLAUDE.md.
+    expect(await readFile(join(orchestrator.dir(), "CLAUDE.md"), "utf8")).toContain("You are Orca's orchestrator");
+    // The session runs claude on its model, resuming its session, with orca on PATH — the argv the fake recorded.
+    let argv = "";
+    for (let i = 0; i < 100 && !argv; i++) { await new Promise((r) => setTimeout(r, 50)); argv = (await launches())[0] ?? ""; }
+    expect(argv).toContain("--model claude-sonnet-5 --resume sess-1 --dangerously-skip-permissions");
+    // A message is TYPED into the session, not launched headless; so is a worker's report, one line.
+    expect(await orchestrator.message(cfg(), "what is running?")).toEqual({ status: "live" });
+    await orchestrator.onRunFinished(cfg(), {
+      key: "/wt/b", cwd: "/wt/b", runId: "run-b", status: "error", result: "boom", continued: false,
+      options: { repo: "r", branch: "b" }, exit: { code: 1, timedOut: false, budgetReached: false, stderr: "" },
+    });
+    let screen = "";
+    for (let i = 0; i < 60 && !screen.includes("run-b"); i++) { await new Promise((r) => setTimeout(r, 100)); screen = await tmux.capturePane("orca/orchestrator"); }
+    expect(screen).toContain("what is running?");
+    expect(screen).toContain('[worker finished] r/b "B" — error (orca read --run run-b)');
+    expect(await orchTurns()).toEqual([]); // nothing headless happened
+    expect((await launches()).length).toBe(1);
+  } finally {
+    await orchestrator.stopTerminal();
+    await rm(hold, { force: true });
+  }
+  expect((await orchestrator.status(cfg())).live).toBe(false);
+});
+
+test("O10: orchestratorShell: false keeps it to orca, reading, the web and subagents; on unless set", async () => {
+  expect((await orchestrator.status(cfg())).shell).toBe(true);
+  expect((await orchestrator.status({ ...cfg(), orchestratorShell: false })).shell).toBe(false);
+  await orchestrator.message({ ...cfg(), orchestratorShell: false }, "install node 24.21.0");
   const [turn] = await settled(orchTurns, 1);
   const argv = (await launches())[0]!;
-  expect(argv).toContain("--permission-mode bypassPermissions");
-  expect(argv).not.toContain("--allowedTools");
-  expect(turn!.prompt).toContain("## Access\nFull shell on this machine.");
+  expect(argv).toContain("--permission-mode default");
+  expect(argv).toContain("--allowedTools Bash(orca *),Read,Grep,Glob,Agent,WebSearch,WebFetch");
+  expect(turn!.prompt).toContain("## Access\nThe `orca` command, reading files, the web and read-only subagents.");
 
-  // Said on EVERY wake, so turning it back off reaches a session that is being resumed.
+  // Said on EVERY wake, so turning it back on reaches a session that is being resumed.
   await orchestrator.message(cfg(), "and now?");
   const turns = await settled(orchTurns, 2);
-  expect((await launches())[1]).toContain("--allowedTools Bash(orca *),Read,Grep,Glob");
+  expect((await launches())[1]).toContain("--permission-mode bypassPermissions");
   expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator"); // resumed
-  expect(turns[1]!.prompt).toContain("## Access\nOnly the `orca` command and reading files.");
+  expect(turns[1]!.prompt).toContain("## Access\nEverything Claude Code has in a terminal");
 
   const doc = (orchestratorShell: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" }], orchestratorShell });
   expect(parseConfigDocument(doc("yes")).errors).toContain("orchestratorShell must be true or false");
