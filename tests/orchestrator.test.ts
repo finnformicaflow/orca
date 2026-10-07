@@ -20,7 +20,7 @@ import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, sessionHint, wakeExitReason,
+  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
   wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -212,6 +212,38 @@ test("O17: a clean finish waits for the batch (or the user); a failure wakes it 
     '[worker finished] r/c "C" — done',
     expect.stringMatching(/^\[worker finished\] r\/orca\/add-cache-\w+ "Add cache" — done$/),
   ]);
+});
+
+test("O18: clean reports that queued while it worked also wait for the batch; a problem among them does not", async () => {
+  wire();
+  const finished = (branch: string, status: "done" | "error"): agent.RunFinished => ({
+    key: `/wt/${branch}`, cwd: `/wt/${branch}`, runId: `run-${branch}`, status, result: status === "done" ? "## Outcome\nDone." : "boom", continued: false,
+    options: { repo: "r", branch }, exit: { code: 0, timedOut: false, budgetReached: false, stderr: "" },
+  });
+  const orchIdle = async () => { for (let i = 0; i < 400 && agent.isRunning(orchestrator.dir()); i++) await new Promise((r) => setTimeout(r, 25)); };
+  for (const b of ["a", "b"]) await db.patchEnrichment("r", b, { orchestrated: true, title: b.toUpperCase() });
+  await writeFile(holdWorkers, "");
+  await orchestrator.tool(cfg(), "spawn", brief); // a worker that keeps running
+  await writeFile(hold, "");
+  await orchestrator.message(cfg(), "hello"); // the orchestrator is busy…
+  await orchestrator.onRunFinished(cfg(), finished("a", "done")); // …so this report queues
+  await rm(hold);
+  await orchIdle();
+  await new Promise((r) => setTimeout(r, 300));
+  // Its exit drained nothing: a clean report waits while a worker still runs.
+  expect(await orchTurns()).toHaveLength(1);
+  expect(await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).toHaveLength(1);
+  // Your next message delivers the held report with it; a problem that queues meanwhile is drained
+  // on its own as soon as that wake ends, worker or no worker.
+  await writeFile(hold, "");
+  await orchestrator.message(cfg(), "status?");
+  await orchestrator.onRunFinished(cfg(), finished("b", "error"));
+  await rm(hold);
+  await orchIdle();
+  const turns = await (async () => { for (let i = 0; i < 400; i++) { const t = await orchTurns(); if (t.length >= 3 && t.every((x) => x.finishedAt)) return t; await new Promise((r) => setTimeout(r, 25)); } throw new Error("no third wake"); })();
+  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done', "status?"]);
+  expect(turns[2]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/b "B" — error']);
+  await rm(holdWorkers);
 });
 
 test("O2: a brief missing a part and an unknown repo are refused; there is no cap on concurrent workers", async () => {
@@ -444,6 +476,17 @@ test("O8: the ladder decision and the orchestrator's views are pure", () => {
     "Outcome: Added the cache.", "Remaining:", "- docs", "Commits:", "- abc1234 add cache",
     "Full turn: orca read --run run-1",
   ].join("\n"));
+
+  // What counts as a problem is read off the report itself, so a queued one can be judged later.
+  const clean = workerEvent({ repo: "r", branch: "b", runId: "x", status: "done", response: "ok" });
+  const failedRun = workerEvent({ repo: "r", branch: "b", runId: "x", status: "error", response: "boom" });
+  const failedCheck = workerEvent({ repo: "r", branch: "b", runId: "x", status: "done", response: "ok", check: { command: "bun run check", ok: false, exitCode: 1, output: "x", durationMs: 1 } });
+  const passedCheck = workerEvent({ repo: "r", branch: "b", runId: "x", status: "done", response: "ok", check: { command: "bun run check", ok: true, exitCode: 0, output: "", durationMs: 1 } });
+  expect([clean, failedRun, failedCheck, passedCheck].map(isWorkerProblem)).toEqual([false, true, true, false]);
+  expect(onlyCleanReports([clean, passedCheck])).toBe(true);
+  expect(onlyCleanReports([clean, failedRun])).toBe(false);
+  expect(onlyCleanReports([clean, "what is running?"])).toBe(false);
+  expect(onlyCleanReports([])).toBe(false);
 
   expect(boardText([])).toBe("(no workstreams)");
   expect(boardText([{

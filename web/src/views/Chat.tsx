@@ -126,6 +126,15 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
 /** An instruction typed while the agent was working. It hasn't been sent yet — shown so it's visibly
  *  waiting rather than silently in limbo, and cancellable while it still is. */
 function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () => void }) {
+  // A worker report waiting for the batch (or your next message) is a system line, like a delivered one.
+  if (isWorkerEvent(message.instruction)) {
+    return (
+      <div className="mb-1 text-neutral-500" data-slot="worker-report-held">
+        ⚙ {message.instruction.split("\n")[0]!.slice(WORKER_EVENT_MARKER.length).trim()}
+        <span className="ml-2 text-[10px] tracking-widest uppercase">held for the batch</span>
+      </div>
+    );
+  }
   return (
     <div className="mb-3 opacity-60">
       <div className="flex gap-2 text-emerald-400">

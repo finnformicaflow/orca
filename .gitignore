@@ -8,3 +8,6 @@ orca.config.local.ts
 
 # Claude Code's own worktrees and local state — never part of the repo.
 .claude/
+# a worktree symlinks node_modules from the main checkout: the slash pattern above matches a directory, not a symlink
+node_modules
+web/node_modules

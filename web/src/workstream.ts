@@ -896,6 +896,15 @@ export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; 
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).
 export const WORKER_EVENT_MARKER = "[worker finished]";
 export const isWorkerEvent = (text: string): boolean => text.startsWith(WORKER_EVENT_MARKER);
+/** A report that needs the orchestrator now: the run did not end cleanly, or its commit failed
+ *  Orca's check. Read off the report text, so a queued one can be judged after the fact. */
+export const isWorkerProblem = (text: string): boolean => {
+  const [head = "", next = ""] = text.split("\n");
+  return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
+};
+/** Reports that may wait: every part is a clean worker report. */
+export const onlyCleanReports = (messages: string[]): boolean =>
+  messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
 /** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token

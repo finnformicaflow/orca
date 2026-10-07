@@ -23,7 +23,7 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
-  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent,
+  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
   orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
@@ -157,10 +157,10 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   // A clean finish is queued and delivered when the batch is done — the last of its running
   // workers finishing — or when the user next speaks, whichever is first; in between, the board
   // and `orca read` are there whenever it wants to check in.
-  const exception = run.status !== "done" || run.check?.ok === false;
+  const exception = isWorkerProblem(text);
   await serial(async () => {
     const wakes = (await blob()).wakes ?? 0;
-    const othersRunning = !exception && (await board(cfg)).some((r) => r.orchestrated && r.agent === "running" && r.worktreePath !== run.key);
+    const othersRunning = !exception && await workersRunning(cfg, run.key);
     // Held, not dropped: a paused orchestrator hears about it with your next message.
     if (agent.isRunning(dir()) || wakes >= MAX_WAKES || othersRunning) return void (await enqueue(text));
     await patch({ wakes: wakes + 1 });
@@ -223,12 +223,21 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
 }
 
 /** After its own run: everything that queued up meanwhile becomes ONE wake, not one each. */
+/** Any of its workers still running, other than `except`? The batch is not done while one is. */
+async function workersRunning(cfg: OrcaConfig, except?: string): Promise<boolean> {
+  return (await board(cfg)).some((r) => r.orchestrated && r.agent === "running" && r.worktreePath !== except);
+}
+
 async function drain(cfg: OrcaConfig): Promise<void> {
   const pending = await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH);
   if (!pending.length || agent.isRunning(dir())) return;
   const wakes = (await blob()).wakes ?? 0;
   const human = pending.some((m) => !isWorkerEvent(m.instruction));
   if (!human && wakes >= MAX_WAKES) return; // paused
+  // The same rule as for a fresh report: clean reports that piled up while it worked wait for the
+  // batch too. Without this, its own exit re-delivered them one wake at a time — every report
+  // still interrupted it, just a turn later.
+  if (onlyCleanReports(pending.map((m) => m.instruction)) && await workersRunning(cfg)) return;
   await patch({ wakes: human ? 0 : wakes + 1 });
   await wake(cfg, []);
 }
