@@ -65,30 +65,52 @@ export function OrchestratorButton() {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
-  // Where and how big the window is: dragged by its header, resized by the native CSS handle in its
-  // bottom-right corner, remembered per browser. Until it is moved it sits above the launcher,
-  // anchored bottom-right, so it stays put as the viewport changes.
+  // Where and how big the window is: dragged by its header, resized from any edge or corner,
+  // remembered per browser. Until it is moved it sits above the launcher, anchored bottom-right, so
+  // it stays put as the viewport changes. During a drag or resize the element's style is written
+  // DIRECTLY — a React state update per pointer move re-rendered the whole chat and lagged; state
+  // (and storage) is updated once, when the pointer lets go.
   const [frame, setFrame] = useState<Frame>(() => loadFrame());
   const panelRef = useRef<HTMLDivElement>(null);
-  const onDragStart = (e: ReactPointerEvent) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+  /** Pin the panel where it currently is (left/top instead of right/bottom), so edges can move. */
+  const pin = (el: HTMLDivElement): Frame => {
+    const r = el.getBoundingClientRect();
+    const f = { x: r.left, y: r.top, w: r.width || frame.w, h: r.height || frame.h };
+    el.style.left = `${f.x}px`; el.style.top = `${f.y}px`; el.style.right = "auto"; el.style.bottom = "auto"; el.style.position = "fixed";
+    return f;
+  };
+  const track = (e: ReactPointerEvent, onMove: (dx: number, dy: number, start: Frame, el: HTMLDivElement) => Frame) => {
+    if (e.button !== 0) return;
     const el = panelRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-    const move = (ev: PointerEvent) => setFrame((f) => ({ ...f, x: Math.max(0, Math.min(window.innerWidth - 80, ev.clientX - dx)), y: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - dy)) }));
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); setFrame((f) => { saveFrame(f); return f; }); };
+    const start = pin(el);
+    const x0 = e.clientX, y0 = e.clientY;
+    let last = start;
+    const move = (ev: PointerEvent) => {
+      last = onMove(ev.clientX - x0, ev.clientY - y0, start, el);
+      el.style.left = `${last.x}px`; el.style.top = `${last.y}px`; el.style.width = `${last.w}px`; el.style.height = `${last.h}px`;
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      setFrame(last); saveFrame(last);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     e.preventDefault();
   };
-  // The CSS resize handle changes the box's width/height directly; read them back when the pointer
-  // lets go so the size is kept. (A ResizeObserver would also fire on viewport changes.)
-  const onResizeEnd = () => {
-    const el = panelRef.current;
-    if (!el) return;
-    setFrame((f) => { const next = { ...f, w: el.offsetWidth, h: el.offsetHeight }; saveFrame(next); return next; });
+  const onDragStart = (e: ReactPointerEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    track(e, (dx, dy, s) => ({ ...s, x: Math.max(0, Math.min(window.innerWidth - 80, s.x! + dx)), y: Math.max(0, Math.min(window.innerHeight - 40, s.y! + dy)) }));
   };
+  /** An edge or corner handle: `h` ∈ n/s/e/w and their corners. Left/top edges move the origin too. */
+  const onResizeStart = (h: string) => (e: ReactPointerEvent) => track(e, (dx, dy, s) => {
+    let { x = 0, y = 0, w, h: hh } = s;
+    if (h.includes("e")) w = Math.max(MIN_W, s.w + dx);
+    if (h.includes("s")) hh = Math.max(MIN_H, s.h + dy);
+    if (h.includes("w")) { const nw = Math.max(MIN_W, s.w - dx); x = s.x! + (s.w - nw); w = nw; }
+    if (h.includes("n")) { const nh = Math.max(MIN_H, s.h - dy); y = s.y! + (s.h - nh); hh = nh; }
+    return { x, y, w, h: hh };
+  });
   const placed = frame.x !== undefined && frame.y !== undefined;
   return (
     // z-40: above the board, below menus and popovers (z-50), which must still open over it.
@@ -97,16 +119,21 @@ export function OrchestratorButton() {
         <div
           ref={panelRef}
           role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
-          // Two steps smaller than the worker cards' terminal (text-xs → 10px; textarea text-sm →
-          // 11px), scoped to this panel via descendant selectors so ChatPanel/ChatComposer stay
-          // untouched for everyone else. `resize` is the browser's own handle, bottom-right.
-          className={`dark bg-neutral-950 text-foreground flex resize flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_textarea]:text-[11px] ${placed ? "fixed" : ""}`}
+          // Smaller than a card's terminal, scoped to this panel via descendant selectors so
+          // ChatPanel/ChatComposer stay untouched for everyone else. The agent's replies are
+          // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
+          // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
+          // children follow (typography sizes them in em).
+          className={`dark bg-neutral-950 text-foreground relative flex flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px] ${placed ? "fixed" : ""}`}
           style={{
-            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: "calc(100vh - 2rem)", minWidth: 320, minHeight: 240,
+            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: "calc(100vh - 2rem)", minWidth: MIN_W, minHeight: MIN_H,
             ...(placed ? { left: frame.x, top: frame.y } : {}),
           }}
-          onPointerUp={onResizeEnd}
         >
+          {/* Resize handles on every edge and corner (the browser's own `resize` is bottom-right only). */}
+          {RESIZE_HANDLES.map(([h, cls]) => (
+            <div key={h} data-slot="orchestrator-resize" data-handle={h} onPointerDown={onResizeStart(h)} className={`absolute z-10 ${cls}`} />
+          ))}
           <div className="flex cursor-move items-center justify-between gap-2 border-b px-3 py-2 select-none" onPointerDown={onDragStart} data-slot="orchestrator-handle" title="Drag to move">
             {/* Paused = it has woken itself as many times as it may without hearing from you. */}
             <div className="min-w-0">
@@ -156,6 +183,14 @@ export function OrchestratorButton() {
 
 // The window's frame, remembered per browser (UI state only, like the theme).
 type Frame = { x?: number; y?: number; w: number; h: number };
+const MIN_W = 320, MIN_H = 240;
+// Edge strips and corner squares, with the cursor each shows. Order puts corners last so they win.
+const RESIZE_HANDLES: [string, string][] = [
+  ["n", "top-0 left-2 right-2 h-1.5 cursor-ns-resize"], ["s", "bottom-0 left-2 right-2 h-1.5 cursor-ns-resize"],
+  ["w", "left-0 top-2 bottom-2 w-1.5 cursor-ew-resize"], ["e", "right-0 top-2 bottom-2 w-1.5 cursor-ew-resize"],
+  ["nw", "top-0 left-0 size-3 cursor-nwse-resize"], ["se", "bottom-0 right-0 size-3 cursor-nwse-resize"],
+  ["ne", "top-0 right-0 size-3 cursor-nesw-resize"], ["sw", "bottom-0 left-0 size-3 cursor-nesw-resize"],
+];
 const FRAME_KEY = "orca.orchestrator.frame";
 const DEFAULT_FRAME: Frame = { w: Math.min(440, (typeof window === "undefined" ? 440 : window.innerWidth) - 32), h: Math.min(640, (typeof window === "undefined" ? 640 : window.innerHeight) - 96) };
 function loadFrame(): Frame {

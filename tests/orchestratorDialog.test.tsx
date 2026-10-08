@@ -113,8 +113,9 @@ test("the window is draggable by its header, resizable, smaller-typed, and remem
   await mount(<OrchestratorButton />);
   await click(launcher());
   const p = panel()!;
-  expect(p.className).toContain(" resize "); // the browser's own resize handle, bottom-right
-  expect(p.className).toContain("[&_.text-xs]:text-[10px]"); // two steps smaller than a card's terminal
+  expect(p.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(8); // every edge and corner
+  expect(p.className).toContain("[&_.text-xs]:text-[10px]"); // smaller than a card's terminal…
+  expect(p.className).toContain("[&_.prose]:text-[10.5px]"); // …including the markdown replies, which size themselves
   expect(p.style.width).toBe("500px");
   expect(p.style.left).toBe("40px"); // a remembered spot is honoured…
   const handle = p.querySelector<HTMLElement>('[data-slot="orchestrator-handle"]')!;
@@ -129,4 +130,14 @@ test("the window is draggable by its header, resizable, smaller-typed, and remem
   // (happy-dom lays nothing out, so the panel's rect is at 0,0: the grab offset is 60, and the pointer at 160 puts it at 100.)
   expect(p.style.left).toBe("100px");
   expect(JSON.parse(localStorage.getItem("orca.orchestrator.frame")!)).toMatchObject({ x: 100 });
+  // Resizing from the LEFT edge moves the origin and widens; from the top it moves the origin and heightens.
+  const west = p.querySelector<HTMLElement>('[data-handle="w"]')!;
+  await act(async () => {
+    west.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: -50, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent("pointerup", {}));
+    await flush();
+  });
+  expect(p.style.width).toBe("550px");
+  expect(JSON.parse(localStorage.getItem("orca.orchestrator.frame")!)).toMatchObject({ w: 550 });
 });
