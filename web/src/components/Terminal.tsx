@@ -124,7 +124,10 @@ export function OrchestratorButton() {
           // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
           // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
           // children follow (typography sizes them in em).
-          className={`dark bg-neutral-950 text-foreground relative flex flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px] ${placed ? "fixed" : ""}`}
+          // `relative` (for the absolute handles) ONLY while unplaced: with both `relative` and
+          // `fixed` on the element, `relative` won the cascade and the saved left/top became an
+          // offset from the corner — the window sat off-screen, invisible. Placed = fixed, period.
+          className={`dark bg-neutral-950 text-foreground flex flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px] ${placed ? "fixed" : "relative"}`}
           style={{
             width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: "calc(100vh - 2rem)", minWidth: MIN_W, minHeight: MIN_H,
             ...(placed ? { left: frame.x, top: frame.y } : {}),
