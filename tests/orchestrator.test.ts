@@ -321,7 +321,10 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
 
   // The run reported a nearly full context: the next wake must NOT resume it.
   expect((await orchestrator.status(cfg())).contextPct).toBeUndefined(); // nothing has reported yet
+  // The finished wake's own bookkeeping writes (session id, handling) can still be landing; wait for
+  // ours to be the last word rather than racing it (CI once read undefined here).
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { contextPct: 85 });
+  for (let i = 0; i < 40 && (await orchestrator.status(cfg())).contextPct !== 85; i++) { await new Promise((r) => setTimeout(r, 50)); await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { contextPct: 85 }); }
   expect((await orchestrator.status(cfg())).contextPct).toBe(85); // what the composer's ring shows
   await orchestrator.message(cfg(), "and now?");
   const turns = await settled(orchTurns, 2);
