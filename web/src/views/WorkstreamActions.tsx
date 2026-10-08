@@ -309,7 +309,7 @@ export function FollowUpComposer(
       // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
       // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
       history={row.followUps}
-      placeholder="Continue this work…  (⌘+Enter)"
+      placeholder="Continue this work…"
       leading={
         <div className="flex min-w-0 w-full items-center overflow-hidden">
           <ModelPicker label="Model" value={modelFor(row)} ran={row.agentMeta?.model} onChange={(m) => setCardModel(row, m)} className="max-w-full" />

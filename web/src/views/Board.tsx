@@ -326,7 +326,7 @@ function NewDraft() {
   return (
     <ChatComposer
       persistKey="orca.newDraft"
-      placeholder="Describe a feature…  (⌘+Enter)"
+      placeholder="Describe a feature…"
       onSubmit={async (text, images) => {
         setUndoable(createWorkstream(active, text, images, model));
       }}
@@ -375,7 +375,7 @@ function NewDraft() {
 }
 
 // The blank chat's first message. A native <dialog> like the terminal's; the composer is the same
-// one the terminal uses, so paste/drop attachments and ⌘+Enter work the same.
+// one the terminal uses, so paste/drop attachments and Enter-to-send work the same.
 function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean; onClose: () => void; repo: string; model: string; onSubmit: (text: string, images: File[]) => Promise<void> }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -388,7 +388,7 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
     <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
       <div className="flex flex-col gap-2 p-3">
         <div className="text-muted-foreground text-xs">New chat · {repo} · {modelLabel(model)}</div>
-        {open && <ChatComposer autoFocus persistKey="orca.newChat" placeholder="Ask anything…  (⌘+Enter)" onSubmit={onSubmit} onCancel={onClose} />}
+        {open && <ChatComposer autoFocus persistKey="orca.newChat" placeholder="Ask anything…" onSubmit={onSubmit} onCancel={onClose} />}
       </div>
     </dialog>
   );

@@ -133,7 +133,7 @@ test("the composer sends a follow-up through the normal launch path", async () =
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
 
   // Same headless one-shot every board action uses — the chat view adds no second runtime.
@@ -165,7 +165,7 @@ test("the composer clears as soon as you send, while the launch is still in flig
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
   expect(box.value).toBe(""); // cleared although the launch hasn't resolved
@@ -184,7 +184,7 @@ test("a failed send puts the text back in the box", async () => {
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
 
   expect(box.value).toBe("retry me");
@@ -387,7 +387,7 @@ test("a slow attachment save can't resurrect the message you already sent", asyn
   await act(async () => { container!.querySelector("textarea")!.parentElement!.dispatchEvent(drop); });
 
   // Send WITHOUT waiting for the attachment's save to settle — the race.
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (⌘+Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   await act(async () => { await flush(); await flush(); await flush(); });
 
@@ -430,7 +430,7 @@ test("a card whose runs never report context (Codex, Cursor, or nothing run yet)
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
 });
 
-/** Type into the panel's composer and send with ⌘+Enter. */
+/** Type into the panel's composer and send with Enter. */
 async function sendText(value: string) {
   const textarea = container!.querySelector("textarea")!;
   await act(async () => {
@@ -439,7 +439,7 @@ async function sendText(value: string) {
     await flush();
   });
   await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await flush(); await flush();
   });
 }
@@ -517,4 +517,22 @@ test("a worker report waiting in the queue is a muted system line too, not a que
   expect(held.textContent).toBe('⚙ r/a "A" — doneheld for the batch');
   expect(text()).toContain("❯and then deploy it"); // a message of yours still shows as queued
   expect(text()).toContain("queued — sends when the current run finishes");
+});
+
+test("Enter sends; Shift+Enter and ⌘+Enter break the line instead", async () => {
+  await mount(base);
+  const textarea = container!.querySelector("textarea")!;
+  const type = async (v: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, v); textarea.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
+  await type("line one");
+  // ⌘+Enter: a newline goes in at the caret, nothing is sent.
+  await act(async () => { textarea.setSelectionRange(8, 8); textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })); await flush(); });
+  expect(textarea.value).toBe("line one\n");
+  expect(apiFake.agentLaunches).toEqual([]);
+  // Shift+Enter: the textarea's own newline (not prevented), nothing is sent.
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })); await flush(); });
+  expect(apiFake.agentLaunches).toEqual([]);
+  // Enter alone sends what is there.
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await flush(); await flush(); });
+  expect(apiFake.agentLaunches.map((l) => l.prompt.includes("line one"))).toEqual([true]);
+  expect(textarea.value).toBe("");
 });

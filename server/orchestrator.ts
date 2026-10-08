@@ -11,7 +11,7 @@
 // (rewritten by it, re-read on every wake), the live board, and the turn table. So the handover
 // ladder applies to it like any other conversation — resume while the context is healthy, reset onto
 // the portable transcript at 80% — and a reset loses nothing it was told to keep.
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import * as agent from "./agent";
 import * as db from "./db";
@@ -20,13 +20,11 @@ import * as gh from "./gh";
 import * as verbs from "./verbs";
 import * as preview from "./preview";
 import { pushToTemplate } from "./pushTemplate";
-import * as tmux from "./tmux";
-import { ORCHESTRATOR_SESSION } from "../shared/tmux";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
-  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports, orchestratorStandingOrders,
+  MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
   orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
@@ -85,62 +83,10 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-// ---- the live terminal: Claude Code's TUI in a tmux session, shown in the window over xterm ----
-// The same session the headless wakes use (`--resume`), so the conversation continues either way:
-// what you said in the TUI is there for the next wake, and vice versa. While the terminal exists the
-// bridge never launches a wake — two processes on one session is the bug sessionBusy guards — and
-// delivers worker reports by TYPING them in (`tmux send-keys`), one line each, batched by the same
-// rules. tmux outlives the bridge, so the session survives a restart and a closed tab.
-
-/** Is the live terminal up? tmux is the truth, not the blob — it outlives the bridge. */
-export const live = (): Promise<boolean> => tmux.available() ? tmux.sessionExists(ORCHESTRATOR_SESSION) : Promise.resolve(false);
-
-const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-const wakeEnv = () => ({
-  ORCA_URL: `http://${process.env.ORCA_BIND || "127.0.0.1"}:${API_PORT}`,
-  PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
-});
-
-/** Start the terminal (idempotent): Claude Code in its cwd, on its model, resuming its session,
- *  with `orca` on PATH; `orchestratorShell` decides whether it skips permission prompts or asks you
- *  in the terminal. Its cwd gets a CLAUDE.md of standing orders the first time, which you may edit. */
-export async function startTerminal(cfg: OrcaConfig): Promise<{ session: string }> {
-  if (!tmux.available()) throw new Error("tmux is not installed on this host");
-  if (agent.isRunning(dir())) throw new Error("a wake is running — wait for it, then open the terminal");
-  const orders = join(dir(), "CLAUDE.md");
-  if (!existsSync(orders)) writeFileSync(orders, orchestratorStandingOrders());
-  const b = await blob();
-  const env = wakeEnv();
-  const command = [
-    `env PATH=${shellQuote(env.PATH)} ORCA_URL=${shellQuote(env.ORCA_URL)} claude --model ${shellQuote(modelOf(cfg, b))}`,
-    ...(b.sessionId ? [`--resume ${shellQuote(b.sessionId)}`] : []),
-    ...(cfg.orchestratorShell !== false ? ["--dangerously-skip-permissions"] : []),
-  ].join(" ");
-  await tmux.ensureSession(ORCHESTRATOR_SESSION, dir(), command);
-  return { session: ORCHESTRATOR_SESSION };
-}
-
-/** End the terminal; the next message goes back to headless wakes on the same session. */
-export const stopTerminal = (): Promise<void> => tmux.killSession(ORCHESTRATOR_SESSION);
-
-/** Type messages into the live session, one line each (a newline would send early), each followed
- *  by Enter. A worker report keeps its first line plus the run-id reference. Claude Code queues what
- *  is typed while it is working, so this is safe at any moment. */
-async function typeIn(messages: string[]): Promise<void> {
-  for (const m of messages) {
-    const lines = m.split("\n");
-    const ref = lines.find((l) => l.startsWith("Full turn: "))?.slice("Full turn: ".length);
-    const line = isWorkerEvent(m) ? `${lines[0]}${ref ? ` (${ref})` : ""}` : lines.join(" ");
-    await tmux.sendKeys(ORCHESTRATOR_SESSION, line);
-    await tmux.sendKeys(ORCHESTRATOR_SESSION, "\r");
-  }
-}
-
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; live: boolean; session: string; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; }> {
   const b = await blob();
   return {
     key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
-    live: await live(), session: ORCHESTRATOR_SESSION,
     model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell !== false,
@@ -157,10 +103,9 @@ export async function setModel(model: unknown): Promise<void> {
 }
 
 /** Something you typed. Resets the wake count — a person is in the loop again. */
-export function message(cfg: OrcaConfig, text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" | "live" }> {
+export function message(cfg: OrcaConfig, text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> {
   return serial(async () => {
     await patch({ wakes: 0 });
-    if (await live()) { await typeIn([withAttachments(text, attachments)]); return { status: "live" as const }; }
     if (agent.isRunning(dir())) {
       await enqueue(text, attachments);
       return { status: "queued" as const };
@@ -303,7 +248,6 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
   for (let m = await db.claimQueuedMessage(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH); m; m = await db.claimQueuedMessage(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)) claimed.push(m);
   const messages = [...claimed.map((m) => withAttachments(m.instruction, m.attachments)), ...fresh];
   if (!messages.length) return;
-  if (await live()) return typeIn(messages); // the TUI has the session: type, never launch
   try {
     const b = await blob();
     const next = continuation({

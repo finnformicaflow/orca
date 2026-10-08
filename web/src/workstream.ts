@@ -1008,23 +1008,6 @@ const ORCHESTRATOR_ROLE = [
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-/** The orchestrator's standing orders as a CLAUDE.md for its live terminal (Claude Code's TUI reads
- *  the cwd's CLAUDE.md, where a headless wake gets the role in its prompt). Same role, same model
- *  ladder; the board and notes it fetches itself with `orca`. */
-export function orchestratorStandingOrders(): string {
-  return [
-    "# Orca's orchestrator", "",
-    "This directory is the orchestrator's home. You are running in Orca's live terminal; a `[worker finished]` line typed",
-    "into this session is a worker of yours going idle (`orca read --run <id>` for the full report). `orca board` is the",
-    "current state; `orca notes` is your memory across sessions.", "",
-    ORCHESTRATOR_ROLE, "",
-    "## Models",
-    "`spawn` requires --model. Start from Opus; step DOWN to Sonnet for small, clear tasks and UP to Fable only when Opus has failed:",
-    ...MODEL_LADDER.map((m) => `- ${m.id}: ${m.when}`),
-    `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names.`,
-  ].join("\n");
-}
-
 export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),

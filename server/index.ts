@@ -20,8 +20,6 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { terminalWs, type TerminalData } from "./terminal";
-import { isOrcaSession } from "../shared/tmux";
 import { checkGate, launchOptions, newWorktree, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
@@ -205,14 +203,6 @@ async function api(req: Request, url: URL): Promise<Response> {
   // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
   // answered before a request is resolved to (and possibly forwarded for) a repo.
   if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
-  if (req.method === "POST" && p === "/api/orchestrator/terminal") {
-    // Claude Code's TUI in a tmux session, shown in the window (LiveTerminal.tsx). 501 without tmux.
-    try { return json(await orchestrator.startTerminal(cfg)); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, tmuxMissing(e) ? 501 : 409); }
-  }
-  if (req.method === "POST" && p === "/api/orchestrator/terminal/stop") {
-    await orchestrator.stopTerminal();
-    return json({ ok: true });
-  }
   if (req.method === "POST" && p === "/api/orchestrator/model") {
     try { await orchestrator.setModel(body.model); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
     return json({ ok: true });
@@ -713,9 +703,7 @@ async function serveStatic(url: URL): Promise<Response> {
   return new Response("Orca bridge up. Build the UI with `bun run build`, or use `bun run dev`.");
 }
 
-const tmuxMissing = (e: unknown) => e instanceof Error && /tmux is not installed/.test(e.message);
-
-Bun.serve<TerminalData>({
+Bun.serve({
   port: API_PORT,
   // Bind to localhost ONLY. (The keystrokes-into-a-shell WebSocket that made this critical is gone,
   // but the bridge still runs agents with repo-granted authority, so it stays off the network until
@@ -727,24 +715,14 @@ Bun.serve<TerminalData>({
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,
-  async fetch(req, server) {
+  async fetch(req) {
     const url = new URL(req.url);
-    // The live terminal's WebSocket: raw pane output out, keystrokes in (server/terminal.ts). Only
-    // Orca's own sessions, and the listen socket is loopback/tailnet, so send-keys into a shell is
-    // never reachable from elsewhere.
-    if (url.pathname === "/api/terminal/ws") {
-      const session = url.searchParams.get("session") ?? "";
-      if (!isOrcaSession(session)) return json({ error: "not an orca session" }, 400);
-      if (server.upgrade(req, { data: { name: session } })) return undefined;
-      return new Response("expected a websocket upgrade", { status: 426 });
-    }
     try {
       return url.pathname.startsWith("/api/") ? await api(req, url) : await serveStatic(url);
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
   },
-  websocket: terminalWs,
 });
 
 // Shutdown. Agents are deliberately left running — a restart shouldn't lose in-progress work; they're

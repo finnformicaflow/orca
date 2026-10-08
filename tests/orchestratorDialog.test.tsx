@@ -82,7 +82,7 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
     await flush();
   });
   await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await flush(); await flush();
   });
   expect(apiFake.orchestratorMessages).toEqual([{ text: "what is running?", attachments: [] }]);
@@ -108,24 +108,25 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session, carrying a summary of this one.");
 });
 
-test("with tmux, opening the window starts Claude Code's live terminal; without it, the chat with a note", async () => {
+test("the window is draggable by its header, resizable, smaller-typed, and remembers its frame", async () => {
+  localStorage.setItem("orca.orchestrator.frame", JSON.stringify({ x: 40, y: 50, w: 500, h: 400 }));
   await mount(<OrchestratorButton />);
   await click(launcher());
-  // The fake bridge has no tmux: chat mode, and the header says why.
-  expect(panel()!.querySelector('[data-slot="live-terminal"]')).toBeNull();
-  expect(panel()!.querySelector('[data-slot="orchestrator-no-terminal"]')!.textContent).toBe("chat mode — tmux is not installed on this host");
-  expect(panel()!.querySelector("textarea")).toBeTruthy();
-  await click(launcher()); // close
-
-  apiFake.tmux = true;
-  await act(async () => { root?.unmount(); });
-  await mount(<OrchestratorButton />);
-  await click(launcher());
-  await act(async () => { await flush(); await flush(); });
-  expect(panel()!.textContent).toContain("Orchestrator · Claude Code");
-  expect(panel()!.querySelector('[data-slot="live-terminal"]')).toBeTruthy(); // xterm's mount point (happy-dom has no canvas, so it reports rather than draws)
-  expect(panel()!.querySelector('[data-slot="chat-composer-toolbar"]')).toBeNull(); // no composer: you type in the terminal (xterm has its own hidden textarea)
-  const end = panel()!.querySelector<HTMLButtonElement>('button[aria-label="End terminal"]')!;
-  await click(end);
-  expect(panel()!.querySelector('[data-slot="chat-composer-toolbar"]')).toBeTruthy(); // back to the chat on the same conversation
+  const p = panel()!;
+  expect(p.className).toContain(" resize "); // the browser's own resize handle, bottom-right
+  expect(p.className).toContain("[&_.text-xs]:text-[10px]"); // two steps smaller than a card's terminal
+  expect(p.style.width).toBe("500px");
+  expect(p.style.left).toBe("40px"); // a remembered spot is honoured…
+  const handle = p.querySelector<HTMLElement>('[data-slot="orchestrator-handle"]')!;
+  expect(handle.className).toContain("cursor-move");
+  // …and a drag by the header moves it.
+  await act(async () => {
+    handle.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 60, clientY: 60 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 160, clientY: 110 }));
+    window.dispatchEvent(new PointerEvent("pointerup", {}));
+    await flush();
+  });
+  // (happy-dom lays nothing out, so the panel's rect is at 0,0: the grab offset is 60, and the pointer at 160 puts it at 100.)
+  expect(p.style.left).toBe("100px");
+  expect(JSON.parse(localStorage.getItem("orca.orchestrator.frame")!)).toMatchObject({ x: 100 });
 });

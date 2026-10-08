@@ -12,7 +12,6 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import * as git from "../server/git";
-import * as tmux from "../server/tmux";
 import * as ledger from "../server/ledger";
 import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
@@ -151,43 +150,6 @@ test("O11: send --model moves a workstream to another model for this and later m
   await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and again"] });
   await settled(() => db.turns("r", branch), 3);
   expect((await launches())[2]).toContain("--model claude-opus-5-5");
-});
-
-const tmuxTest = Bun.which("tmux") ? test : test.skip;
-tmuxTest("O20: the live terminal is Claude Code in tmux on the same session; messages and reports are typed in", async () => {
-  wire();
-  await writeFile(hold, ""); // the fake claude stays up, as the TUI would
-  await orchestrator.stopTerminal();
-  expect((await orchestrator.status(cfg())).live).toBe(false);
-  await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { sessionId: "sess-1", preferredModel: "claude-sonnet-5" });
-  await db.patchEnrichment("r", "b", { orchestrated: true, title: "B" });
-  try {
-    expect(await orchestrator.startTerminal(cfg())).toEqual({ session: "orca/orchestrator" });
-    expect((await orchestrator.status(cfg())).live).toBe(true);
-    await orchestrator.startTerminal(cfg()); // idempotent
-    // Its cwd got standing orders the TUI reads as CLAUDE.md.
-    expect(await readFile(join(orchestrator.dir(), "CLAUDE.md"), "utf8")).toContain("You are Orca's orchestrator");
-    // The session runs claude on its model, resuming its session, with orca on PATH — the argv the fake recorded.
-    let argv = "";
-    for (let i = 0; i < 100 && !argv; i++) { await new Promise((r) => setTimeout(r, 50)); argv = (await launches())[0] ?? ""; }
-    expect(argv).toContain("--model claude-sonnet-5 --resume sess-1 --dangerously-skip-permissions");
-    // A message is TYPED into the session, not launched headless; so is a worker's report, one line.
-    expect(await orchestrator.message(cfg(), "what is running?")).toEqual({ status: "live" });
-    await orchestrator.onRunFinished(cfg(), {
-      key: "/wt/b", cwd: "/wt/b", runId: "run-b", status: "error", result: "boom", continued: false,
-      options: { repo: "r", branch: "b" }, exit: { code: 1, timedOut: false, budgetReached: false, stderr: "" },
-    });
-    let screen = "";
-    for (let i = 0; i < 60 && !screen.includes("run-b"); i++) { await new Promise((r) => setTimeout(r, 100)); screen = await tmux.capturePane("orca/orchestrator"); }
-    expect(screen).toContain("what is running?");
-    expect(screen).toContain('[worker finished] r/b "B" — error (orca read --run run-b)');
-    expect(await orchTurns()).toEqual([]); // nothing headless happened
-    expect((await launches()).length).toBe(1);
-  } finally {
-    await orchestrator.stopTerminal();
-    await rm(hold, { force: true });
-  }
-  expect((await orchestrator.status(cfg())).live).toBe(false);
 });
 
 test("O10: orchestratorShell: false keeps it to orca, reading, the web and subagents; on unless set", async () => {
@@ -359,7 +321,10 @@ test("O5: notes ride every wake, and a session at 80% context is reset onto them
 
   // The run reported a nearly full context: the next wake must NOT resume it.
   expect((await orchestrator.status(cfg())).contextPct).toBeUndefined(); // nothing has reported yet
+  // The finished wake's own bookkeeping writes (session id, handling) can still be landing; wait for
+  // ours to be the last word rather than racing it (CI once read undefined here).
   await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { contextPct: 85 });
+  for (let i = 0; i < 40 && (await orchestrator.status(cfg())).contextPct !== 85; i++) { await new Promise((r) => setTimeout(r, 50)); await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { contextPct: 85 }); }
   expect((await orchestrator.status(cfg())).contextPct).toBe(85); // what the composer's ring shows
   await orchestrator.message(cfg(), "and now?");
   const turns = await settled(orchTurns, 2);

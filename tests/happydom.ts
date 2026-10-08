@@ -28,24 +28,3 @@ if (typeof globalThis.EventSource === "undefined") {
   }
   (globalThis as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
 }
-
-// happy-dom's WebSocket really connects, and the live terminal opens one to the bridge on mount —
-// in a test there is no bridge (or the wrong one), and the failed connection surfaces as an unhandled
-// error event. Same stub as above: never connects, so component tests assert rendering only.
-{
-  class FakeWebSocket extends EventTarget {
-    static OPEN = 1;
-    static opened: FakeWebSocket[] = [];
-    readonly url: string;
-    readyState = 0;
-    binaryType = "blob";
-    onopen: ((e: Event) => void) | null = null;
-    onmessage: ((e: MessageEvent) => void) | null = null;
-    onclose: ((e: Event) => void) | null = null;
-    onerror: ((e: Event) => void) | null = null;
-    constructor(url: string) { super(); this.url = url; FakeWebSocket.opened.push(this); }
-    send(): void { /* nowhere to send */ }
-    close(): void { this.readyState = 3; FakeWebSocket.opened = FakeWebSocket.opened.filter((s) => s !== this); }
-  }
-  (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
-}
