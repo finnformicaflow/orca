@@ -118,6 +118,8 @@ test("the window is draggable by its header, resizable, smaller-typed, and remem
   expect(p.className).toContain("[&_.prose]:text-[10.5px]"); // …including the markdown replies, which size themselves
   expect(p.style.width).toBe("500px");
   expect(p.style.left).toBe("40px"); // a remembered spot is honoured…
+  expect(p.classList.contains("fixed")).toBe(true); // …as a FIXED position: with `relative` also present it became an off-screen offset
+  expect(p.classList.contains("relative")).toBe(false);
   const handle = p.querySelector<HTMLElement>('[data-slot="orchestrator-handle"]')!;
   expect(handle.className).toContain("cursor-move");
   // …and a drag by the header moves it.
