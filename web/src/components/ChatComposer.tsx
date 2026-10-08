@@ -7,7 +7,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 // The one chat input, shared by the new-draft box and the follow-up box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
-// Accepts files of any type by paste, drag-drop, or the paperclip picker; ⌘/Ctrl+Enter sends.
+// Accepts files of any type by paste, drag-drop, or the paperclip picker; Enter sends; Shift/⌘/Ctrl+Enter breaks the line.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 /** Shell-style history step: ↑ walks toward older (from newest when not yet walking), ↓ toward newer
  *  and off the end back to an empty box (null). Pure, so it's unit-tested without a DOM. */
@@ -119,7 +119,16 @@ export function ChatComposer({
   // Recall a history entry (or clear to empty at idx null) into the box.
   const recall = (idx: number | null) => { setHistIdx(idx); setValue(idx === null ? "" : (history?.[idx] ?? "")); };
   const onKey = (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void submit(); return; }
+    // Enter sends, like a chat; Shift/⌘/Ctrl+Enter breaks the line. (It was ⌘+Enter to send.) A
+    // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand.
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); return; }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      const el = e.currentTarget as HTMLTextAreaElement;
+      el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
+      setValue(el.value);
+      return;
+    }
     const len = history?.length ?? 0;
     if (!len) return;
     // ↑/↓ walk past follow-ups — but only from an empty box (or once already walking), so ↑ never
@@ -170,7 +179,7 @@ export function ChatComposer({
                 {alt.label}
               </Button>
             )}
-            <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (⌘+Enter)" onClick={() => void submit()}>
+            <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" onClick={() => void submit()}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
             </Button>
           </div>

@@ -55,7 +55,7 @@ describe("new chat", () => {
       box.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    await click(dialog.querySelector('button[title="Send (⌘+Enter)"]')!);
+    await click(dialog.querySelector('button[title="Send (Enter)"]')!);
 
     // Submitted: the dialog closes, the optimistic card is on the board while the worktree is cut.
     expect(dialog.open).toBe(false);

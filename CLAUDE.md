@@ -122,28 +122,12 @@ its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). T
 rows tagged by repo (each row carries `repo`; actions use `row.repo`). Enrichment is keyed
 `repo::branch`. The New-draft box has a repo **dropdown**; cards show a repo tag.
 
-## The live terminal (tmux + xterm.js)
+## No live terminal
 
-The orchestrator's window is **Claude Code's own TUI** — slash commands, `/compact`, `/model`, plan
-mode, permission prompts — not a chat rendering of turns. `server/tmux.ts` wraps the `tmux` binary
-(sessions outlive the bridge and the tab by design), `server/terminal.ts` + `/api/terminal/ws` pipe
-a pane to the browser (`pipe-pane` → FIFO → WebSocket; keystrokes back via `send-keys -l`), and
-`web/src/components/LiveTerminal.tsx` is the xterm.js view. One session, `orca/orchestrator`
-(`shared/tmux.ts`), started by `POST /api/orchestrator/terminal` (`orchestrator.startTerminal`):
-`claude` in the orchestrator's cwd, on its model, `--resume` on the SAME session the headless wakes
-use, `orca` on PATH, `--dangerously-skip-permissions` unless `orchestratorShell: false` (then it
-asks you, in the terminal). Its cwd gets a `CLAUDE.md` of standing orders on first start
-(`orchestratorStandingOrders`), which you may edit. **While the terminal is up the bridge never
-launches a wake** (two processes on one session is the bug `sessionBusy` guards): your messages and
-the workers' reports are TYPED into the session (`typeIn`: one line each + Enter, a report as its
-first line plus `(orca read --run <id>)`; Claude Code queues input typed while it works), batched by
-the same management-by-exception rules. Opening the window starts the terminal when tmux is present;
-without tmux, or while a wake is still running, it stays the chat and the header says why. `end`
-kills the session; the next message resumes the conversation headless. Turns spoken in the TUI are
-not in Orca's turn table (the session file has them); `orca chats` therefore misses them.
-
-(History: a tmux terminal per card existed once, was deleted as unused, and came back for the
-orchestrator when the user asked for "just Claude Code in the orchestrator panel".)
+There is deliberately no tmux/xterm lane. One existed per card (deleted as unused) and came back
+once for the orchestrator's window (#96: Claude Code's TUI in tmux, streamed over a WebSocket) —
+the user found it didn't work for them and had it reverted the next day. The orchestrator's window
+is the chat panel over its recorded turns; a wake is `claude -p --resume` on its session.
 
 ## The one board & model
 
@@ -258,17 +242,16 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   it reads every worker's output. Its prompt states which mode it is in on EVERY wake (`## Access`).
   Either way it **cannot promote, merge or Slack through Orca**; those stay your buttons. Code
   changes to a repo go to a workstream — a worker owns its branch. Claude only (workers keep their
-  per-card model). What it gets from its cwd (`~/.orca/orchestrator`): a `CLAUDE.md` there is its
-  standing orders, a `.mcp.json` there is its project-scope MCP servers, and Claude Code's own
-  auto-memory accrues under that cwd; user-level `~/.claude` config loads as in any session.
+  per-card model). What it gets from its cwd (`~/.orca/orchestrator`): a `CLAUDE.md` there (yours to
+  write) is read as standing orders alongside the role in the prompt, a `.mcp.json` there is its
+  project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
+  `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
   `send`, `address`, `archive`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `chats`, `read`,
   `notes`.
-- **The window is Claude Code's TUI** — see "The live terminal" above. A headless wake is the same
-  binary in print mode on the same session file, so the two hand the conversation back and forth.
 - **Its role text is judgement-first.** It is told it is a senior engineer running a team, given
   the trade-offs (send to an existing workstream vs spawn; one branch per mergeable unit) and left
   to decide. An earlier, rule-shaped version ("do not spawn for something a workstream owns") made it

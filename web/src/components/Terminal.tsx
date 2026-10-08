@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Bot, X } from "lucide-react";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
 import type { Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../workstream";
-import { LiveTerminal } from "@/components/LiveTerminal";
 import { Button } from "@/components/ui/button";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
@@ -54,43 +53,64 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 // running drives Stop and the composer's placeholder.
 export function OrchestratorButton() {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; live?: boolean; session?: string; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
-  // The window IS Claude Code's terminal (its TUI in tmux, see LiveTerminal) whenever tmux is here:
-  // opening the window starts the session if it isn't up. Without tmux — or while a headless wake is
-  // running — it falls back to the chat, and says why.
-  const [noTerminal, setNoTerminal] = useState<string | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   useEffect(() => {
     if (!open) return;
-    void api.orchestrator().then(async (s) => {
-      setState(s);
-      if (s.live || noTerminal) return;
-      try { await api.orchestratorTerminal(); setNoTerminal(null); await load(); }
-      catch (e) { setNoTerminal(e instanceof Error ? e.message : String(e)); }
-    }).catch(() => {});
+    void load();
     const timer = setInterval(load, 2000);
     return () => clearInterval(timer);
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open]);
   const row: Row = {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
+  // Where and how big the window is: dragged by its header, resized by the native CSS handle in its
+  // bottom-right corner, remembered per browser. Until it is moved it sits above the launcher,
+  // anchored bottom-right, so it stays put as the viewport changes.
+  const [frame, setFrame] = useState<Frame>(() => loadFrame());
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onDragStart = (e: ReactPointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+    const move = (ev: PointerEvent) => setFrame((f) => ({ ...f, x: Math.max(0, Math.min(window.innerWidth - 80, ev.clientX - dx)), y: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - dy)) }));
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); setFrame((f) => { saveFrame(f); return f; }); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  };
+  // The CSS resize handle changes the box's width/height directly; read them back when the pointer
+  // lets go so the size is kept. (A ResizeObserver would also fire on viewport changes.)
+  const onResizeEnd = () => {
+    const el = panelRef.current;
+    if (!el) return;
+    setFrame((f) => { const next = { ...f, w: el.offsetWidth, h: el.offsetHeight }; saveFrame(next); return next; });
+  };
+  const placed = frame.x !== undefined && frame.y !== undefined;
   return (
     // z-40: above the board, below menus and popovers (z-50), which must still open over it.
     <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-3" onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
       {open && (
         <div
+          ref={panelRef}
           role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
-          // One step smaller than the worker cards' terminal: scoped to this panel's log (text-xs
-          // → text-[11px]) and composer textarea (text-sm → text-xs) only, via descendant
-          // selectors, so ChatPanel/ChatComposer stay untouched for everyone else.
-          className={`dark bg-neutral-950 text-foreground flex h-[min(720px,calc(100vh-6rem))] flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[11px] [&_textarea]:text-xs ${state?.live ? "w-[min(820px,calc(100vw-2rem))]" : "w-[min(440px,calc(100vw-2rem))]"}`}
+          // Two steps smaller than the worker cards' terminal (text-xs → 10px; textarea text-sm →
+          // 11px), scoped to this panel via descendant selectors so ChatPanel/ChatComposer stay
+          // untouched for everyone else. `resize` is the browser's own handle, bottom-right.
+          className={`dark bg-neutral-950 text-foreground flex resize flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_textarea]:text-[11px] ${placed ? "fixed" : ""}`}
+          style={{
+            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: "calc(100vh - 2rem)", minWidth: 320, minHeight: 240,
+            ...(placed ? { left: frame.x, top: frame.y } : {}),
+          }}
+          onPointerUp={onResizeEnd}
         >
-          <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+          <div className="flex cursor-move items-center justify-between gap-2 border-b px-3 py-2 select-none" onPointerDown={onDragStart} data-slot="orchestrator-handle" title="Drag to move">
             {/* Paused = it has woken itself as many times as it may without hearing from you. */}
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{state?.live ? "Orchestrator · Claude Code" : state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-              {!state?.live && noTerminal && <div className="truncate text-[10px] text-neutral-500" data-slot="orchestrator-no-terminal">chat mode — {noTerminal}</div>}
+              <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
               {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
               {state?.lastWakeUsd !== undefined && (
                 <div className={`truncate text-[10px] ${state.hint ? "text-amber-400" : "text-neutral-500"}`} title={state.hint} data-slot="orchestrator-spend">
@@ -98,22 +118,13 @@ export function OrchestratorButton() {
                 </div>
               )}
             </div>
-            {state?.live && (
-              <Button
-                size="sm" variant="ghost" className="h-7 shrink-0 text-xs" aria-label="End terminal"
-                title="End the terminal session. The conversation is kept: the next message resumes it, headless or in a new terminal."
-                onClick={() => { void api.orchestratorTerminalStop().then(load); setNoTerminal("terminal ended"); }}
-              >
-                end
-              </Button>
-            )}
             <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
               <X className="size-4" />
             </Button>
           </div>
           {/* No padding: the terminal log fills the window edge to edge. */}
           <div className="min-h-0 flex-1">
-            {state?.live && state.session ? <LiveTerminal session={state.session} /> : state && <ChatPanel
+            {state && <ChatPanel
               row={row} flush
               // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
               // only; changing the model keeps the session.
@@ -141,4 +152,22 @@ export function OrchestratorButton() {
       </button>
     </div>
   );
+}
+
+// The window's frame, remembered per browser (UI state only, like the theme).
+type Frame = { x?: number; y?: number; w: number; h: number };
+const FRAME_KEY = "orca.orchestrator.frame";
+const DEFAULT_FRAME: Frame = { w: Math.min(440, (typeof window === "undefined" ? 440 : window.innerWidth) - 32), h: Math.min(640, (typeof window === "undefined" ? 640 : window.innerHeight) - 96) };
+function loadFrame(): Frame {
+  try {
+    const raw = localStorage.getItem(FRAME_KEY);
+    const f = raw ? (JSON.parse(raw) as Partial<Frame>) : {};
+    const w = typeof f.w === "number" ? f.w : DEFAULT_FRAME.w, h = typeof f.h === "number" ? f.h : DEFAULT_FRAME.h;
+    // A remembered spot off the current screen (a smaller window) snaps back to the corner.
+    const onScreen = typeof f.x === "number" && typeof f.y === "number" && f.x < window.innerWidth - 80 && f.y < window.innerHeight - 40;
+    return onScreen ? { x: f.x, y: f.y, w, h } : { w, h };
+  } catch { return DEFAULT_FRAME; }
+}
+function saveFrame(f: Frame): void {
+  try { localStorage.setItem(FRAME_KEY, JSON.stringify(f)); } catch { /* private window */ }
 }
