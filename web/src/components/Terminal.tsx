@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bot, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
 import type { Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../workstream";
+import { FRAME_MIN_H as MIN_H, FRAME_MIN_W as MIN_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, clampFrame, resizeFrame, type Frame } from "../workstream";
+import { PortalContainer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
@@ -55,12 +57,42 @@ export function OrchestratorButton() {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
+  // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
+  // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
+  // popovers carry over rather than being copied. Browsers without the API get no Pop out button.
+  const [pip, setPip] = useState<Window | null>(null);
+  // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
+  // a hidden tab's timers get throttled (to once a minute after a while).
   useEffect(() => {
     if (!open) return;
     void load();
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  }, [open]);
+    const host = pip ?? window;
+    const timer = host.setInterval(load, 2000);
+    return () => host.clearInterval(timer);
+  }, [open, pip]);
+  useEffect(() => { if (!open) pip?.close(); }, [open]);
+  useEffect(() => {
+    if (!pip) return;
+    // The page's theme is a class on <html> (lib/theme.ts): mirror <html>'s class and inline style
+    // (CSS variables), so a theme toggle in the tab reaches the PiP too.
+    const sync = () => {
+      const from = document.documentElement, to = pip.document.documentElement;
+      to.className = from.className;
+      to.style.cssText = from.style.cssText;
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true });
+    return () => { observer.disconnect(); pip.close(); };
+  }, [pip]);
+  const popOut = async () => {
+    const w = await pipApi()!.requestWindow(loadPipSize(frame)).catch(() => null);
+    if (!w) return;
+    copyStyles(document, w.document);
+    // Closing it (its own ✕, Return to tab, or the launcher) brings the chat back into the tab.
+    w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); }, { once: true });
+    setPip(w);
+  };
   const row: Row = {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
@@ -73,26 +105,27 @@ export function OrchestratorButton() {
   const [frame, setFrame] = useState<Frame>(() => loadFrame());
   const panelRef = useRef<HTMLDivElement>(null);
   /** Pin the panel where it currently is (left/top instead of right/bottom), so edges can move. */
-  const pin = (el: HTMLDivElement): Frame => {
+  const pin = (el: HTMLDivElement): Required<Frame> => {
     const r = el.getBoundingClientRect();
     const f = { x: r.left, y: r.top, w: r.width || frame.w, h: r.height || frame.h };
     el.style.left = `${f.x}px`; el.style.top = `${f.y}px`; el.style.right = "auto"; el.style.bottom = "auto"; el.style.position = "fixed";
     return f;
   };
-  const track = (e: ReactPointerEvent, onMove: (dx: number, dy: number, start: Frame, el: HTMLDivElement) => Frame) => {
+  const track = (e: ReactPointerEvent, onMove: (dx: number, dy: number, start: Required<Frame>) => Frame) => {
     if (e.button !== 0) return;
     const el = panelRef.current;
     if (!el) return;
     const start = pin(el);
     const x0 = e.clientX, y0 = e.clientY;
-    let last = start;
+    let last: Frame = start;
     const move = (ev: PointerEvent) => {
-      last = onMove(ev.clientX - x0, ev.clientY - y0, start, el);
+      // Every move is clamped: no part of the window can leave the viewport.
+      last = clampFrame(onMove(ev.clientX - x0, ev.clientY - y0, start), window.innerWidth, window.innerHeight);
       el.style.left = `${last.x}px`; el.style.top = `${last.y}px`; el.style.width = `${last.w}px`; el.style.height = `${last.h}px`;
     };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-      setFrame(last); saveFrame(last);
+      setFrame(last);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -100,36 +133,95 @@ export function OrchestratorButton() {
   };
   const onDragStart = (e: ReactPointerEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
-    track(e, (dx, dy, s) => ({ ...s, x: Math.max(0, Math.min(window.innerWidth - 80, s.x! + dx)), y: Math.max(0, Math.min(window.innerHeight - 40, s.y! + dy)) }));
+    track(e, (dx, dy, s) => ({ ...s, x: s.x + dx, y: s.y + dy }));
   };
   /** An edge or corner handle: `h` ∈ n/s/e/w and their corners. Left/top edges move the origin too. */
-  const onResizeStart = (h: string) => (e: ReactPointerEvent) => track(e, (dx, dy, s) => {
-    let { x = 0, y = 0, w, h: hh } = s;
-    if (h.includes("e")) w = Math.max(MIN_W, s.w + dx);
-    if (h.includes("s")) hh = Math.max(MIN_H, s.h + dy);
-    if (h.includes("w")) { const nw = Math.max(MIN_W, s.w - dx); x = s.x! + (s.w - nw); w = nw; }
-    if (h.includes("n")) { const nh = Math.max(MIN_H, s.h - dy); y = s.y! + (s.h - nh); hh = nh; }
-    return { x, y, w, h: hh };
-  });
+  const onResizeStart = (h: string) => (e: ReactPointerEvent) => track(e, (dx, dy, s) => resizeFrame(s, h, dx, dy, window.innerWidth, window.innerHeight));
+  // A smaller browser window pulls a placed window back inside it; the clamped frame is saved, so a
+  // spot remembered from a bigger screen is fixed for good.
+  useEffect(() => {
+    const fit = () => setFrame((f) => clampFrame(f, window.innerWidth, window.innerHeight));
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+  useEffect(() => saveFrame(frame), [frame]);
   const placed = frame.x !== undefined && frame.y !== undefined;
+  const header = (
+    <div
+      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip ? "" : "cursor-move"}`}
+      onPointerDown={pip ? undefined : onDragStart} data-slot="orchestrator-handle" title={pip ? undefined : "Drag to move"}
+    >
+      {/* Paused = it has woken itself as many times as it may without hearing from you. */}
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+        {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
+        {state?.lastWakeUsd !== undefined && (
+          <div className={`truncate text-[10px] ${state.hint ? "text-amber-400" : "text-neutral-500"}`} title={state.hint} data-slot="orchestrator-spend">
+            last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center">
+        {pip ? (
+          <Button size="icon" variant="ghost" className="size-7" title="Return to tab" aria-label="Return to tab" onClick={() => pip.close()}>
+            <PanelBottomClose className="size-4" />
+          </Button>
+        ) : pipApi() && (
+          <Button size="icon" variant="ghost" className="size-7" title="Pop out: keep it on top of every window" aria-label="Pop out" onClick={() => void popOut()}>
+            <PictureInPicture2 className="size-4" />
+          </Button>
+        )}
+        <Button size="icon" variant="ghost" className="size-7" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
+          <X className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+  // No padding: the terminal log fills the window edge to edge.
+  const chat = (
+    <div className="min-h-0 flex-1">
+      {state && <ChatPanel
+        row={row} flush
+        // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
+        // only; changing the model keeps the session.
+        controls={{
+          model: state.model, only: "claude", contextPct: state.contextPct,
+          onModel: (model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); },
+        }}
+        send={async (text, images) => {
+          await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
+          await load();
+        }}
+      />}
+    </div>
+  );
+  // Smaller than a card's terminal, scoped to this panel via descendant selectors so
+  // ChatPanel/ChatComposer stay untouched for everyone else. The agent's replies are
+  // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
+  // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
+  // children follow (typography sizes them in em).
+  const panelClass = "dark bg-neutral-950 text-foreground flex flex-col overflow-hidden [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px]";
   return (
     // z-40: above the board, below menus and popovers (z-50), which must still open over it.
-    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-3" onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
-      {open && (
+    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-3" onKeyDown={(e) => { if (e.key === "Escape" && !pip) setOpen(false); }}>
+      {open && pip && createPortal(
+        // Popovers and menus opened in here must portal into the PiP document, not the tab's.
+        <PortalContainer.Provider value={pip.document.body}>
+          <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header}{chat}</div>
+        </PortalContainer.Provider>,
+        pip.document.body,
+      )}
+      {open && !pip && (
         <div
           ref={panelRef}
           role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
-          // Smaller than a card's terminal, scoped to this panel via descendant selectors so
-          // ChatPanel/ChatComposer stay untouched for everyone else. The agent's replies are
-          // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
-          // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
-          // children follow (typography sizes them in em).
           // `relative` (for the absolute handles) ONLY while unplaced: with both `relative` and
           // `fixed` on the element, `relative` won the cascade and the saved left/top became an
           // offset from the corner — the window sat off-screen, invisible. Placed = fixed, period.
-          className={`dark bg-neutral-950 text-foreground flex flex-col overflow-hidden rounded-lg border shadow-xl [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px] ${placed ? "fixed" : "relative"}`}
+          className={`${panelClass} rounded-lg border shadow-xl ${placed ? "fixed" : "relative"}`}
           style={{
-            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: "calc(100vh - 2rem)", minWidth: MIN_W, minHeight: MIN_H,
+            // Unplaced, it stacks above the launcher (3rem + gaps), so its max height leaves room for it.
+            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: placed ? "100vh" : "calc(100vh - 6rem)", minWidth: MIN_W, minHeight: MIN_H,
             ...(placed ? { left: frame.x, top: frame.y } : {}),
           }}
         >
@@ -137,37 +229,8 @@ export function OrchestratorButton() {
           {RESIZE_HANDLES.map(([h, cls]) => (
             <div key={h} data-slot="orchestrator-resize" data-handle={h} onPointerDown={onResizeStart(h)} className={`absolute z-10 ${cls}`} />
           ))}
-          <div className="flex cursor-move items-center justify-between gap-2 border-b px-3 py-2 select-none" onPointerDown={onDragStart} data-slot="orchestrator-handle" title="Drag to move">
-            {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-              {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
-              {state?.lastWakeUsd !== undefined && (
-                <div className={`truncate text-[10px] ${state.hint ? "text-amber-400" : "text-neutral-500"}`} title={state.hint} data-slot="orchestrator-spend">
-                  last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-                </div>
-              )}
-            </div>
-            <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
-              <X className="size-4" />
-            </Button>
-          </div>
-          {/* No padding: the terminal log fills the window edge to edge. */}
-          <div className="min-h-0 flex-1">
-            {state && <ChatPanel
-              row={row} flush
-              // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
-              // only; changing the model keeps the session.
-              controls={{
-                model: state.model, only: "claude", contextPct: state.contextPct,
-                onModel: (model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); },
-              }}
-              send={async (text, images) => {
-                await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
-                await load();
-              }}
-            />}
-          </div>
+          {header}
+          {chat}
         </div>
       )}
       {/* Inverted against the page — foreground as the fill — so it stands off the board in either theme. */}
@@ -185,8 +248,6 @@ export function OrchestratorButton() {
 }
 
 // The window's frame, remembered per browser (UI state only, like the theme).
-type Frame = { x?: number; y?: number; w: number; h: number };
-const MIN_W = 320, MIN_H = 240;
 // Edge strips and corner squares, with the cursor each shows. Order puts corners last so they win.
 const RESIZE_HANDLES: [string, string][] = [
   ["n", "top-0 left-2 right-2 h-1.5 cursor-ns-resize"], ["s", "bottom-0 left-2 right-2 h-1.5 cursor-ns-resize"],
@@ -201,11 +262,42 @@ function loadFrame(): Frame {
     const raw = localStorage.getItem(FRAME_KEY);
     const f = raw ? (JSON.parse(raw) as Partial<Frame>) : {};
     const w = typeof f.w === "number" ? f.w : DEFAULT_FRAME.w, h = typeof f.h === "number" ? f.h : DEFAULT_FRAME.h;
-    // A remembered spot off the current screen (a smaller window) snaps back to the corner.
-    const onScreen = typeof f.x === "number" && typeof f.y === "number" && f.x < window.innerWidth - 80 && f.y < window.innerHeight - 40;
-    return onScreen ? { x: f.x, y: f.y, w, h } : { w, h };
+    // A remembered spot partly off the current screen (a smaller window) is pulled back inside it.
+    const placed = typeof f.x === "number" && typeof f.y === "number";
+    return clampFrame(placed ? { x: f.x, y: f.y, w, h } : { w, h }, window.innerWidth, window.innerHeight);
   } catch { return DEFAULT_FRAME; }
 }
 function saveFrame(f: Frame): void {
   try { localStorage.setItem(FRAME_KEY, JSON.stringify(f)); } catch { /* private window */ }
+}
+
+type DocumentPip = { requestWindow(size: { width: number; height: number }): Promise<Window> };
+const pipApi = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;
+// The PiP window's size, remembered like the frame (the browser lets you resize it, not place it).
+const PIP_KEY = "orca.orchestrator.pip";
+function loadPipSize(f: Frame): { width: number; height: number } {
+  try {
+    const s = JSON.parse(localStorage.getItem(PIP_KEY) ?? "null") as { width?: unknown; height?: unknown } | null;
+    if (typeof s?.width === "number" && typeof s.height === "number") return { width: s.width, height: s.height };
+  } catch { /* fall through */ }
+  return { width: f.w, height: f.h };
+}
+function savePipSize(w: Window): void {
+  try { localStorage.setItem(PIP_KEY, JSON.stringify({ width: w.innerWidth, height: w.innerHeight })); } catch { /* private window */ }
+}
+/** A PiP document starts empty: give it the page's stylesheets (Tailwind, the theme's CSS variables). */
+function copyStyles(from: Document, to: Document): void {
+  for (const sheet of Array.from(from.styleSheets)) {
+    try {
+      const style = to.createElement("style");
+      style.textContent = Array.from(sheet.cssRules, (r) => r.cssText).join("\n");
+      to.head.append(style);
+    } catch {
+      // A cross-origin sheet can't be read; link it instead.
+      if (!sheet.href) continue;
+      const link = to.createElement("link");
+      link.rel = "stylesheet"; link.href = sheet.href;
+      to.head.append(link);
+    }
+  }
 }

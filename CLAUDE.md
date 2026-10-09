@@ -235,7 +235,17 @@ until its turn finishes, then the ring re-reads from the CLI's post-compaction c
 (`compact_boundary`). Mid-turn it is disabled with a tooltip and the bridge answers 409 — not
 queued, because a queued message reaches the model as prose and `/compact` only works as its own
 run. A compact is housekeeping: it neither counts as an orchestrator wake nor reports a worker
-event. It is one conversation you talk to; it starts and steers
+event.
+The window is dragged by
+its header and resized from any edge, and can never leave the viewport (`clampFrame`/`resizeFrame`
+in `workstream.ts`: on every move, on browser resize, and on load, which also fixes a saved spot
+from a bigger screen). **Pop out** moves it into an always-on-top Document Picture-in-Picture window
+(Chrome/Edge 116+) via a React **portal**: the same tree, so draft, SSE, popovers and keys carry
+over. The page's stylesheets are copied into it and `<html>`'s class/style mirrored (theme). Radix
+popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Return to tab, its own
+close, or the launcher brings it back, and its size is remembered. Browsers without the API get no
+button (a plain popup can't stay on top, so it was not worth having).
+It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
