@@ -88,6 +88,9 @@ export const api = {
     fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
+  /** `/compact` in a conversation's own Claude session (a card's, or the orchestrator's under its
+   *  reserved repo). 409 while the session is mid-turn. */
+  compact: (repo: string, branch: string): Promise<{ runId: string }> => post("/api/compact", { repo, branch }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
   orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string }> => fetch("/api/orchestrator").then(res),

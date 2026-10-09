@@ -420,7 +420,7 @@ test("the composer carries the card's model picker and context ring — the same
   const ring = container!.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context 61% full");
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
-  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 61% fullA fresh session starts at 80%.");
+  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 61% fullA fresh session starts at 80%.Compact");
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
 });
 
@@ -428,6 +428,53 @@ test("a card whose runs never report context (Codex, Cursor, or nothing run yet)
   await mount(base);
   const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
+});
+
+/** Hover the context ring open and return its card. */
+async function ringCard() {
+  const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  return document.body.querySelector<HTMLElement>('[data-slot="context-ring-card"]')!;
+}
+const compactButton = () => document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]');
+
+test("the ring's Compact button compacts the session: pending until its turn finishes, then the ring is re-read", async () => {
+  await mount({ ...base, sessionId: "claude-abc", agentMeta: { model: "Opus 5.5", contextPct: 72 } });
+  await ringCard();
+  expect(compactButton()!.textContent).toBe("Compact");
+  await act(async () => { compactButton()!.click(); await flush(); await flush(); });
+  expect(apiFake.calls).toContain("compact:r:feat"); // the conversation's own session, by repo + branch
+  expect(compactButton()!.textContent).toBe("Compacting…");
+  expect(compactButton()!.disabled).toBe(true);
+
+  // The compact run's turn lands finished over the stream → no longer pending.
+  apiFake.turnsData.set("r::feat", [{ id: "run-compact", provider: "claude", instruction: "/compact", prompt: "/compact", response: "Compacted: 144000 → 9000 tokens.", startedAt: 1, finishedAt: 2 }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => { stream.dispatchEvent(new Event("turn")); await flush(); await flush(); });
+  expect(compactButton()!.textContent).toBe("Compact");
+  expect(document.body.querySelector('[data-slot="context-compact-error"]')).toBeNull();
+});
+
+test("a session mid-turn can't be compacted: the button is disabled and says why", async () => {
+  await mount({ ...base, sessionId: "claude-abc", agentStatus: "running", agentMeta: { contextPct: 40 } });
+  await ringCard();
+  expect(compactButton()!.disabled).toBe(true);
+  expect(compactButton()!.parentElement!.title).toBe("The agent is mid-turn — compact once it finishes.");
+});
+
+test("a refused compact (the bridge saw the session busy) shows its error in the card", async () => {
+  apiFake.compactError = "the agent is mid-turn — compact once it finishes";
+  await mount({ ...base, sessionId: "claude-abc", agentMeta: { contextPct: 40 } });
+  await ringCard();
+  await act(async () => { compactButton()!.click(); await flush(); await flush(); });
+  expect(document.body.querySelector('[data-slot="context-compact-error"]')!.textContent).toBe("the agent is mid-turn — compact once it finishes");
+  expect(compactButton()!.disabled).toBe(false); // nothing is running on our account: try again later
+});
+
+test("no Compact where the session never reports context (Codex, Cursor, nothing run yet)", async () => {
+  await mount(base);
+  await ringCard();
+  expect(compactButton()).toBeNull();
 });
 
 /** Type into the panel's composer and send with Enter. */

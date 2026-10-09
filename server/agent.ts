@@ -135,7 +135,7 @@ import { prettyModel } from "../shared/models";
 export { prettyModel };
 
 /** Pull model + context/cost/turn metadata out of a `claude -p --output-format json` object. Pure. */
-export function parseRunMeta(j: any): RunMeta {
+export function parseRunMeta(j: any, compactedTokens?: number): RunMeta {
   const mu = (j?.modelUsage && typeof j.modelUsage === "object") ? j.modelUsage as Record<string, any> : {};
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   // A single `claude -p` run reports usage for EVERY model it touched: Claude Code fires an
@@ -148,9 +148,10 @@ export function parseRunMeta(j: any): RunMeta {
   // creation), NOT the top-level `usage` (which sums every turn and would overshoot the window).
   const iters = Array.isArray(j?.usage?.iterations) ? j.usage.iterations : [];
   const lastTurn = iters.length ? iters[iters.length - 1] : j?.usage;
-  const ctxTokens = lastTurn
+  // A `/compact` run makes no model turn; what is left in context is the CLI's post-compaction count.
+  const ctxTokens = compactedTokens ?? (lastTurn
     ? (num(lastTurn.input_tokens) ?? 0) + (num(lastTurn.cache_read_input_tokens) ?? 0) + (num(lastTurn.cache_creation_input_tokens) ?? 0)
-    : 0;
+    : 0);
   const window = modelId ? num(mu[modelId]?.contextWindow) : undefined;
   return {
     model: modelId ? prettyModel(modelId) : undefined,
@@ -398,12 +399,18 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
 export function parseClaudeStreamOutput(raw: string): { sessionId?: string; result?: string; isError: boolean; meta?: RunMeta; subtype?: string } {
   let resultEvent: Record<string, unknown> | undefined;
   let sessionId: string | undefined;
+  // A `/compact` run (the context ring's Compact button) makes no model turn: its result carries no
+  // usage and is_error false even when compaction failed. The CLI reports it in its own events.
+  let compactFailed = false;
+  let compacted: { pre?: number; post?: number } | undefined;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const e = JSON.parse(line) as Record<string, unknown>;
+      const e = JSON.parse(line) as Record<string, any>;
       if (typeof e.session_id === "string") sessionId = e.session_id;
       if (e.type === "result") resultEvent = e;
+      if (e.compact_result === "failed") compactFailed = true;
+      if (e.subtype === "compact_boundary") compacted = { pre: e.compact_metadata?.pre_tokens, post: e.compact_metadata?.post_tokens };
     } catch { /* tolerate non-JSON diagnostic lines */ }
   }
   if (!resultEvent) {
@@ -412,7 +419,11 @@ export function parseClaudeStreamOutput(raw: string): { sessionId?: string; resu
       return { sessionId, result: j.result, isError: Boolean(j.is_error), meta: parseRunMeta(j), subtype: typeof j.subtype === "string" ? j.subtype : undefined };
     } catch { return { sessionId, isError: false }; }
   }
-  return { sessionId, result: resultEvent.result as string | undefined, isError: Boolean(resultEvent.is_error), meta: parseRunMeta(resultEvent), subtype: typeof resultEvent.subtype === "string" ? resultEvent.subtype : undefined };
+  const done = compactFailed ? undefined : compacted;
+  const meta = parseRunMeta(resultEvent, typeof done?.post === "number" ? done.post : undefined);
+  let result = resultEvent.result as string | undefined;
+  if (done && !result?.trim()) result = `Compacted${typeof done.pre === "number" && typeof done.post === "number" ? `: ${done.pre} → ${done.post} tokens` : ""}.`;
+  return { sessionId, result, isError: Boolean(resultEvent.is_error) || compactFailed, meta, subtype: typeof resultEvent.subtype === "string" ? resultEvent.subtype : undefined };
 }
 
 /** Parse Codex's `exec --json` JSONL stream into the session id, final response, and card metadata. */
