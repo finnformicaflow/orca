@@ -1031,3 +1031,28 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "", "## New", input.messages.join("\n\n"),
   ].join("\n");
 }
+
+/** A floating window's frame: left/top once placed (absent while anchored bottom-right), and size. */
+export type Frame = { x?: number; y?: number; w: number; h: number };
+export const FRAME_MIN_W = 320, FRAME_MIN_H = 240;
+
+/** Keep a placed frame WHOLLY inside a `vw`×`vh` viewport: shrink it to fit (not below the minimum
+ *  size), then slide it in. Used on every drag move, on browser resize and on load, so a window can
+ *  never be dragged or left partly off-screen. An unplaced frame keeps its anchor; only its size fits. */
+export function clampFrame(f: Frame, vw: number, vh: number): Frame {
+  const w = Math.max(Math.min(f.w, vw), Math.min(FRAME_MIN_W, vw)), h = Math.max(Math.min(f.h, vh), Math.min(FRAME_MIN_H, vh));
+  if (f.x === undefined || f.y === undefined) return { w, h };
+  return { x: Math.max(0, Math.min(vw - w, f.x)), y: Math.max(0, Math.min(vh - h, f.y)), w, h };
+}
+
+/** Resize `s` by dragging handle `edge` (n/s/e/w and corners) by dx,dy. Each moved edge stops at the
+ *  viewport and at the minimum size; the left/top edges move the origin, the opposite edge stays put. */
+export function resizeFrame(s: Required<Frame>, edge: string, dx: number, dy: number, vw: number, vh: number): Required<Frame> {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  let { x, y, w, h } = s;
+  if (edge.includes("e")) w = clamp(s.w + dx, FRAME_MIN_W, vw - s.x);
+  if (edge.includes("s")) h = clamp(s.h + dy, FRAME_MIN_H, vh - s.y);
+  if (edge.includes("w")) { w = clamp(s.w - dx, FRAME_MIN_W, s.x + s.w); x = s.x + s.w - w; }
+  if (edge.includes("n")) { h = clamp(s.h - dy, FRAME_MIN_H, s.y + s.h); y = s.y + s.h - h; }
+  return { x, y, w, h };
+}

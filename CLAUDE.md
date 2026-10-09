@@ -226,7 +226,15 @@ out a chat window — a popout like a site's chat widget, deliberately not a mod
 is moving stays visible. Its composer sits on the terminal's own background and carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
 full its context is (the percentage is in its hover popover) — the same `ChatControls` every card's
-terminal composer has, fed the orchestrator's values instead of the card's. It is one conversation you talk to; it starts and steers
+terminal composer has, fed the orchestrator's values instead of the card's. The window is dragged by
+its header and resized from any edge, and can never leave the viewport (`clampFrame`/`resizeFrame`
+in `workstream.ts`: on every move, on browser resize, and on load, which also fixes a saved spot
+from a bigger screen). **Pop out** moves it into an always-on-top Document Picture-in-Picture window
+(Chrome/Edge 116+) via a React **portal**: the same tree, so draft, SSE, popovers and keys carry
+over. The page's stylesheets are copied into it and `<html>`'s class/style mirrored (theme). Radix
+popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Return to tab, its own
+close, or the launcher brings it back, and its size is remembered. Browsers without the API get no
+button (a plain popup can't stay on top, so it was not worth having). It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
