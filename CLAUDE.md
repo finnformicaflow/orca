@@ -226,7 +226,16 @@ out a chat window — a popout like a site's chat widget, deliberately not a mod
 is moving stays visible. Its composer sits on the terminal's own background and carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
 full its context is (the percentage is in its hover popover) — the same `ChatControls` every card's
-terminal composer has, fed the orchestrator's values instead of the card's. It is one conversation you talk to; it starts and steers
+terminal composer has, fed the orchestrator's values instead of the card's. The popover's **Compact**
+button (`POST /api/compact`, `verbs.compact` / `orchestrator.compact`) launches `/compact` as the
+whole prompt on a native resume of that conversation's own Claude session — the same command typed
+in the session, through the same `agent.launch`, never the handover ladder (which would swap a
+filling session for a fresh one). It shows once a Claude run has reported context; it is pending
+until its turn finishes, then the ring re-reads from the CLI's post-compaction count
+(`compact_boundary`). Mid-turn it is disabled with a tooltip and the bridge answers 409 — not
+queued, because a queued message reaches the model as prose and `/compact` only works as its own
+run. A compact is housekeeping: it neither counts as an orchestrator wake nor reports a worker
+event. It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
 subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
