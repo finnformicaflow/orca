@@ -125,6 +125,28 @@ export async function followUp(
   return { status: "running", worktreePath };
 }
 
+/** Compact a branch's Claude session: `/compact` as the whole prompt, on a native resume of that
+ *  session — exactly what typing it in the session does, through the same launch as a follow-up.
+ *  Never the handover ladder: compaction is for the session that's filling up, which the ladder
+ *  would otherwise swap for a fresh one at 80%. Refused mid-turn (one run per session). */
+export async function compact(cfg: OrcaConfig, repo: RepoConfig, branch: string): Promise<{ runId: string }> {
+  const e = (await db.enrichment(repo.name))[branch] ?? {};
+  if (e.agentProvider !== "claude" || typeof e.sessionId !== "string") throw new Error("only a Claude session can be compacted");
+  const worktreePath = await ensureWorktree(repo, branch);
+  if (agent.isRunning(worktreePath)) throw new BusyError();
+  const pinned = providerOfModel(e.preferredModel as string | undefined) === "claude" ? e.preferredModel as string : undefined;
+  const { runId } = await agent.runAgent(worktreePath, "/compact", {
+    ...launchOptions(cfg, repo, "claude", pinned), check: undefined,
+    resume: e.sessionId, branch, action: "compact", instruction: "/compact",
+  });
+  return { runId };
+}
+
+/** A session is mid-turn: its run must finish before it can take another command. */
+export class BusyError extends Error {
+  constructor() { super("the agent is mid-turn — compact once it finishes"); }
+}
+
 /** Stop a worktree's agent and preview and remove it, deleting (and archiving) its branch when asked
  *  — the Discard button's body, also the route's own, so a second caller can't drift from it. Never
  *  deletes a branch with an open PR. */

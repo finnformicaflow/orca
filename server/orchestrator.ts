@@ -122,13 +122,30 @@ export function message(cfg: OrcaConfig, text: string, attachments: string[] = [
   });
 }
 
+/** Compact its session (the context ring's Compact button): `/compact` on a native resume, as the
+ *  card's verb does. Not a wake — no prompt, no board, no claimed messages; whatever queued while it
+ *  ran is drained when it finishes, like after any run of its own. */
+export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
+  return serial(async () => {
+    const b = await blob();
+    if (!b.sessionId) throw new Error("the orchestrator has no session to compact yet");
+    if (agent.isRunning(dir())) throw new verbs.BusyError();
+    const { runId } = await agent.launch(dir(), dir(), "/compact", {
+      provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
+      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b),
+      timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
+    });
+    return { runId };
+  });
+}
+
 /** The run-finished hook (wired in index.ts). A worker the orchestrator is responsible for going
  *  idle wakes it with the outcome; its own run ending drains whatever arrived meanwhile. */
 export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Promise<void> {
   const { repo, branch } = run.options;
   if (!repo || !branch) return;
   if (repo === ORCHESTRATOR_REPO) {
-    const exit = wakeExit(cfg, run);
+    const exit = run.options.action === "compact" ? undefined : wakeExit(cfg, run); // a compact is no wake
     await serial(async () => {
       // Inside the chain: a patch is read-modify-write, and one racing the next wake's own would
       // write back a blob without that wake's `handling` claim — and with it the retry guard.
@@ -149,6 +166,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   // Codex and Cursor reveal their session id mid-run, and no browser may be open to record it.
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
+  if (run.options.action === "compact") return; // housekeeping you asked for, not work to report
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,

@@ -20,7 +20,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { checkGate, launchOptions, newWorktree, removeWorktree, startPreview } from "./verbs";
+import { BusyError, checkGate, compact, launchOptions, newWorktree, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
@@ -230,6 +230,16 @@ async function api(req: Request, url: URL): Promise<Response> {
   const forwarded = await forwardToOwner(req, url, repo, cfg);
   if (forwarded) return forwarded;
 
+  if (req.method === "POST" && p === "/api/compact") {
+    // The context ring's Compact button: `/compact` in this conversation's own session. A busy
+    // session (a run in flight, here or under a lease) is a 409 the button shows, never queued.
+    try {
+      return json(repo.name === ORCHESTRATOR_REPO ? await orchestrator.compact(cfg) : await compact(cfg, repo as RepoConfig, String(body.branch ?? "")));
+    } catch (e) {
+      const busy = e instanceof BusyError || (e instanceof Error && /already running/.test(e.message));
+      return json({ error: busy ? new BusyError().message : e instanceof Error ? e.message : String(e) }, busy ? 409 : 400);
+    }
+  }
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
     // windows from the CLI's login. The Cursor CLI exposes no such endpoint — `about`/`status` report

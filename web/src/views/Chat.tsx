@@ -305,6 +305,28 @@ export function ChatPanel({ row, send, flush, controls }: {
   }, [turns, sending]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const loadQueued = () => api.queued(row.repo, row.branch).then(setQueued).catch(() => {});
+  // The context ring's Compact button. `compacting` is the compact run's id ("" while the request is
+  // in flight): pending until that turn arrives finished over the stream, then the ring is re-read.
+  const [compacting, setCompacting] = useState<string | null>(null);
+  const [compactError, setCompactError] = useState<string>();
+  const onCompact = async () => {
+    setCompactError(undefined);
+    setCompacting("");
+    try {
+      setCompacting((await api.compact(row.repo, row.branch)).runId);
+      await refresh();
+    } catch (e) {
+      setCompacting(null);
+      setCompactError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  useEffect(() => {
+    const done = compacting ? turns?.find((t) => t.id === compacting && t.finishedAt) : undefined;
+    if (!done) return;
+    setCompacting(null);
+    if (done.failed) setCompactError(done.response || "Compaction failed.");
+    void refresh(); // the card's ring reads the run's meta; the orchestrator's window polls its own
+  }, [turns, compacting]);
   const [stopping, setStopping] = useState(false);
   // Stop, not Discard: kills the process but keeps the worktree, its commits, and the provider
   // session, so the next message resumes the same conversation and steers it somewhere else.
@@ -327,6 +349,11 @@ export function ChatPanel({ row, send, flush, controls }: {
     if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK;
   };
 
+  // Compact is offered once the ring has a reading: only a Claude session reports one, and only a
+  // Claude session can be compacted.
+  const ctl = controls ?? {
+    model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
+  };
   return (
     <div className={`flex h-full flex-col ${flush ? "" : "gap-3"}`}>
       <div
@@ -374,9 +401,8 @@ export function ChatPanel({ row, send, flush, controls }: {
       <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : undefined}>
       <ChatComposer
         className={flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
-        leading={<ChatControls {...(controls ?? {
-          model: modelFor(row), onModel: (m) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
-        })} />}
+        leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
+          : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}

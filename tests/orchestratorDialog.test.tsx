@@ -8,6 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { OrchestratorButton } from "@/components/Terminal";
 import { WorkstreamCard } from "@/views/Board";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,8 +72,12 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   const card = () => document.body.querySelector('[data-slot="context-ring-card"]');
   expect(card()).toBeNull();
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
-  expect(card()!.textContent).toBe("Context 42% fullA fresh session starts at 80%.");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
+  expect(card()!.textContent).toBe("Context 42% fullA fresh session starts at 80%.Compact");
+  // Its Compact button compacts the orchestrator's OWN session (its reserved repo/branch).
+  await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
+  expect(apiFake.calls).toContain(`compact:${ORCHESTRATOR_REPO}:${ORCHESTRATOR_BRANCH}`);
+  // It closes a moment after the pointer leaves (time to cross onto the card's button).
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await new Promise((r) => setTimeout(r, 200)); });
   expect(card()).toBeNull();
 
   const textarea = panel()!.querySelector("textarea")!;
@@ -105,7 +110,7 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
   await click(ring); // click (touch, keyboard) opens it too
-  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session, carrying a summary of this one.");
+  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 85% fullThe next message starts a fresh session, carrying a summary of this one.Compact");
 });
 
 test("the window is draggable by its header, resizable, smaller-typed, and remembers its frame", async () => {

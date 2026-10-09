@@ -14,6 +14,7 @@ export const apiFake = {
   // is still working, then hand back a real branch.
   pending: null as null | ((v: { branch: string; worktreePath: string; title: string }) => void),
   calls: [] as string[],
+  compactError: null as string | null, // api.compact rejects with this (e.g. the bridge's busy 409)
   // Diffstat served by api.summary (the card polls it) — tests set this before mounting a card.
   summaryData: null as null | { files: unknown[]; commits: unknown[]; additions: number; deletions: number },
   // Unified diff served by api.localDiff / api.prDiff (the Files-changed tabs).
@@ -91,7 +92,7 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -207,6 +208,11 @@ mock.module("@/api", () => ({
       };
     },
     stopAgent: async (key: string) => { apiFake.stopped.push(key); return { ok: true as const }; },
+    compact: async (repo: string, branch: string) => {
+      apiFake.calls.push(`compact:${repo}:${branch}`);
+      if (apiFake.compactError) throw new Error(apiFake.compactError);
+      return { runId: "run-compact" };
+    },
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },
     orchestratorMessage: async (text: string, attachments: string[] = []) => {
