@@ -227,7 +227,15 @@ describe("the console's pages", () => {
     expect(chat.textContent).not.toContain("Conversation"); // no card header
     for (const slot of ["chat-logbar", "chat-errors", "chat-warnings", "chat-working"]) expect(chat.querySelector(`[data-slot="${slot}"]`)).toBeNull();
     expect(chat.querySelector('input[aria-label="Find in chat"]')).toBeNull();
-    expect(chat.querySelectorAll('[data-slot="turn-time"]')).toHaveLength(3);
+    const times = chat.querySelectorAll('[data-slot="turn-time"]');
+    expect(times).toHaveLength(3);
+    // Sticky within each turn's own row, offset below the running/stop banner's own sticky bar so
+    // the two are never stuck in the same place at once; a background keeps the stuck line readable.
+    for (const t of times) {
+      expect(t.className).toContain("sticky");
+      expect(t.className).toContain("top-7");
+      expect(t.className).toContain("bg-neutral-950");
+    }
     expect(chat.querySelector('[data-slot="chat-turn"][data-failed]')!.className).toContain("bg-red-500/10"); // tinted like an error line
     // The composer is at the foot, with focus — opening the Chat tab is one of the ways in.
     const box = chat.querySelector("textarea")!;

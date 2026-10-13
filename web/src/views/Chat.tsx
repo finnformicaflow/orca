@@ -401,7 +401,14 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
   if (!stamped) return body;
   return (
     <div className="flex gap-3">
-      <span className="w-16 shrink-0 pt-px text-neutral-500 tabular-nums select-none" data-slot="turn-time">{stampOf(turn.startedAt)}</span>
+      {/* Sticky within THIS turn's own row (its flex parent is the containing block a sticky element
+       *  can't escape): pinned near the top of the visible area while the turn's own content scrolls
+       *  past, then pushed out once the row ends and the next turn's timestamp takes over — the same
+       *  idiom as a sticky first column in a tall table row. `top-7` clears the running/stop banner's
+       *  own sticky bar above (`top-0`), so the two are never stuck in the same place at once;
+       *  `self-start` + a background keep the stuck box to one line, never a tall strip that could
+       *  sit over the reply text beside it. */}
+      <span className="sticky top-7 z-[1] w-16 shrink-0 self-start bg-neutral-950 pt-px text-neutral-500 tabular-nums select-none" data-slot="turn-time">{stampOf(turn.startedAt)}</span>
       <div className="min-w-0 flex-1">{body}</div>
     </div>
   );
