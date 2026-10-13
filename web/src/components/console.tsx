@@ -2,8 +2,9 @@
 // usage ring, a status dot, an environment-style pill, a details grid and a line chart. Every page
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
+import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { niceMax, sparklineSegments, timeTicks, usageZone } from "../workstream";
+import { MERGE_CLASS_LABEL, niceMax, orchStatusText, sparklineSegments, timeTicks, usageZone, type OrchStatus } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -76,6 +77,28 @@ export function Pill({ children, tone = "default", slot, title }: { children: Re
     <span data-slot={slot ?? "pill"} title={title} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3", tones[tone])}>
       {children}
     </span>
+  );
+}
+
+/** The orchestrator's `orca status` for a workstream: its plan and what it waits on as one muted
+ *  line, its merge class as a chip. `chipOnly` is the Agents row's fixed-height cell, where the line
+ *  rides the chip's tooltip instead. Nothing when the orchestrator has set none. */
+export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchStatus; chipOnly?: boolean; className?: string }) {
+  const text = orchStatusText(status);
+  if (!status || !text) return null;
+  const line = [status.plan, status.waitingOn && `waiting on ${status.waitingOn}`].filter(Boolean).join(" · ");
+  if (chipOnly && !status.mergeClass && !line) return null;
+  return (
+    <div data-slot="orch-status" title={`Orchestrator — ${text}`} className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
+      <Bot className="size-3 shrink-0" aria-hidden="true" />
+      {!chipOnly && line && <span className="min-w-0 truncate">{line}</span>}
+      {status.mergeClass && (
+        <span data-slot="merge-class" className={cn("shrink-0 rounded px-1 text-[10px] leading-4 font-medium",
+          status.mergeClass === "small" ? "bg-geist-green/15 text-geist-green" : "bg-geist-amber/15 text-geist-warning-fg")}>
+          {MERGE_CLASS_LABEL[status.mergeClass]}
+        </span>
+      )}
+    </div>
   );
 }
 

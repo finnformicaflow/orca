@@ -158,6 +158,17 @@ describe("agents list view", () => {
     expect(workstreamCell.getAttribute("title")).toContain("Instance: laptop");
   });
 
+  test("the orchestrator's `orca status` shows on its row: the merge class as a chip, plan and wait in its tooltip", async () => {
+    seed();
+    apiFake.enrichmentData.set("r::local-idle", { orchestrated: true, orchStatus: { plan: "Cache first", waitingOn: "Finn's call on TTL", mergeClass: "needs-finn", at: "2026-10-13T00:00:00Z" } });
+    await mount();
+    const note = rowOf("local-idle").querySelector<HTMLElement>('[data-slot="row-signals"] [data-slot="orch-status"]')!;
+    expect(note.querySelector('[data-slot="merge-class"]')!.textContent).toBe("Needs Finn");
+    expect(note.title).toBe("Orchestrator — plan: Cache first; waiting on: Finn's call on TTL; merge: needs-finn");
+    expect(note.textContent).toBe("Needs Finn"); // a fixed-height row: the line rides the tooltip
+    expect(rowOf("local-run").querySelector('[data-slot="orch-status"]')).toBeNull(); // none set, nothing shown
+  });
+
   test("diffstat for a branch with no PR yet comes from the worktree's own git diff (useSummary)", async () => {
     seed();
     apiFake.summaryData = { files: [{ path: "a.ts", additions: 7, deletions: 1 }], commits: [{ hash: "abc", subject: "wip" }], additions: 7, deletions: 1 };

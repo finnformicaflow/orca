@@ -102,6 +102,7 @@ export const api = {
   rename: (repo: string, b: { branch: string; title: string; pr?: number }): Promise<{ ok: true }> =>
     post("/api/rename", { repo, ...b }),
   autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),
+  mergeWhenGreen: (repo: string, pr: number, branch?: string): Promise<{ text: string }> => post("/api/prs/merge-when-green", { repo, pr, branch, by: "user" }),
   disableAutoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/disable-auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   // `instance` adopts the branch on THAT instance (a preview can run where the session doesn't).

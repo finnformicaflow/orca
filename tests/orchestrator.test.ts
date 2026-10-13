@@ -17,11 +17,12 @@ import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
+import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
-  wakeStoppedLine, workerEvent,
+  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
+  wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { native } from "./happydom";
@@ -140,6 +141,25 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.prompt).toContain("## Models\n`spawn` requires --model.");
   expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated Opus");
   expect(wake!.prompt).toContain("A message opening with `[new draft]` is the user's New-draft box");
+});
+
+test("O1b: with mergePolicy.autoPr, a worker's clean finish opens its PR and the report names it", async () => {
+  const auto = (): OrcaConfig => ({ ...cfg(), repos: [{ ...cfg().repos[0]!, mergePolicy: { autoPr: true } }] });
+  agent.onRunFinished((run) => orchestrator.onRunFinished(auto(), run));
+  const origin = await makeScratchRepo();
+  await run(["git", "-C", repo, "remote", "add", "origin", origin]);
+  await run(["git", "-C", repo, "fetch", "-q", "origin"]);
+  // The worker commits in its worktree; the orchestrator just answers.
+  await fakeClaude(`case "$PWD" in */orchestrator) ;; *) echo x > cache.ts && git add cache.ts && git -c user.email=t@t -c user.name=t commit -qm "Add the cache" ;; esac
+${OK}`);
+  await orchestrator.tool(auto(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  const [wake] = await settled(orchTurns, 1);
+  expect(wake!.instruction).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — done`);
+  expect(wake!.instruction).toContain("Orca opened PR #123: https://github.com/acme/app/pull/123");
+  // On origin, so `gh pr create` had a head to open.
+  expect(await run(["git", "-C", origin, "branch", "--list", branch])).toContain(branch);
+  await rm(origin, { recursive: true, force: true });
 });
 
 test("O11: send --model moves a workstream to another model for this and later messages", async () => {
@@ -586,6 +606,49 @@ exit 1`));
   expect(parseConfigDocument(doc(8)).config?.orchestratorWakeBudgetUsd).toBe(8);
 });
 
+test("O13b: a wake killed mid-turn (143) hands what it had done and said to the next wake", async () => {
+  wire();
+  // It spawned (the tool's result recorded), merged with no result before the kill, started its
+  // reply, then took a SIGTERM — the shape of tonight's reaper kills.
+  await fakeClaude(firstLaunch(`cat <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"orca board"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"r/a | no PR"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"orca spawn --repo r --title Cache --model claude-sonnet-5"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Spawned r/orca/cache-1a2b \\"Cache\\"."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"gh pr merge 7 --squash"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Spawned the cache workstream on Sonnet; merging #7 next."}]}}
+JSON
+kill -TERM $$`));
+  await orchestrator.message(cfg(), "ship the cache and merge 7");
+  const [dead, retry] = await settled(orchTurns, 2);
+  expect(dead!.response).toStartWith("Wake stopped: exited with code 143");
+  expect(retry!.instruction).toBe("ship the cache and merge 7");
+  const section = retry!.prompt.slice(retry!.prompt.indexOf("## What the cut-off wake did"));
+  expect(section).toContain("- orca spawn: `orca spawn --repo r --title Cache --model claude-sonnet-5` → Spawned r/orca/cache-1a2b");
+  expect(section).toContain("- gh pr merge: `gh pr merge 7 --squash` → no result recorded");
+  expect(section).not.toContain("orca board"); // reading is not acting
+  expect(section).toContain("What it had started to tell the user:\nSpawned the cache workstream on Sonnet; merging #7 next.");
+  expect(retry!.prompt.indexOf("## Previous wake was cut off")).toBeLessThan(retry!.prompt.indexOf("## What the cut-off wake did"));
+  // Consumed by that wake: the next one hears nothing of it.
+  expect((await orchBlob()).cutOffProgress).toBeUndefined();
+  await orchestrator.message(cfg(), "thanks");
+  expect((await settled(orchTurns, 3))[2]!.prompt).not.toContain("What the cut-off wake did");
+});
+
+test("O13c: wakeProgress is empty for a wake that only read, and marks a failed action", () => {
+  expect(wakeProgress([{ at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca board && gh pr view 3" } }])).toBe("");
+  expect(wakeProgress([
+    { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca notes set \"plan\"" } },
+    { at: 2, kind: "result", id: "a", output: "Notes saved." },
+    { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "orca send --repo r --branch b hi" } },
+    { at: 4, kind: "result", id: "b", output: "unknown branch", isError: true },
+  ])).toBe([
+    "What it had already done (do NOT do these again; check the board for their effect):",
+    "- orca notes set: `orca notes set \"plan\"` → Notes saved.",
+    "- orca send: `orca send --repo r --branch b hi` → failed: unknown branch",
+  ].join("\n"));
+});
+
 test("O14: a message whose wake dies twice is not queued a third time", async () => {
   wire();
   await fakeClaude(`echo "boom: not logged in" >&2; exit 3`);
@@ -764,4 +827,88 @@ test("O21: placement — explicit instance, then the worktree's home from the in
   expect(await db.enrichment("r")).toEqual({});
   // A send to a workstream living elsewhere goes there too.
   await expect(orchestrator.tool(two, "send", { repo: "r", branch: "feat", _: ["hi"] })).rejects.toThrow(/cloud answered|Unable to connect|fetch/i);
+});
+
+test("O22: orca status keeps a short per-workstream record on its enrichment, and the board carries it every wake", async () => {
+  wire();
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(orchTurns, 1);
+  const at = { repo: "r", branch };
+
+  expect(await orchestrator.tool(cfg(), "status", at)).toBe(`(no status for r/${branch})`);
+  expect(await orchestrator.tool(cfg(), "status", { ...at, plan: "Cache first, then the eviction policy", waiting: "Finn's call on TTL", merge: "needs-finn" }))
+    .toBe(`Status of r/${branch}: plan: Cache first, then the eviction policy; waiting on: Finn's call on TTL; merge: needs-finn`);
+  // Stored with the workstream (shared, restart-proof), beside — not inside — the orchestrator's notes.
+  expect((await db.enrichment("r"))[branch]!.orchStatus).toMatchObject({ plan: "Cache first, then the eviction policy", waitingOn: "Finn's call on TTL", mergeClass: "needs-finn" });
+  expect(await orchestrator.tool(cfg(), "notes")).toBe("(empty)");
+
+  // A flag sets its field and leaves the others; an empty one (`--waiting ""`) clears it.
+  await orchestrator.tool(cfg(), "status", { ...at, waiting: "", merge: "small" });
+  expect(await orchestrator.tool(cfg(), "status", at)).toBe("plan: Cache first, then the eviction policy; merge: small");
+  await expect(orchestrator.tool(cfg(), "status", { ...at, merge: "huge" })).rejects.toThrow("--merge must be one of: small, needs-finn");
+  await expect(orchestrator.tool(cfg(), "status", { ...at, plan: "x".repeat(301) })).rejects.toThrow("limited to 300 characters");
+  await expect(orchestrator.tool(cfg(), "status", { repo: "r" })).rejects.toThrow("--branch is required");
+
+  // The board — what every wake's prompt carries — shows it on the workstream's line.
+  expect(boardText(await orchestrator.board(cfg()))).toContain("| status: plan: Cache first, then the eviction policy; merge: small");
+  await orchestrator.message(cfg(), "where are we?");
+  const turns = await settled(orchTurns, 2);
+  expect(turns[1]!.prompt).toContain("status: plan: Cache first, then the eviction policy; merge: small");
+  expect(turns[1]!.prompt).toContain("orca status --repo <repo> --branch <branch>");
+
+  expect(await orchestrator.tool(cfg(), "status", { ...at, clear: "" })).toBe(`Cleared the status of r/${branch}.`);
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("orchStatus");
+});
+
+test("O23: two failures in a row on one model put the next model up in the report; modelEscalation: apply moves it", async () => {
+  let escalation: "suggest" | "apply" = "suggest";
+  const conf = (): OrcaConfig => ({ ...cfg(), repos: cfg().repos.map((r) => ({ ...r, modelEscalation: escalation })) });
+  agent.onRunFinished((run) => orchestrator.onRunFinished(conf(), run));
+  // Workers fail; the orchestrator answers.
+  await fakeClaude(`case "$PWD" in */orchestrator) ${OK} ;; *) echo boom >&2; exit 1 ;; esac`);
+  await orchestrator.tool(conf(), "spawn", { ...brief, model: "claude-opus-5-5" });
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  const reports = async (n: number) => (await settled(orchTurns, n)).map((t) => t.instruction ?? "");
+
+  // One failure is a problem report, nothing more — a single bad run is not a pattern.
+  let r = await reports(1);
+  expect(r[0]).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — error`);
+  expect(r[0]).not.toContain("Model ladder");
+  expect((await db.enrichment("r"))[branch]!.failStreak).toEqual({ model: "claude-opus-5-5", count: 1 });
+
+  // The second on the same model: Orca suggests the next model up, and leaves the pin alone.
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["try again"] });
+  r = await reports(2);
+  expect(r[1]).toContain(`Model ladder: 2 failures in a row on claude-opus-5-5 — Orca suggests the next model up for the retry: orca send --repo r --branch ${branch} --model claude-fable-5-1`);
+  expect((await db.enrichment("r"))[branch]!.preferredModel).toBe("claude-opus-5-5");
+
+  // With the repo's setting, Orca moves it itself — the retry runs on the next model, and the streak restarts.
+  escalation = "apply";
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["once more"] });
+  r = await reports(3);
+  expect(r[2]).toContain("Model ladder: 3 failures in a row on claude-opus-5-5 — Orca moved this workstream up to claude-fable-5-1; your retry (orca send) runs on it.");
+  expect((await db.enrichment("r"))[branch]).toMatchObject({ preferredModel: "claude-fable-5-1", preferredProvider: "claude" });
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak");
+  await fakeClaude(OK); // the bigger model gets it done
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["retry"] });
+  r = await reports(4);
+  expect(r[3]).not.toContain("Model ladder");
+  const workerLaunches = (await launches()).filter((a) => !a.includes("Orca's orchestrator") && !a.includes("## Board"));
+  expect(workerLaunches.at(-1)).toContain("--model claude-fable-5-1");
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak"); // a clean run ends the streak
+});
+
+test("O23b: the ladder decision is pure — threshold, the top, and models off the ladder", () => {
+  expect(nextFailStreak(undefined, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 1 });
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 2 });
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-opus-5-5", true)).toEqual({ model: "claude-opus-5-5", count: 1 }); // a new model starts over
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-sonnet-5", false)).toBeUndefined();
+  const at = { repo: "r", branch: "b" };
+  expect(ladderStep({ model: "claude-sonnet-5", count: 1 }, "apply", at)).toBeUndefined();
+  expect(ladderStep({ model: "claude-sonnet-5", count: 2 }, "apply", at)!.moveTo).toBe("claude-opus-5-5");
+  expect(ladderStep({ model: "claude-fable-5-1", count: 2 }, "apply", at)).toEqual({ line: "Model ladder: 2 failures in a row on claude-fable-5-1, the top of the ladder — another attempt is unlikely to differ; tell the user." });
+  expect(ladderStep({ model: "gpt-5.5", count: 5 }, "apply", at)).toBeUndefined();
+  expect(parseConfigDocument({ repos: [{ name: "r", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", modelEscalation: "always" }] }).errors.join("\n"))
+    .toContain('modelEscalation must be "suggest" or "apply"');
 });

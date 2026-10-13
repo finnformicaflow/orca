@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtomValue } from "jotai";
 import {
-  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -45,6 +45,7 @@ import type { ShortcutId } from "@/lib/shortcuts";
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
   pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
+  merged: GitMerge, merge_refused: GitPullRequest,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
 

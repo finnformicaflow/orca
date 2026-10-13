@@ -20,14 +20,15 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as verbs from "./verbs";
 import * as preview from "./preview";
+import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  type BoardRow, type WakeExit,
+  joinMessages, ladderStep, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -62,6 +63,7 @@ type Blob = {
   handling?: { runId: string; instance: string; messages: string[] };
   died?: string[]; // messages whose wake has died once and are being retried; a second death drops them
   cutOff?: string; // why the last wake died, for the next wake's prompt
+  cutOffProgress?: string; // what that wake had already done and said (wakeProgress), for the same prompt
 };
 /** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
  *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
@@ -169,23 +171,65 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   if (!e.orchestrated) return;
   // Codex and Cursor reveal their session id mid-run, and no browser may be open to record it.
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
-  if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   if (run.options.action === "compact") return; // housekeeping you asked for, not work to report
+  const step = await ladder(cfg, repo, branch, e, run); // counted even when an autofix takes over
+  if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
+  const opened = await autoPr(cfg, repo, branch, run);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,
-  });
-  // The orchestrator lives on ONE instance: a report from another is posted there, so one process
-  // wakes it (two resuming the same session at once was the "one message behind" bug).
+  }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
+  await report(cfg, text, run.key);
+}
+
+/** Model-ladder automation: keep the workstream's failure streak, and once it reaches the threshold
+ *  on one model, suggest the next model up — or, with the repo's `modelEscalation: "apply"`, re-pin
+ *  the workstream to it so the retry runs there. Returns the worker report's line, if any. Only at
+ *  report time: an autofix taking over is counted, not escalated, so its own run is the retry. */
+async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, run: agent.RunFinished): Promise<string | undefined> {
+  const prev = e.failStreak as FailStreak | undefined;
+  const failed = run.status === "error" || run.check?.ok === false;
+  const streak = run.status === "stopped" ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
+  if (run.continued) return undefined;
+  const repo = cfg.repos.find((r) => r.name === repoName);
+  const step = ladderStep(streak, repo?.modelEscalation ?? "suggest", { repo: repoName, branch });
+  if (step?.moveTo) {
+    // The send that retries reads the pin (as `send --model` does); the streak restarts on the new model.
+    await db.patchEnrichment(repoName, branch, { preferredModel: step.moveTo, preferredProvider: providerOfModel(step.moveTo) ?? "claude", failStreak: null });
+  }
+  return step?.line;
+}
+
+/** The repo's `mergePolicy.autoPr`: a clean finish opens the branch's PR (verbs.openWorkerPr), and
+ *  a branch marked merge-when-green before it had one joins the queue. Returns the line the worker
+ *  report carries, or nothing. A failure is reported, never thrown — the report still goes. */
+async function autoPr(cfg: OrcaConfig, repoName: string, branch: string, run: agent.RunFinished): Promise<string | undefined> {
+  const repo = cfg.repos.find((r) => r.name === repoName);
+  if (!repo?.mergePolicy?.autoPr || run.status !== "done" || run.check?.ok === false) return undefined;
+  try {
+    const pr = await verbs.openWorkerPr(repo, branch, run.key, { outcome: run.structured, response: run.result });
+    if (!pr) return undefined;
+    void mergeQueue.tick(cfg).catch(() => {}); // a branch already marked merge-when-green is picked up now
+    return `Orca opened PR #${pr.number}: ${pr.url}`;
+  } catch (e) {
+    return `Orca could not open its PR: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/** Hand a report to the orchestrator: here, or posted to the instance it lives on (ONE process wakes
+ *  it — two resuming the same session at once was the "one message behind" bug). Worker reports and
+ *  the merge queue's both go through this. */
+export async function report(cfg: OrcaConfig, text: string, key?: string): Promise<void> {
   const host = cfg.orchestratorOn;
   if (host && host !== db.instanceName()) {
     const base = cfg.instances?.[host];
     if (!base) { console.error(`orca: orchestratorOn "${host}" has no address; report dropped`); return; }
-    await fetch(new URL("/api/orchestrator/event", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, key: run.key }) })
+    await fetch(new URL("/api/orchestrator/event", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, key }) })
       .catch((e) => console.error("orca: could not deliver a worker report to the orchestrator's instance", e));
     return;
   }
-  await deliverReport(cfg, text, run.key);
+  await deliverReport(cfg, text, key);
 }
 
 /** Deliver a worker's report by the management-by-exception rules, from this or another instance. */
@@ -227,10 +271,13 @@ async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<vo
   const retry = messages.filter((m) => !before.has(m));
   for (const m of retry) await enqueue(m);
   const reason = wakeExitReason(exit);
-  const toolCalls = (await agent.runSteps(runId).catch(() => [])).filter((s) => s.kind === "tool" && s.name !== "result").length;
+  const steps = await agent.runSteps(runId).catch(() => []);
+  const toolCalls = steps.filter((s) => s.kind === "tool" && s.name !== "result").length;
   await agent.flushHistory(); // the exit handler's own finish write lands first, or it would overwrite the line
   await db.failTurn(runId, wakeStoppedLine({ reason, toolCalls, costUsd, retried: retry.length, dropped: messages.length - retry.length }));
-  await patch({ handling: null, died: retry, cutOff: retry.length ? reason : null });
+  // What it had done is read off the steps it recorded as it went — they outlive the process — so the
+  // next wake neither repeats a spawn/merge nor leaves the user without the reply it had started.
+  await patch({ handling: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
 }
 
 /** Startup: a wake that was in flight when the previous bridge stopped has nobody to report its
@@ -292,7 +339,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       transcript: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH),
     });
     const shell = cfg.orchestratorShell !== false; // the full terminal toolset unless opted out
-    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff });
+    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: joinMessages(messages), action: "orchestrate", queue: false,
@@ -309,7 +356,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
         PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
       },
     });
-    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null });
+    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null });
   } catch (e) {
     // The messages were claimed off the queue; a launch that never happened must not eat them.
     for (const m of claimed) await enqueue(m.instruction, m.attachments).catch(() => {});
@@ -350,6 +397,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
+        status: e.orchStatus as OrchStatus | undefined,
       });
     }
   }
@@ -541,6 +589,17 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const turns = await db.conversationTurns(id);
       return turns.map((t) => `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})\n❯ ${clip(t.instruction ?? "", 500)}\n→ ${clip(answer(t), 1200)}`).join("\n\n") || `No conversation #${id}.`;
     }
+    case "merge": return mergeVerb(cfg, args);
+    case "status": {
+      // Enrichment is in the shared database, so any instance can write it — no forwarding.
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const prev = (await db.enrichment(repo.name))[branch]?.orchStatus as OrchStatus | undefined;
+      const next = orchStatusUpdate(prev, args, new Date().toISOString());
+      if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;
+      await db.patchEnrichment(repo.name, branch, { orchStatus: next });
+      return next ? `Status of ${repo.name}/${branch}: ${orchStatusText(next)}` : `Cleared the status of ${repo.name}/${branch}.`;
+    }
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -548,6 +607,36 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, sweep [--confirm], preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes`);
   }
+}
+
+/** `orca merge --repo r (--pr N | --branch b) --when-green [--small]` (or `--cancel`): the merge
+ *  queue, never a direct merge — Orca merges on green under the repo's mergePolicy. Runs where the
+ *  repo is checked out (its `runsOn` when that is not here). */
+async function mergeVerb(cfg: OrcaConfig, args: ToolArgs): Promise<string> {
+  const repo = repoNamed(cfg, args.repo);
+  const pr = args.pr === undefined ? undefined : Number(args.pr);
+  if (pr !== undefined && !(pr > 0)) throw new Error("--pr must be a PR number");
+  const branch = typeof args.branch === "string" && args.branch.trim() ? args.branch.trim() : undefined;
+  if (!pr && !branch) throw new Error("merge needs --pr <number> or --branch <branch>");
+  const cancel = "cancel" in args;
+  if (!cancel && !("when-green" in args)) throw new Error("orca merge only queues: add --when-green (Orca squash-merges once checks pass and it merges clean), or --cancel");
+  const body = { repo: repo.name, pr, branch, small: "small" in args, by: "orchestrator", cancel };
+  if (!verbs.repoHere(repo) && repo.runsOn && repo.runsOn !== db.instanceName()) {
+    return String((await viaInstance(cfg, repo.runsOn, "/api/prs/merge-when-green", body)).text ?? "");
+  }
+  return mergeWhenGreen(cfg, repo, body);
+}
+
+/** The body of `orca merge` and of the PR menu's route (index.ts). */
+export async function mergeWhenGreen(cfg: OrcaConfig, repo: RepoConfig, body: { pr?: number; branch?: string; small?: boolean; by?: string; cancel?: boolean }): Promise<string> {
+  const by = body.by === "orchestrator" ? "orchestrator" as const : "user" as const;
+  if (body.cancel) {
+    const branch = body.branch ?? (body.pr ? (await gh.prMergeGate(repo.repoPath, body.pr)).branch : undefined);
+    if (!branch) throw new Error("cancel needs --pr or --branch");
+    await mergeQueue.cancel(repo, branch);
+    return `Unmarked ${repo.name}/${branch}: it is no longer merged on green.`;
+  }
+  return mergeQueue.request(cfg, repo, { pr: body.pr, branch: body.branch }, { small: body.small, by });
 }

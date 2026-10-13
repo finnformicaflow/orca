@@ -647,6 +647,30 @@ export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
   };
 }
 
+/** Everything the merge queue (server/mergeQueue.ts) weighs about one PR, in one `gh pr view`. */
+export type PrMergeGate = PrStatus & {
+  number: number; title: string; branch: string; url: string; isDraft: boolean; headSha: string;
+  /** Changed paths as GitHub lists them — capped by gh, so `changedFiles` is the true count. */
+  files: string[]; changedFiles: number; failingChecks: string[];
+};
+export async function prMergeGate(cwd: string, pr: number): Promise<PrMergeGate> {
+  const raw = await gh(cwd, "pr", "view", String(pr), "--json",
+    "number,title,headRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,statusCheckRollup,files,changedFiles");
+  const j = JSON.parse(raw) as {
+    number: number; title: string; headRefName: string; url: string; isDraft: boolean; headRefOid: string;
+    state: string; mergeable: string; reviewDecision: string; changedFiles?: number; files?: Array<{ path: string }>;
+    statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
+  };
+  const checks = j.statusCheckRollup ?? [];
+  const files = (j.files ?? []).map((f) => f.path);
+  return {
+    number: j.number, title: j.title, branch: j.headRefName, url: j.url, isDraft: Boolean(j.isDraft), headSha: j.headRefOid,
+    state: j.state, ciStatus: rollupCi(checks), reviewStatus: mapReview(j.reviewDecision ?? ""), mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
+    files, changedFiles: j.changedFiles ?? files.length,
+    failingChecks: checks.filter((c) => FAIL.has(c.conclusion || c.state || "")).map((c) => c.name || c.context || "check"),
+  };
+}
+
 const PASS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 const FAIL = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "ERROR", "STARTUP_FAILURE"]);
 

@@ -5,6 +5,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
+  "merged", "merge_refused",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -61,6 +62,8 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   pr_conflicts: { label: "Conflicts", persistent: true, urgent: false, tone: "warning" },
   preview_ready: { label: "Preview ready", persistent: false, urgent: false, tone: "ready" },
   preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error" },
+  merged: { label: "Merged", persistent: false, urgent: false, tone: "ready" },
+  merge_refused: { label: "Not merged", persistent: true, urgent: false, tone: "warning" },
   action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
 };
 

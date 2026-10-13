@@ -198,7 +198,9 @@ test("W2b stacked-pr diffstat: measured against the PR's base, and gh surfaces t
 test("W3 promote-to-pr: gh pr create returns number + url", async () => {
   const { worktreePath: wt } = await createWorktree(repo, join(repo, ".worktrees"), "feat-pr", "main");
   process.env.ORCA_PR_NUMBER = "42";
-  const pr = await createPr(wt, { title: "Feat", body: "b", base: "main", head: "feat-pr" });
+  // Unset before asserting: every test file shares this process, and a leaked 42 made later files'
+  // `gh pr create` (auto-PR's O1b, M5) answer with this test's number instead of the default 123.
+  const pr = await createPr(wt, { title: "Feat", body: "b", base: "main", head: "feat-pr" }).finally(() => { delete process.env.ORCA_PR_NUMBER; });
   expect(pr.number).toBe(42);
   expect(pr.url).toEndWith("/42");
 });

@@ -198,6 +198,7 @@ mock.module("@/api", () => ({
     ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); if (apiFake.mergeError) throw new Error(apiFake.mergeError); return { ok: true }; },
     autoMerge: async (_repo: string, pr: number) => { apiFake.calls.push(`autoMerge:${pr}`); return { ok: true }; },
+    mergeWhenGreen: async (_repo: string, pr: number, branch?: string) => { apiFake.calls.push(`mergeWhenGreen:${pr}:${branch}`); return { text: "Queued" }; },
     markReady: async (_repo: string, pr: number) => { apiFake.calls.push(`markReady:${pr}`); return { ok: true }; },
     convertToDraft: async (_repo: string, pr: number) => { apiFake.calls.push(`convertToDraft:${pr}`); return { ok: true }; },
     disableAutoMerge: async (_repo: string, pr: number) => { apiFake.calls.push(`disableAutoMerge:${pr}`); return { ok: true }; },

@@ -16,9 +16,9 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, slugifyBranch, titleFromPrompt, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
+import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, slugifyBranch, titleFromPrompt, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
-import { isAgentProvider, type AgentProvider } from "../shared/agent";
+import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
 /** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
  *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
@@ -211,7 +211,7 @@ export class BusyError extends Error {
  *  deletes a branch with an open PR. */
 export async function removeWorktree(repo: RepoConfig, worktreePath: string, branch: string | undefined, deleteBranch: boolean): Promise<void> {
   agent.stop(worktreePath);
-  if (branch) await agent.killByBranch(branch);
+  await agent.killInWorktree(worktreePath);
   preview.stop(worktreePath);
   await git.removeWorktree(repo.repoPath, worktreePath).catch(() => {});
   if (deleteBranch && branch) await git.deleteBranch(repo.repoPath, branch);
@@ -225,8 +225,7 @@ export async function archiveWorkstream(repo: RepoConfig, branch: string): Promi
   await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
   const hasPr = (await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch);
   const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
-  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr);
-  else await agent.killByBranch(branch);
+  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr); // no worktree, nothing can run in it
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
 }
 
@@ -302,6 +301,26 @@ export async function placement(
   return repo.runsOn ?? db.instanceName();
 }
 
+/** Open the PR for a finished worker's branch (the repo's `mergePolicy.autoPr`): title from the
+ *  workstream, body from the worker's outcome and its commits, ready for review — not a draft, so the
+ *  merge queue can take it. Nothing when the repo has no remote, the branch already has a PR, or it
+ *  has no commits of its own. */
+export async function openWorkerPr(repo: RepoConfig, branch: string, worktreePath: string, result: { outcome?: AgentOutcome; response?: string }): Promise<{ number: number; url: string } | undefined> {
+  if (!(await git.hasRemote(repo.repoPath))) return undefined;
+  if ((await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch)) return undefined;
+  const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
+  const { commits } = await git.changeSummary(worktreePath, base);
+  if (!commits.length) return undefined;
+  const e = (await db.enrichment(repo.name))[branch] ?? {};
+  const title = (typeof e.title === "string" && e.title.trim()) || branch;
+  await git.pushBranch(worktreePath, branch);
+  const pr = await gh.createPr(worktreePath, {
+    title, base: repo.baseBranch, head: branch,
+    body: workerPrBody({ ...result, commits: commits.map((c) => c.subject).reverse() }), // changeSummary is newest-first
+  });
+  return pr;
+}
+
 /** Move a workstream's worktree from THIS instance to another. The branch goes up to origin, the
  *  worktree here is removed (the branch is kept), the target adopts the branch over HTTP (with an
  *  explicit `instance`, because the inventory still shows the branch here until the next publish),
@@ -338,6 +357,9 @@ const orcaPaths = (repo: RepoConfig): string[] => [...(repo.copyToWorktree ?? []
  *  conversation stays. Only ever called once `cleanupDecision` said nothing would be lost. */
 async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath: string }, reason: git.ReapReason, blocked: boolean): Promise<void> {
   agent.stop(w.worktreePath);
+  // A headless process left in the worktree (one this bridge no longer tracks), matched by its cwd —
+  // never by argv: the orchestrator's prompt lists every branch, and an argv match SIGTERMed its wake.
+  await agent.killInWorktree(w.worktreePath);
   preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
   await db.clearPreviewPlacement(w.worktreePath).catch(() => {});
   await git.removeWorktree(repo.repoPath, w.worktreePath);

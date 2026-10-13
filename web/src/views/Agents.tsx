@@ -27,7 +27,7 @@ import {
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Pill, StatusDot, type DotTone } from "@/components/console";
+import { OrchStatusNote, Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
@@ -395,6 +395,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
           {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
         </div>
         {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
+        {!isDone && <OrchStatusNote status={row.orchStatus} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
@@ -437,6 +438,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+        {!isDone && <OrchStatusNote status={row.orchStatus} chipOnly />}
       </div>
       <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewCell row={row} />}

@@ -516,7 +516,8 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   send messages, as the user asked. `orchestratorShell: false` (app config) keeps it to the `orca`
   command, reading, the web and read-only subagents via `--allowedTools` — for a shared box, since
   it reads every worker's output. Its prompt states which mode it is in on EVERY wake (`## Access`).
-  Either way it **cannot promote, merge or Slack through Orca**; those stay your buttons. Code
+  Either way it **cannot promote or Slack through Orca, and merges only through the merge queue**
+  (`orca merge --when-green`, below — never `gh pr merge`); the rest stay your buttons. Code
   changes to a repo go to a workstream — a worker owns its branch. Claude only (workers keep their
   per-card model). What it gets from its cwd (`~/.orca/orchestrator`): a `CLAUDE.md` there (yours to
   write) is read as standing orders alongside the role in the prompt, a `.mcp.json` there is its
@@ -526,8 +527,28 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   `send`, `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
-  checkout's copied `.env`; dry run without `--confirm`, values masked — README), `chats`, `read`,
-  `notes`.
+  checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`
+  (`--repo r (--pr N | --branch b) --when-green [--small]` or `--cancel`: the merge queue), `chats`,
+  `read`, `notes`.
+- **Merge queue — merge on green with nobody watching CI** (`server/mergeQueue.ts`, decisions in
+  `workstream.ts` `mergeVerdict` / `mergeRefusal`). A PR — or a branch with no PR yet — is MARKED
+  (`mergeWhenGreen` on its enrichment, so shared and restart-proof) by `orca merge --when-green`, the
+  PR menu's **Merge when green**, or `POST /api/prs/merge-when-green`. Each minute the instance the
+  repo runs on reads every marked PR with one `gh pr view` and squash-merges it only when every check
+  passed (no checks yet is NOT green — a fresh push has none) and GitHub says `MERGEABLE`. Red CI or a
+  conflict keeps the mark (fixed and green, it merges) and is reported once per head commit: the
+  `pr_ci_failed` / `pr_conflicts` notification (same key as `/api/prs`'s, so one row) and, for the
+  orchestrator's PRs, a `— merge blocked:` worker-problem report that wakes it. A merge is a `merged`
+  notification and a clean `— merged` report (batched like a finish). **The policy is per-repo
+  config, not prose in its notes:** `mergePolicy: { whenGreen: "never" | "small" | "any", denyPaths:
+  [globs], autoPr }` — absent means never; `small` takes only PRs marked `--small`; a PR touching a
+  `denyPaths` glob (e.g. `server/db.ts` for migrations, `server/cgroup.ts`, `deploy/`) is refused
+  when marked AND re-checked at merge time (a later push can add one), unmarked, and notified
+  (`merge_refused`). `autoPr: true` has an orchestrated worker's clean finish (done, check not
+  failed, commits ahead of base, no PR yet) open its PR itself (`verbs.openWorkerPr`: title from the
+  card, body from the outcome + commits, ready not draft), and the worker report says `Orca opened
+  PR #N` — so the orchestrator never opens one by hand, and a branch it marked earlier joins the
+  queue.
 - **Its role text is judgement-first.** It is told it is a senior engineer running a team, given
   the trade-offs (send to an existing workstream vs spawn; one branch per mergeable unit) and left
   to decide. An earlier, rule-shaped version ("do not spawn for something a workstream owns") made it
@@ -541,6 +562,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   startup: every live lease is shown running and, when its process exits, its turn is finished from
   the provider's session file and the normal after-run path fires (minus the check gate). The
   orchestrator's own wake is `orchestrator.recover`'s. `lease.pidAlive` treats a zombie as dead.
+  (1b) **Reaping a merged PR's worktree SIGTERMed the orchestrator** (the 143s of 2026-10-13, each
+  seconds after it merged a PR): the reaper's `killByBranch` killed every headless agent whose ARGV
+  contained the branch name, and the orchestrator's prompt — the board, listing every branch — is
+  in its argv. `agent.killInWorktree` matches by the process's cwd (`/proc/<pid>/cwd`, else `lsof`)
+  instead, and leaves a process whose cwd it can't read alone. Never match agents by argv text.
   (2) There was a per-wake `--max-budget-usd` (5, then 25) and a long resumed session hit it
   mid-reply several times a day; **there is no cap unless `orchestratorWakeBudgetUsd` is set**.
   Also: a lease records its `sessionId` and `launch` refuses a resume while another live run is on
@@ -574,6 +600,13 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   the repo didn't have before (`createViaOrchestrator`; Undo tears that spawn down). Picking a real
   model in the box bypasses the orchestrator and launches directly, as before. "New chat" never goes
   through it — a chat is a conversation with a model you chose.
+- **The ladder moves on evidence, not only its judgement.** An orchestrated worker that fails twice
+  in a row on one model (the run errors, or its commit fails Orca's check — a stop is neither) gets
+  a `Model ladder:` line in its report (`ladderStep`, the streak as `failStreak` on its enrichment,
+  counted even when an autofix takes over): the next model up to retry on, or — with the repo's
+  `modelEscalation: "apply"` — the workstream already re-pinned to it, so the orchestrator's next
+  `send` runs there. At the top (Fable) the line says to stop and tell the user. A clean run ends
+  the streak; a model off the ladder (Codex, Cursor) gets no line.
 - **A brief has three required parts** — objective, expected output, boundaries (`briefProblems`);
   `spawn` refuses one without them, because a worker knows only its brief.
 - **Wake loop — management by exception.** A workstream it spawned or sent to is marked
@@ -610,7 +643,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   placeholder (a heuristic — exit 0, but no reply). The turn's response becomes a `Wake stopped: …`
   line (`db.failTurn`), the messages it claimed (`handling` in its blob — the blob, so a death with
   the bridge is covered) go back on the queue, and the next wake's prompt carries `## Previous wake
-  was cut off`. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
+  was cut off` plus `## What the cut-off wake did` (`wakeProgress` over the steps it recorded as it
+  went — they are in Postgres, so this covers a death with the bridge too): each acting command it
+  ran (`orca spawn/send/address/archive/move/merge/preview/notes set`, `gh pr merge/create/…`) with
+  the first line of its result or "no result recorded", then the reply it had started — so it
+  neither repeats an action nor leaves you without the answer. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
   to send it again. A restart is detected at startup (`orchestrator.recover`): a claim with no live
   lease whose turn did not end on text was cut off; one that outlived the bridge and finished is
   just drained. Stop is not a death. The header (panel and page alike) carries a live status line
@@ -624,6 +661,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   applies as for any conversation — resume while healthy, reset onto the portable transcript at 80%
   context — and a reset loses nothing it was told to keep. If it seems amnesiac, read its notes
   before blaming the model.
+- **Per-workstream state is structured, not notes** (`orca status --repo r --branch b [--plan …]
+  [--waiting …] [--merge small|needs-finn] [--clear]`): a short orchestrator-owned record on the
+  workstream's enrichment (`orchStatus`, 300 chars a field — `orchStatusUpdate` / `orchStatusText`),
+  on its board line every wake and on the user's card / Agents row (`OrchStatusNote`). The notes keep
+  only the user's preferences and standing facts. The merge class is a label for the user; the
+  merge queue still reads only `--small` and the repo's `mergePolicy`.
 - **Memory of past work** is the turn table: `orca chats "<terms>"` is Postgres full-text over every
   instruction and response, archived workstreams included; `orca read` loads one on demand
   (just-in-time retrieval, no embeddings, no index yet).
@@ -646,7 +689,8 @@ reported only when it died or asked you something, and its Open opens the window
 (`stopped` — a stopped run is superseded in `agent.ts` and never reaches the hook, and a discard is
 not news), a watcher after `preview.start` (`preview_ready` with the URL you'd open, else
 `preview_failed`; a preview you stop mid-boot is forgotten), and the `/api/prs` answer
-(`pr_ci_failed`, `pr_conflicts`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
+(`pr_ci_failed`, `pr_conflicts`), and the merge queue (`merged`, `merge_refused`; its red CI reuses
+`pr_ci_failed`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
 line is a question, or `requires_action` — nobody has a cleaner signal (CLAUDE: a question is still
 `end_turn`). Titles are the card's title, else the branch. Rows are pruned past 30 days by the writer.
 The decisions are pure in `shared/notifications.ts` (what an event is, what pops, how the stack is

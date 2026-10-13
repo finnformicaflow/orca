@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreVertical, Sparkles, X } from "lucide-react";
 import {
-  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
 import { firstLine, prMenuActions, prPreviewState, shouldBump } from "../workstream";
@@ -152,6 +152,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             {prActions.includes("autoMerge") && (row.autoMergeEnabled
               ? <DropdownMenuItem onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
               : <DropdownMenuItem onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
+            {prActions.includes("autoMerge") && <DropdownMenuItem onSelect={run("Merge when green", () => mergeWhenGreen(row))} title="Orca squash-merges it once checks pass and it merges clean, under this repo's merge policy">Merge when green</DropdownMenuItem>}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
             {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
             {prPreview === "ready" && <DropdownMenuItem onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</DropdownMenuItem>}

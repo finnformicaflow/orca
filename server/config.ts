@@ -1,5 +1,6 @@
 import * as db from "./db";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
+import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
 export type PreviewService = {
@@ -117,6 +118,14 @@ export type RepoConfig = {
    *  running. Unset (the default) means no reaping — a repo whose harness already cleans up, or has
    *  none, opts in by naming its own prefix. */
   testContainerPrefix?: string;
+  /** Merge-when-green and auto-PR (server/mergeQueue.ts): which PRs Orca may squash-merge on its own
+   *  once checks pass and it merges clean, which paths it never merges, and whether it opens a
+   *  finished orchestrated worker's PR itself. Absent = Orca never merges and never opens a PR. */
+  mergePolicy?: MergePolicy;
+  /** When an orchestrated worker fails twice in a row on one model (the run errors or its commit
+   *  fails the check): `suggest` (the default) puts the next model up the ladder in the worker
+   *  report; `apply` re-pins the workstream to it, so the retry runs there, and the report says so. */
+  modelEscalation?: "suggest" | "apply";
 };
 
 export type OrcaConfig = {
@@ -241,6 +250,19 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
           if (!known.includes(k)) errors.push(`${where}.features.${k} is not a known feature (${known.join(", ")})`);
           else if (typeof v !== "boolean") errors.push(`${where}.features.${k} must be true or false`);
         }
+      }
+    }
+    if (r.modelEscalation !== undefined && r.modelEscalation !== "suggest" && r.modelEscalation !== "apply") {
+      errors.push(`${where}.modelEscalation must be "suggest" or "apply"`);
+    }
+    if (r.mergePolicy !== undefined) {
+      const m = r.mergePolicy as Record<string, unknown> | null;
+      if (!m || typeof m !== "object" || Array.isArray(m)) errors.push(`${where}.mergePolicy must be an object`);
+      else {
+        for (const k of Object.keys(m)) if (!["whenGreen", "denyPaths", "autoPr"].includes(k)) errors.push(`${where}.mergePolicy.${k} is not a known setting (whenGreen, denyPaths, autoPr)`);
+        if (m.whenGreen !== undefined && !MERGE_WHEN_GREEN.includes(m.whenGreen as never)) errors.push(`${where}.mergePolicy.whenGreen must be one of ${MERGE_WHEN_GREEN.join(", ")}`);
+        if (m.denyPaths !== undefined && !(Array.isArray(m.denyPaths) && m.denyPaths.every((g) => typeof g === "string" && g.trim()))) errors.push(`${where}.mergePolicy.denyPaths must be an array of path globs`);
+        if (m.autoPr !== undefined && typeof m.autoPr !== "boolean") errors.push(`${where}.mergePolicy.autoPr must be true or false`);
       }
     }
     if (r.previewSecureContext !== undefined && typeof r.previewSecureContext !== "boolean") {

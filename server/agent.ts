@@ -15,6 +15,7 @@ import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { noteOomKill } from "./health";
 import { tmpdir } from "os";
+import { readlinkSync } from "fs";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -951,16 +952,35 @@ export function isHeadlessAgentProcess(line: string): boolean {
     || (/(?:^|\s)(?:\S*\/)?cursor-agent(?:\s|$)/.test(line) && /(?:^|\s)(?:-p|--print)(?:\s|$)/.test(line));
 }
 
-/** Kill a running agent by branch (via ps) — works even after a restart lost the handle. */
-export async function killByBranch(branch: string): Promise<void> {
+/** The working directory of a process, or undefined when it can't be read (gone, or no /proc and
+ *  no lsof). Linux reads /proc; macOS asks lsof. */
+export function processCwd(pid: number): string | undefined {
+  try { return readlinkSync(`/proc/${pid}/cwd`); } catch { /* not linux, or gone */ }
+  try {
+    const out = Bun.spawnSync(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
+    return out.split("\n").find((l) => l.startsWith("n"))?.slice(1) || undefined;
+  } catch { return undefined; }
+}
+
+/** Is `cwd` the worktree or somewhere under it? */
+export const cwdInWorktree = (cwd: string | undefined, worktreePath: string): boolean =>
+  Boolean(cwd) && (cwd === worktreePath || cwd!.startsWith(worktreePath.replace(/\/+$/, "") + "/"));
+
+/** Kill the headless agents running IN a worktree (via ps) — works even after a restart lost the
+ *  handle. Matched by the process's cwd, never by its argv: a prompt is passed in argv, and the
+ *  orchestrator's carries the whole board, so "argv mentions the branch" matched the orchestrator's
+ *  own wake whenever a PR it had just merged was reaped — a SIGTERM (exit 143) mid-reply. A process
+ *  whose cwd can't be read is left alone. */
+export async function killInWorktree(worktreePath: string): Promise<void> {
   try {
     const proc = Bun.spawn(["ps", "-Ao", "pid=,command="], { env: process.env, stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     for (const line of out.split("\n")) {
-      if (isHeadlessAgentProcess(line) && line.includes(branch)) {
-        const pid = Number(line.trim().split(/\s+/)[0]);
-        if (pid) try { process.kill(pid); } catch { /* already gone */ }
+      if (!isHeadlessAgentProcess(line)) continue;
+      const pid = Number(line.trim().split(/\s+/)[0]);
+      if (pid && pid !== process.pid && cwdInWorktree(processCwd(pid), worktreePath)) {
+        try { process.kill(pid); } catch { /* already gone */ }
       }
     }
   } catch { /* ps unavailable */ }
