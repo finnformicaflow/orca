@@ -21,7 +21,12 @@ import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
-import { postMessage as slackPost } from "./slack-api";
+import { postAsUser as slackPost } from "./integrations/adapters/slack";
+import * as integrations from "./integrations/registry";
+import * as dispatcher from "./integrations/dispatcher";
+import * as inbox from "./integrations/inbox";
+import * as integrationStore from "./integrations/store";
+import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
@@ -249,6 +254,34 @@ primary.onPrimary(() => {
   runReaper();
   setInterval(runReaper, REAP_INTERVAL_MS).unref();
 });
+
+// The integrations layer (server/integrations/). On the primary only, with the database up: start
+// the adapters this instance runs (integration.instance), then the delivery dispatcher. The
+// orchestrator's deliveries are served only where it lives (orchestratorOn). Re-synced every minute,
+// so an integration row added, moved or disabled takes effect without a restart.
+const web = webAdapter(notify.emit);
+dispatcher.configure({
+  adapter: integrations.adapterFor,
+  web: web.deliver,
+  orchestrator: async (e) => inbox.toOrchestrator(await loadConfig(), e),
+  workstream: async (repo, branch, e) => inbox.toWorkstream(await loadConfig(), repo, branch, e),
+  serves: (kind) => kind !== "orchestrator" || !lastOrchestratorOn || lastOrchestratorOn === db.instanceName(),
+  dead: async (d, error) => { await notify.emit(deadNotification(d, error)); },
+});
+dispatcher.setRunning(integrations.runningIds);
+let lastOrchestratorOn: string | undefined;
+const INTEGRATIONS_SYNC_MS = 60_000;
+const syncIntegrations = async () => {
+  if (!primary.held()) return;
+  lastOrchestratorOn = (await loadConfig()).orchestratorOn;
+  await integrations.sync();
+};
+primary.whenUp(async () => {
+  await syncIntegrations();
+  dispatcher.start();
+  setInterval(() => void syncIntegrations().catch(db.logUnlessDown("orca: integrations sync failed")), INTEGRATIONS_SYNC_MS).unref();
+  setInterval(() => void integrationStore.pruneEvents().catch(db.logUnlessDown("orca: event prune failed")), REAP_INTERVAL_MS).unref();
+}, "orca: integrations start failed");
 
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
@@ -481,6 +514,10 @@ async function api(req: Request, url: URL): Promise<Response> {
       "Cache-Control": "private, max-age=86400, immutable",
     } });
   }
+  // An integration's HTTP door (a signed webhook, a relay's push): the RAW body, for its signature, so
+  // before the JSON parse. Answered by the instance that runs the integration, never forwarded.
+  const inbound = req.method === "POST" && p.match(/^\/api\/integrations\/([A-Za-z0-9_.-]+)\/inbound$/);
+  if (inbound) return integrations.handle(inbound[1]!, req, await req.text());
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
@@ -563,8 +600,16 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (!primary.held() && req.method === "POST" && (p === "/api/orchestrator/event" || p === "/api/orchestrator/message" || (p === "/api/compact" && body.repo === ORCHESTRATOR_REPO))) {
     return json({ error: `this is a secondary bridge (${primary.state().reason}); the orchestrator is driven by the instance's primary bridge` }, 503);
   }
+  if (req.method === "GET" && p === "/api/integrations") {
+    // The integrations this database knows, what runs on this bridge and its health, and the outbox's
+    // dead letters — for diagnostics now and the Settings > Integrations page later.
+    const [rows, dead] = await Promise.all([integrationStore.integrations(), integrationStore.deliveries({ state: "dead", limit: 50 })]);
+    return json({ instance: db.instanceName(), integrations: rows, running: await integrations.health(), dead: dead.map(({ envelope, ...d }) => ({ ...d, topic: envelope.topic, key: envelope.key })) });
+  }
   if (req.method === "POST" && p === "/api/orchestrator/event") {
     // A worker report from another instance (its run-finished hook), delivered to the orchestrator here.
+    // Kept as an alias: scripts now post to a webhook integration (/api/integrations/<id>/inbound),
+    // which is signed and goes through the permission gate.
     if (typeof body.text !== "string") return json({ error: "text required" }, 400);
     await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined);
     return json({ ok: true });
@@ -1356,6 +1401,8 @@ async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   draining = true;
   if (signal === "SIGINT") preview.killAll();
   void primary.release(); // the next bridge takes the duties now, not at its next retry
+  void dispatcher.stop();
+  void integrations.stopAll(); // close sockets so the next primary can open them
   try {
     await Promise.race([
       agent.flushHistory(),

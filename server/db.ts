@@ -25,6 +25,7 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
+import { grantKey, type Grant } from "../shared/integrations";
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
@@ -798,6 +799,78 @@ export const MIGRATIONS: MigrationStep[] = [
         last_seen TIMESTAMPTZ NOT NULL,
         PRIMARY KEY (user_id, instance, boot_id)
       );
+    `,
+  },
+  {
+    name: "20261017-integrations",
+    idempotent: true,
+    // The integrations layer (docs/research/integrations.md §3.4, server/integrations/). Credentials
+    // stay apart from routing: `integration.secret_ref` names an environment variable (never a value),
+    // `channel_link` and `subscription` say where things go. `event` is the keyed log every envelope
+    // lands in (ON CONFLICT (user_id, key) DO NOTHING is the idempotency); `delivery` is the durable
+    // outbox the dispatcher claims with FOR UPDATE SKIP LOCKED. `thread_link` maps an external thread
+    // to a workstream; `integration_cursor` is a poller's position. `queued_message.grant` keeps
+    // messages of different permission grants out of one orchestrator wake (NULL = your own, full).
+    sql: `
+      CREATE TABLE IF NOT EXISTS integration (
+        id TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}', secret_ref TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT true, status JSONB,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS channel_link (
+        id TEXT NOT NULL, user_id TEXT NOT NULL, integration_id TEXT NOT NULL,
+        external_id TEXT NOT NULL, label TEXT,
+        level TEXT NOT NULL CHECK (level IN ('notify','ask','work')),
+        repos TEXT[] NOT NULL DEFAULT '{}',
+        require_mention BOOLEAN NOT NULL DEFAULT true,
+        PRIMARY KEY (user_id, id),
+        UNIQUE (user_id, integration_id, external_id)
+      );
+      CREATE TABLE IF NOT EXISTS principal (
+        id TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL,
+        max_level TEXT NOT NULL CHECK (max_level IN ('notify','ask','work')),
+        PRIMARY KEY (user_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS identity (
+        user_id TEXT NOT NULL, adapter TEXT NOT NULL, external_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+        PRIMARY KEY (user_id, adapter, external_id)
+      );
+      CREATE TABLE IF NOT EXISTS subscription (
+        id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL,
+        topic_pattern TEXT NOT NULL, filter JSONB NOT NULL DEFAULT '{}',
+        target_kind TEXT NOT NULL CHECK (target_kind IN ('link','orchestrator','workstream','web')),
+        target_id TEXT, digest_seconds INT, enabled BOOLEAN NOT NULL DEFAULT true
+      );
+      CREATE TABLE IF NOT EXISTS thread_link (
+        user_id TEXT NOT NULL, adapter TEXT NOT NULL, external_thread_id TEXT NOT NULL, link_id TEXT,
+        repo TEXT NOT NULL, branch TEXT NOT NULL, created_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, adapter, external_thread_id)
+      );
+      CREATE INDEX IF NOT EXISTS thread_link_workstream ON thread_link (user_id, link_id, repo, branch);
+      CREATE TABLE IF NOT EXISTS event (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key TEXT NOT NULL, topic TEXT NOT NULL,
+        envelope JSONB NOT NULL, created_at BIGINT NOT NULL,
+        UNIQUE (user_id, key)
+      );
+      CREATE INDEX IF NOT EXISTS event_recent ON event (user_id, created_at);
+      CREATE TABLE IF NOT EXISTS delivery (
+        id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL,
+        event_id TEXT NOT NULL REFERENCES event (id) ON DELETE CASCADE,
+        subscription_id BIGINT, target JSONB NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','sending','sent','failed','dead')),
+        attempts INT NOT NULL DEFAULT 0, next_at BIGINT NOT NULL, last_error TEXT,
+        external_msg_id TEXT, created_at BIGINT NOT NULL,
+        UNIQUE (event_id, subscription_id)
+      );
+      CREATE INDEX IF NOT EXISTS delivery_due ON delivery (next_at) WHERE state IN ('pending','sending','failed');
+      CREATE TABLE IF NOT EXISTS integration_cursor (
+        user_id TEXT NOT NULL, integration_id TEXT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, integration_id)
+      );
+      ALTER TABLE queued_message ADD COLUMN IF NOT EXISTS grant_scope JSONB;
     `,
   },
 ];
@@ -1681,15 +1754,24 @@ export async function stepsForRuns(runIds: string[]): Promise<Map<string, { seq:
 export type QueuedMessage = {
   id: number; repo: string; branch: string; worktreePath: string;
   instruction: string; attachments: string[]; provider?: string; createdAt: number;
+  /** The permission grant of an outside sender's message (shared/integrations.ts); absent = full. */
+  grant?: Grant;
+};
+
+const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
+const grantOf = (v: unknown): Grant | undefined => {
+  if (!v || typeof v !== "object") return undefined;
+  const { key: _key, ...g } = v as Grant & { key?: string };
+  return g;
 };
 
 /** Queue an instruction typed while a run was in flight. */
 export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt">): Promise<QueuedMessage> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at)
+      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)})
       RETURNING id, created_at`;
     return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
   });
@@ -1700,7 +1782,7 @@ export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt"
 export async function queuedMessages(repo: string, branch: string): Promise<QueuedMessage[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at
+      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope
       FROM queued_message
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
       ORDER BY id`;
@@ -1708,6 +1790,7 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
       id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+      ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
     }));
   });
 }
@@ -1726,22 +1809,26 @@ export async function queuedCounts(repo: string): Promise<Map<string, number>> {
 
 /** Claim the next queued message for a branch, marking it dispatched in the same statement so two
  *  instances (or a restart racing itself) cannot send it twice. */
-export async function claimQueuedMessage(repo: string, branch: string): Promise<QueuedMessage | undefined> {
+export async function claimQueuedMessage(repo: string, branch: string, onlyGrant?: string): Promise<QueuedMessage | undefined> {
   return withRetry(async (sql) => {
+    // `onlyGrant` (a grantKey) claims only messages of that grant: one wake never mixes an outside
+    // sender's message with yours, so the wake's grant is exact (shared/integrations.ts §3.7).
     const rows = await sql`
       UPDATE queued_message SET dispatched_at = ${Date.now()}
       WHERE id = (
         SELECT id FROM queued_message
         WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
+          AND (${onlyGrant ?? null}::text IS NULL OR COALESCE(grant_scope->>'key', 'full') = ${onlyGrant ?? null}::text)
         ORDER BY id LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at`;
+      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope`;
     const r = rows[0] as Record<string, unknown> | undefined;
     return r && {
       id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
+      ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
     };
   });
 }

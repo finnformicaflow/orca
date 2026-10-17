@@ -48,6 +48,7 @@ const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
   pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
   merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert, draft_sent: Send,
+  integration_failed: CircleX, external_message: MessagesSquare,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
 
