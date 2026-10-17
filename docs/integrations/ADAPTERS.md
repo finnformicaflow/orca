@@ -15,7 +15,8 @@ The core does these tasks. An adapter never does them:
 - It records the event and plans the deliveries in one transaction.
 - It retries a failed send with backoff and marks the delivery dead after 6 attempts.
 - It stores thread links and passes the thread back to the adapter.
-- It paces outbound sends per target (from `caps.rate`) and inbound messages per sender.
+- It paces outbound sends per target (from `caps.rate`) and inbound messages per sender. Only a
+  sender with an `actor` is paced. A poller or a webhook is not paced.
 - It starts the adapter only on the primary bridge of the instance in `integration.instance`.
 
 An adapter does only these tasks:
@@ -35,7 +36,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`. Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `github.ts`. Put a new adapter here. |
 
 ## 3. The interface
 
@@ -233,7 +234,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Discord | The same as Slack. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
-| GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
+| GitHub poller | Done: `adapters/github.ts`, section 13. | |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
 | Unified inbox | The `event` table (`ext.*.message`, `orca.question`). | A view. |
 
@@ -300,3 +301,48 @@ seconds. At the window's end, the dispatcher sends ONE message for the window.
   retry time and dead state.
 - A digest does not apply to `web` targets. The web already shows each event.
 - A digest over more than one workstream starts no thread.
+
+## 13. The GitHub poller
+
+`server/integrations/adapters/github.ts`. Kind `github`, `inbound: "poll"`, no outbound.
+
+Each tick (`intervalSeconds`, default 60) reads, for each watched repo:
+
+1. The PR list, newest updated first. It follows `Link: rel="next"` until it reaches the cursor.
+2. The check runs of the head commit of each open PR.
+3. The review comments since the cursor.
+
+- Every GET sends the ETag from the last answer. A 304 does not count against the rate limit.
+- The cursor (`integration_cursor`) holds the ETags, two times and a small record of each open PR.
+  A restart continues from it.
+- The first poll of a repo is a baseline. It records the state and sends no events.
+- A rate-limited repo is skipped until its reset. Its cursor does not move.
+
+Config (`integration.config`):
+
+```json
+{ "repos": ["owner/name", { "slug": "me/site", "repo": "web", "githubUser": "me" }], "intervalSeconds": 60 }
+```
+
+- `repos` absent: every configured repo with a GitHub origin.
+- `repo` is Orca's repo name (the `scope.repo` of each event). The default is the name part of the slug.
+- The token is `secret_ref` (`ORCA_SECRET_GITHUB_*`) when it is set. Else it is the `gh` login of
+  `githubUser`, else the active `gh` login.
+
+Links: the link's `external_id` is the slug (`owner/name`), or `*` for every repo. The link level
+must be `ask` or above. The gate drops an event on a `notify` link.
+
+Topics. Each event has `source.channel` = the slug, `scope` = `{ repo, branch: <head branch> }`,
+`thread` = `{ adapter: "github", externalId: "owner/name#<n>" }`, `title` = `#<n> <PR title>`,
+`link` = `{ url, pr }`, and no `actor`.
+
+| Topic | Key | `raw` |
+|---|---|---|
+| `orca.pr.opened` | `pr-opened:<repo>#<n>` | `number, author, draft, head` |
+| `orca.pr.review_requested` | `pr-review-requested:<repo>#<n>:<login or team:slug>@<head>` | `number, reviewer, head` |
+| `orca.pr.ci_failed` | `pr-ci:<repo>#<n>@<head>` (the key of the `/api/prs` notification) | `number, head, failing` |
+| `orca.pr.ci_passed` | `pr-ci-passed:<repo>#<n>@<head>` | `number, head, checks` |
+| `orca.pr.review_comment` | `pr-review-comment:<repo>:<comment id>` | `number, commentId, author, path, line` |
+| `orca.pr.merged` | `merged:<repo>#<n>` (the key of the merge queue) | `number, mergedAt, head` |
+
+A shared key makes ONE event, whichever source sees it first.

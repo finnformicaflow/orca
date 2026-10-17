@@ -41,8 +41,10 @@ export type PrSnap = { head: string; branch: string; title: string; url: string;
 export type RepoCursor = {
   /** The PR list's newest `updated_at` seen; older pages are not read again. */
   prsSince?: string;
-  /** The review comments' newest `updated_at` seen (GitHub's `since`). */
+  /** The review comments' newest `updated_at` seen (GitHub's `since`, which is inclusive)... */
   commentsSince?: string;
+  /** ...and the ids already handled at exactly that time, so the next read skips them. */
+  commentIds?: number[];
   /** ETag per request path. */
   etags: Record<string, string>;
   /** Open PRs only, by number. */
@@ -261,13 +263,15 @@ export async function pollRepo(w: Watch, token: string, cur: GithubCursor, inges
     if (!comments) result.notModified++;
     else {
       for (const p of Object.keys(rc.etags)) if (p.includes("/pulls/comments") && p !== path) delete rc.etags[p];
+      const done = new Set(rc.commentIds ?? []);
       for (const c of comments) {
-        if (c.created_at < cs) continue; // an edit of an older comment
+        if (c.created_at < cs || done.has(c.id)) continue; // an edit of an older comment, or one already handled
         const n = /\/pulls\/(\d+)$/.exec(c.pull_request_url)?.[1];
         const e = commentEvent(c, n ? rc.prs[n] : undefined, make, w);
         if (e) await send(e);
       }
       const newest = comments.reduce((m, c) => (c.updated_at > m ? c.updated_at : m), cs);
+      rc.commentIds = [...(newest === cs ? done : []), ...comments.filter((c) => c.updated_at === newest).map((c) => c.id)];
       rc.commentsSince = newest;
     }
   }
