@@ -163,7 +163,7 @@ agent.onQueuedMessage(async (message) => {
   const pinned = fields?.preferredModel;
   const mergeWhenGreen = Boolean(fields?.mergeWhenGreen);
   await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen }), message.attachments), {
-    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined),
+    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, fields),
     branch: message.branch, action: "followup", instruction: message.instruction,
   });
 });
@@ -293,6 +293,8 @@ const DRAIN_TIMEOUT_MS = 5_000;
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+/** A principal id from a display name: "Saajan P." → "saajan-p". */
+const principalSlug = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "person";
 
 /** A read answered without the database: the marker rides in a header (an array body has nowhere
  *  else to put it), and an object body also gets `dbUnavailable: true`. */
@@ -606,6 +608,28 @@ async function api(req: Request, url: URL): Promise<Response> {
     const [rows, dead] = await Promise.all([integrationStore.integrations(), integrationStore.deliveries({ state: "dead", limit: 50 })]);
     return json({ instance: db.instanceName(), integrations: rows, running: await integrations.health(), dead: dead.map(({ envelope, ...d }) => ({ ...d, topic: envelope.topic, key: envelope.key })) });
   }
+  // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
+  // binds their platform identity to a principal (new, or an existing id). The Settings page calls
+  // the same routes later. Body: { code, principal?, name?, maxLevel? ("notify" | "ask" | "work") }.
+  if (req.method === "GET" && p === "/api/integrations/pairing") return json({ pairings: await integrationStore.pendingPairings() });
+  if (req.method === "POST" && p === "/api/integrations/pairing/approve") {
+    const level = body.maxLevel;
+    if (level !== undefined && !["notify", "ask", "work"].includes(level)) return json({ error: 'maxLevel must be "notify", "ask" or "work"' }, 400);
+    const code = String(body.code ?? "").trim().toUpperCase();
+    if (!code) return json({ error: "code required" }, 400);
+    const pending = (await integrationStore.pendingPairings()).find((x) => x.code === code);
+    const id = typeof body.principal === "string" && body.principal.trim() ? body.principal.trim()
+      : principalSlug(String(body.name ?? pending?.name ?? pending?.externalId ?? code));
+    try {
+      const pairing = await integrationStore.approvePairing(code, { id, ...(typeof body.name === "string" && body.name.trim() ? { name: body.name.trim() } : {}), ...(level ? { maxLevel: level } : {}) });
+      return json({ pairing });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/integrations/pairing/deny") {
+    return (await integrationStore.denyPairing(String(body.code ?? ""))) ? json({ ok: true }) : json({ error: "no pending pairing code with that value" }, 404);
+  }
   if (req.method === "POST" && p === "/api/orchestrator/event") {
     // A worker report from another instance (its run-finished hook), delivered to the orchestrator here.
     // Kept as an alias: scripts now post to a webhook integration (/api/integrations/<id>/inbound),
@@ -840,7 +864,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
-    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
+    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true, ...(body.grantScope ? { grantScope: body.grantScope } : {}) } });
     return json({ ...ws, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/followup") {
@@ -1115,7 +1139,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       return json({ error: "an agent is already running for this worktree" }, 409);
     }
     const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
-      ...launchOptions(cfg, repo, provider, body.model),
+      ...launchOptions(cfg, repo, provider, body.model, body.branch ? (await db.enrichment(repo.name))[body.branch] : undefined),
       resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
     });
@@ -1145,7 +1169,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Which Claude LOGIN runs this is hydra's decision (the `claude` on PATH is its shim); a resume
     // works on any login because hydra shares sessions between them. Orca just launches.
     const receipt = await agent.launch(body.key, cwd, body.prompt, {
-      ...launchOptions(cfg, repo, provider, body.model),
+      ...launchOptions(cfg, repo, provider, body.model, body.branch ? (await db.enrichment(repo.name))[body.branch] : undefined),
       resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
       action: body.action, evidenceChars: body.evidenceChars, instruction: body.instruction,
     });

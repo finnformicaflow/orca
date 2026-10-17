@@ -3,7 +3,7 @@
 // orchestrator's inbox, a workstream follow-up, or the web. A failure backs off (5 s, 30 s, 2 min,
 // 10 min, 1 h, respecting retryAfterMs); after the sixth attempt the row is dead and
 // `orca.integration.failed` is published (the web hears it as an `integration_failed` notification).
-import { afterAttempt, clip, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
+import { afterAttempt, clip, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -46,7 +46,7 @@ export const outbound = (e: Envelope): OutboundMessage => ({
 const sentAt = new Map<string, number[]>();
 export const resetPace = (): void => sentAt.clear();
 
-async function sendOne(d: store.Delivery, now: number): Promise<SendResult | "deferred"> {
+async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { deferUntil: number }> {
   const t: DeliveryTarget = d.target;
   try {
     if (t.kind === "link") {
@@ -55,7 +55,7 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | "de
       if (a.caps.rate) {
         const key = `${t.integrationId}:${t.externalId}`;
         const wait = paceWait(sentAt.get(key) ?? [], now, a.caps.rate.perTarget, a.caps.rate.windowMs);
-        if (wait > 0) { await store.deferDelivery(d.id, now + wait); return "deferred"; }
+        if (wait > 0) return { deferUntil: now + wait };
         sentAt.set(key, [...(sentAt.get(key) ?? []).filter((x) => now - x < a.caps.rate!.windowMs), now]);
       }
       const msg = outbound(d.envelope);
@@ -81,14 +81,28 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | "de
 export async function dispatchOnce(now = Date.now()): Promise<number> {
   const running = [...new Set([...runningIds()])];
   const claimed = await store.claimDeliveries({ now, limit: BATCH, leaseMs: SEND_LEASE_MS, integrationIds: running, kinds: servedKinds() });
+  // A digest's members go out as ONE send (§3.8): the rest of the window is claimed too, even when
+  // the batch limit split it; the lowest id leads (its id is the idempotency key) and every member
+  // takes the one result.
+  const groups: store.Delivery[][] = [];
+  const byDigest = new Map<string, store.Delivery[]>();
   for (const d of claimed) {
-    const r = await sendOne(d, now);
-    if (r === "deferred") continue;
-    const next = afterAttempt(r, d.attempts, now);
-    await store.finishDelivery(d.id, { ...next, ...(r.ok ? { externalMsgId: r.externalMsgId } : { error: r.error }) });
-    if (next.state === "dead") await died(d, r.ok ? "" : r.error);
+    if (!d.digestKey) { groups.push([d]); continue; }
+    const g = byDigest.get(d.digestKey);
+    if (g) g.push(d); else { const fresh = [d]; byDigest.set(d.digestKey, fresh); groups.push(fresh); }
   }
-  return claimed.length;
+  for (const [key, g] of byDigest) g.push(...await store.claimDigest(key, now, SEND_LEASE_MS));
+  for (const g of groups) {
+    g.sort((a, b) => a.id - b.id);
+    const lead = g[0]!;
+    const one = g.length > 1 ? { ...lead, envelope: digestEnvelope(g.map((d) => d.envelope), lead.digestKey!) } : lead;
+    const r = await sendOne(one, now);
+    if ("deferUntil" in r) { for (const d of g) await store.deferDelivery(d.id, r.deferUntil); continue; }
+    const next = afterAttempt(r, Math.max(...g.map((d) => d.attempts)), now);
+    for (const d of g) await store.finishDelivery(d.id, { ...next, ...(r.ok ? { externalMsgId: r.externalMsgId } : { error: r.error }) });
+    if (next.state === "dead") await died(one, r.ok ? "" : r.error);
+  }
+  return groups.reduce((n, g) => n + g.length, 0);
 }
 
 async function died(d: store.Delivery, error: string): Promise<void> {

@@ -38,6 +38,8 @@ import {
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import { grantKey, grantRefusal, type Grant } from "../shared/integrations";
+import * as integrationStore from "./integrations/store";
+import * as integrationRouter from "./integrations/router";
 
 // ponytail: constants, not config — promote one to OrcaConfig the first time it needs tuning.
 /** Wakes in a row with no message from you before it stops waking itself. The loop guard: an
@@ -538,15 +540,75 @@ async function attachArgs(args: ToolArgs): Promise<string[]> {
   return refs;
 }
 
+/** `orca channels`: every link (where Orca can post or listen), the subscriptions and the pairing
+ *  codes waiting for the user. Read-only. */
+async function channelsText(): Promise<string> {
+  const [links, conns, subs, pairings] = await Promise.all([integrationStore.links(), integrationStore.integrations(), integrationStore.subscriptions(), integrationStore.pendingPairings()]);
+  const byId = new Map(conns.map((c) => [c.id, c]));
+  const lines = links.length ? links.map((l) => {
+    const c = byId.get(l.integrationId);
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c?.instance ?? "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${l.level === "work" ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}`;
+  }) : ["no channel links"];
+  const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
+  const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
+  return [...lines, ...subLines, ...pairLines].join("\n");
+}
+
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   // The grant check (§3.7): a wake an outside sender caused may only use the verbs its grant allows.
   // Server-side, so no prompt can talk its way past it.
-  const refusal = grantRefusal((await blob()).wakeGrant ?? undefined, verb, args);
+  const wakeGrant = (await blob()).wakeGrant ?? undefined;
+  const refusal = grantRefusal(wakeGrant, verb, args);
   if (refusal) throw new Error(refusal);
+  // A workstream an outside sender's wake starts or steers runs with permission prompts on
+  // (`agentPermissionMode: "ask"`), whatever its repo says — sticky on its enrichment.
+  const restricted: db.Fields = wakeGrant ? { grantScope: wakeGrant } : {};
   const words = args._ ?? [];
   switch (verb) {
     case "board": return boardText(await board(cfg));
+    case "channels": return channelsText();
+    case "post": {
+      // `orca post --link <id> [--thread <id> | --repo r --branch b] "<text>"`: a durable delivery
+      // through the link's adapter, retried if it fails. With --repo/--branch it continues that
+      // workstream's thread on the link, or starts it.
+      const text = words.join(" ").trim();
+      const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
+      if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
+      if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
+      const conn = await integrationStore.integration(link.integrationId);
+      const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
+      const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
+      const threadId = typeof args.thread === "string" && args.thread ? args.thread
+        : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
+      const r = await integrationRouter.publish({
+        key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
+        ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}), text,
+      }, Date.now(), [{ subscriptionId: null, target: {
+        kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId: link.externalId, ...(threadId ? { threadId } : {}),
+      } }]);
+      return `Queued for ${link.label ?? link.id}${threadId ? ` (thread ${threadId})` : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
+    }
+    case "thread": {
+      // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that
+      // external thread now go to the workstream (a "work" grant on its repo is still required).
+      if (words[0] !== "link" || !words[1] || !words[2]) throw new Error("usage: orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]");
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      await integrationStore.setThreadLink({ adapter: words[1], externalThreadId: words[2], repo: repo.name, branch, ...(typeof args.link === "string" && args.link ? { linkId: args.link } : {}) });
+      return `Linked ${words[1]} thread ${words[2]} to ${repo.name}/${branch}. Replies there now reach that workstream.`;
+    }
+    case "ask-user": {
+      // `orca ask-user "<question>"`: topic orca.question — the bell (needs input) and every
+      // channel subscribed to it. The answer comes back as a message.
+      const question = words.join(" ").trim();
+      if (!question) throw new Error('the question is required: orca ask-user "<question>"');
+      await integrationRouter.publish({
+        key: `question:${crypto.randomUUID()}`, topic: "orca.question", at: Date.now(), source: { adapter: "orca" },
+        title: "The orchestrator asks", text: question, link: { orchestrator: true },
+      }, Date.now(), [{ subscriptionId: null, target: { kind: "web" } }]);
+      return "Asked. The user sees it in Orca and on every channel subscribed to orca.question. End your turn; the answer comes as a message.";
+    }
     case "spawn": {
       const repo = repoNamed(cfg, args.repo);
       const brief = { objective: args.objective, output: args.output, boundaries: args.boundaries, context: args.context } as Record<string, string | undefined>;
@@ -560,10 +622,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const title = typeof args.title === "string" ? args.title : undefined;
       const prompt = withAttachments(workerBrief(brief), await attachArgs(args));
       if (on !== db.instanceName()) {
-        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model });
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model, ...restricted });
         return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
       }
-      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true } });
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true, ...restricted } });
       return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
     }
     case "send": {
@@ -579,6 +641,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         if (!provider) throw new Error(`unknown model "${args.model}"`);
         await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
       }
+      if (wakeGrant) await db.patchEnrichment(repo.name, branch, restricted);
       const home = await verbs.placement(repo, { branch });
       const { status } = home !== db.instanceName()
         ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text }) as { status: string })
@@ -589,6 +652,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "address": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
+      if (wakeGrant) await db.patchEnrichment(repo.name, branch, restricted);
       const home = await verbs.placement(repo, { branch });
       const { status, pr } = home !== db.instanceName()
         ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })

@@ -11,7 +11,9 @@ export type Topic =
   | `orca.pr.${"opened" | "ci_failed" | "conflicts" | "merged" | "merge_refused"}`
   | `orca.preview.${"ready" | "failed"}`
   | `orca.upkeep.${"address" | "gave_up"}`
-  | "orca.question" // the orchestrator asks the user
+  | "orca.question" // the orchestrator asks the user (`orca ask-user`)
+  | "orca.message" // the orchestrator posts to a link or thread (`orca post`)
+  | "orca.pairing.requested" // an unknown sender got a pairing code
   | "orca.integration.failed" // a delivery went dead
   | `ext.${string}.message` // a chat or email message from outside
   | `ext.${string}.${string}`; // any other external event: ext.github.push, ext.linear.issue
@@ -186,28 +188,56 @@ export function defaultInboundTarget(e: Pick<Envelope, "topic" | "grant">, threa
  *  - `orca.integration.failed` never goes to a link: a broken link would feed itself.
  *  - An event is never echoed to the link it came in on.
  *  - An outside sender's message reaches a workstream only with "work" on its repo. */
+/** One delivery a plan makes. `digestSeconds` comes from a digest subscription (§3.8). */
+export type PlannedDelivery = { subscriptionId: number | null; target: DeliveryTarget; digestSeconds?: number };
+
+// The web already shows each event once, so a digest applies to every target except `web`.
+const digestOf = (s: Subscription): { digestSeconds?: number } => (s.digestSeconds && s.digestSeconds > 0 ? { digestSeconds: s.digestSeconds } : {});
+
+/** A digest's window (§3.8): fixed windows of `seconds`, so every event of one subscription in one
+ *  window shares the key and is sent once, together, at the window's end. */
+export function digestWindow(subscriptionId: number, seconds: number, at: number): { key: string; nextAt: number } {
+  const ms = seconds * 1000;
+  const end = (Math.floor(at / ms) + 1) * ms;
+  return { key: `${subscriptionId}:${end}`, nextAt: end };
+}
+
+/** The ONE envelope a digest sends: a count title and one line per event, oldest first. */
+export function digestEnvelope(events: Envelope[], key: string): Envelope {
+  const sorted = [...events].sort((a, b) => a.at - b.at);
+  const first = sorted[0]!;
+  if (sorted.length === 1) return first;
+  const line = (e: Envelope) => `• ${e.title ? `${e.title}: ` : ""}${e.text.replace(/\s+/g, " ").trim()}${e.link?.url ? ` (${e.link.url})` : ""}`;
+  const scopes = new Set(sorted.map((e) => `${e.scope?.repo ?? ""}::${e.scope?.branch ?? ""}`));
+  return {
+    id: first.id, key: `digest:${key}`, topic: first.topic, at: sorted.at(-1)!.at, source: { adapter: "orca" },
+    ...(scopes.size === 1 && first.scope ? { scope: first.scope } : {}),
+    title: `${sorted.length} events`, text: sorted.map(line).join("\n"),
+  };
+}
+
 export function planDeliveries(
   e: Pick<Envelope, "topic" | "scope" | "source" | "grant">,
   subs: Subscription[],
   links: Map<string, { integrationId: string; adapter: string; externalId: string }>,
   threads: Map<string, string> = new Map(),
   inboundThread?: { repo: string; branch: string },
-): { subscriptionId: number | null; target: DeliveryTarget }[] {
-  const out: { subscriptionId: number | null; target: DeliveryTarget }[] = [];
+): PlannedDelivery[] {
+  const out: PlannedDelivery[] = [];
   for (const s of subs) {
     if (!subscriptionMatches(s, e)) continue;
     if (s.targetKind === "link") {
       const l = s.targetId ? links.get(s.targetId) : undefined;
       if (!l || e.topic === "orca.integration.failed" || e.source.linkId === s.targetId) continue;
       const threadId = threads.get(s.targetId!);
-      out.push({ subscriptionId: s.id, target: { kind: "link", integrationId: l.integrationId, adapter: l.adapter, linkId: s.targetId!, externalId: l.externalId, ...(threadId ? { threadId } : {}) } });
+      out.push({ subscriptionId: s.id, target: { kind: "link", integrationId: l.integrationId, adapter: l.adapter, linkId: s.targetId!, externalId: l.externalId, ...(threadId ? { threadId } : {}) }, ...digestOf(s) });
     } else if (s.targetKind === "workstream") {
       const [repo, branch] = (s.targetId ?? "").split("::");
       if (!repo || !branch || !grantAllowsRepo(e.grant, repo, "work")) continue;
-      out.push({ subscriptionId: s.id, target: { kind: "workstream", repo, branch } });
+      out.push({ subscriptionId: s.id, target: { kind: "workstream", repo, branch }, ...digestOf(s) });
     } else if (s.targetKind === "orchestrator") {
       if (e.grant && e.grant.level === "notify") continue;
-      out.push({ subscriptionId: s.id, target: { kind: "orchestrator" } });
+      out.push({ subscriptionId: s.id, target: { kind: "orchestrator" }, ...digestOf(s) });
     } else {
       out.push({ subscriptionId: s.id, target: { kind: "web" } });
     }
@@ -266,22 +296,28 @@ export function grantAllowsRepo(g: Grant | undefined, repo: string | undefined, 
 }
 
 /** `orca` verbs by what they need. Read verbs answer questions; work verbs start or steer work on
- *  one repo; every other verb (merge, archive, move, stop, sweep, notes set, repo add, a later
- *  post / thread link) needs the full grant — your own web chat. */
+ *  one repo; `post` may answer on the link the wake came from and `ask-user` asks you; every other
+ *  verb (merge, archive, move, stop, sweep, notes set, repo add) needs the full grant — your own chat. */
 export const READ_VERBS = ["board", "chats", "read", "channels"] as const;
 export const WORK_VERBS = ["spawn", "send", "address", "status", "pr-shots"] as const;
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls
  *  it for the wake in flight, so a prompt cannot talk its way past it. */
-export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: unknown; _?: unknown[]; status?: unknown } = {}): string | undefined {
+export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: unknown; _?: unknown[]; status?: unknown; link?: unknown } = {}): string | undefined {
   if (!g || g.level === "full") return undefined;
   const sub = Array.isArray(args._) ? String(args._[0] ?? "") : "";
   const read = (READ_VERBS as readonly string[]).includes(verb)
     || (verb === "notes" && sub !== "set")
-    || (verb === "preview" && args.status === true)
+    || (verb === "preview" && args.status !== undefined && args.status !== false)
+    || verb === "ask-user"
     || (verb === "repo" && sub === "list");
   if (read && rank(g.level) >= rank("ask")) return undefined;
-  if ((WORK_VERBS as readonly string[]).includes(verb) || verb === "preview") {
+  if (verb === "post") {
+    // An answer goes back where the question came from; any other place needs your own chat.
+    if (rank(g.level) >= rank("ask") && g.linkId && args.link === g.linkId) return undefined;
+    return `refused: this wake came from an outside sender with an "${g.level}" grant; "post" may answer only on its own link (${g.linkId ?? "none"})`;
+  }
+  if ((WORK_VERBS as readonly string[]).includes(verb) || verb === "preview" || (verb === "thread" && sub === "link")) {
     const repo = typeof args.repo === "string" ? args.repo : undefined;
     if (grantAllowsRepo(g, repo, "work")) return undefined;
     return g.level === "work"
@@ -337,6 +373,24 @@ export function secretRefRefusal(ref: string | undefined | null, stripped: reado
   if (stripped.includes(ref) || ref.startsWith("ORCA_SECRET_")) return undefined;
   return `secret_ref ${ref} must start with ORCA_SECRET_ (or be one of ${stripped.join(", ")}) so agents never see it`;
 }
+
+// ── Pairing (§3.7: unknown senders get a code; you approve it in Orca) ──────────────────────────
+
+/** No 0/O, 1/I/L: a code is read off a phone and typed. */
+export const PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+export const PAIRING_CODE_LENGTH = 6;
+export const PAIRING_TTL_MS = 60 * 60_000;
+
+/** A new code from `random` (bytes; crypto.getRandomValues in the server). */
+export function pairingCode(random: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < PAIRING_CODE_LENGTH; i++) out += PAIRING_ALPHABET[(random[i] ?? 0) % PAIRING_ALPHABET.length];
+  return out;
+}
+
+/** What the sender reads back in the chat. */
+export const pairingReply = (code: string): string =>
+  `Orca does not know you yet. Ask the owner to approve pairing code ${code} in Orca. The code expires in ${PAIRING_TTL_MS / 60_000} minutes. Then send your message again.`;
 
 /** Cut text to an adapter's limit, with an ellipsis. */
 export const clip = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`);

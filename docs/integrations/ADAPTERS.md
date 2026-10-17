@@ -128,9 +128,10 @@ export type InboundMessage = {
 
 - Set `key` from the platform's own event id. A retry or a reconnect then gives `"duplicate"`.
 - Set `source.channel` to the external place (a Slack channel id, a mailbox, a hook name). The core
-  finds the `channel_link` row for it. A place with no link is `"rejected"`.
+  finds the `channel_link` row for it. If there is none, it uses the integration's catch-all link
+  (`external_id = '*'`), if one exists. A place with no link is `"rejected"`.
 - Set `actor` for a person. The core finds the person through `identity`. An unknown person is
-  `"rejected"` until a later branch adds pairing codes.
+  `"rejected"`, and the core sends them a pairing code (section 10). Do not send it yourself.
 - Leave `actor` empty for a machine sender (a webhook, a poller). The integration is then the
   identity, and the grant is the link's level.
 - Set `mentioned: false` for a chat message that does not mention Orca. A link with
@@ -183,10 +184,12 @@ Until the Settings page lands, configure an integration with SQL or with `store.
    `config`, `secret_ref` (the variable name).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask` or `work`), `repos`
    (for `work`), `require_mention`.
-4. Add `principal` and `identity` rows for each person who may write to Orca.
+4. Add `principal` and `identity` rows for each person who may write to Orca. Or let them write
+   once and approve their pairing code (section 10).
 5. Add `subscription` rows for what goes out: `topic_pattern`, `filter` (for example
    `{"repo":"orca"}`), `target_kind` (`link`, `orchestrator`, `workstream`, `web`), `target_id`
-   (the link id, or `repo::branch`).
+   (the link id, or `repo::branch`). Set `digest_seconds` for a digest (section 12).
+6. For DMs, add a catch-all link with `external_id = '*'`. A place with no link of its own uses it.
 
 The primary bridge syncs the rows each minute. You do not need a restart.
 `GET /api/integrations` shows the rows, what runs on this bridge, its health and the dead deliveries.
@@ -209,8 +212,8 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Level | The sender can | Orca can, for that message |
 |---|---|---|
 | `notify` | Nothing inbound. The gate drops the message. | Post to the link. |
-| `ask` | Ask questions. | `orca board`, `chats`, `read`, `notes`, `preview --status`, `repo list`. |
-| `work` | Ask, and start or steer work on the link's repos. | Also `spawn`, `send`, `address`, `status`, `pr-shots`, `preview` on those repos. |
+| `ask` | Ask questions. | `orca board`, `chats`, `read`, `notes`, `channels`, `ask-user`, `preview --status`, `repo list`, and `post` on the link the message came from. |
+| `work` | Ask, and start or steer work on the link's repos. | Also `spawn`, `send`, `address`, `status`, `pr-shots`, `preview`, `thread link` on those repos. |
 | `full` | Your own chat in Orca. | Every verb. |
 
 - The grant is min(link level, person's max level). The link's repos limit `work`.
@@ -218,6 +221,8 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 - The orchestrator's tool route (`POST /api/orchestrator/tool`) checks every verb against the
   grant of the wake in flight. A prompt cannot get past it.
 - A wake for an outside sender has no shell. It can act only through `orca`.
+- A workstream that such a wake spawns, sends to or addresses gets `grantScope` on its enrichment.
+  Every later run of that workstream uses `agentPermissionMode: "ask"`, whatever the repo says.
 - The text of an outside message goes into the prompt fenced, with its source, sender and grant.
 
 ## 8. What each later adapter needs from the core
@@ -227,7 +232,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Slack two-way | `ingest`, `inboundEnvelope`, `thread`, `mentioned`, thread links, `caps.edits`. | Socket Mode in `start` (`inbound: "socket"`), a bot token in `ORCA_SECRET_SLACK_BOT`, an app-level token in `ORCA_SECRET_SLACK_APP`. Keep `postAsUser` for "post as me". Setup: [slack.md](slack.md). |
 | Discord | The same as Slack. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
-| Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`. | Routes to write rows. A Test button that calls `publish` with a test key. |
+| Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
 | Linear | The same as the GitHub poller, plus thread links for issues. | GraphQL polls. |
 | Unified inbox | The `event` table (`ext.*.message`, `orca.question`). | A view. |
@@ -241,3 +246,57 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
   orchestrator's instance. Scripts use a webhook integration in its place.
 - `notify.emit` writes the notification row as before. For a new row it also writes the event with
   the same key.
+
+## 10. Pairing codes
+
+An unknown person who writes on a linked place gets a one-time code. The core does all of it. An
+adapter only sets `actor` and delivers the reply in `send`.
+
+1. The sender writes on a place with a link above `notify`. `ingest` returns `"rejected"`.
+2. The core makes a code: 6 characters, no `0`, `O`, `1`, `I` or `L`. It expires after 1 hour.
+3. The core sends the code back on the same place (`source.channel`, and `thread` when set). The
+   send is a normal delivery, so a failure is retried.
+4. The bell shows a `pairing_requested` notification with the code.
+5. You approve the code. This binds `(adapter, external_id)` to a principal.
+6. The sender writes again. The message now gets the grant min(link level, person's max level).
+
+- A sender with a live code gets no second code and no second reply.
+- A `notify` link never makes a code.
+- The first message is dropped. The reply tells the sender to send it again.
+
+The API (the Settings page uses the same routes later):
+
+| Route | Body | Result |
+|---|---|---|
+| `GET /api/integrations/pairing` | | `{ pairings }`: the pending, live codes. |
+| `POST /api/integrations/pairing/approve` | `{ code, principal?, name?, maxLevel? }` | Binds the sender. `principal` names an existing person (keeps that person's name and level) or a new id. With no `principal`, the id comes from the name. A new person gets `maxLevel` or `ask`. |
+| `POST /api/integrations/pairing/deny` | `{ code }` | Drops the code. |
+
+The store functions are `pairingFor`, `pendingPairings`, `approvePairing` and `denyPairing`.
+
+## 11. Orchestrator verbs for channels
+
+These go through `POST /api/orchestrator/tool` like every other `orca` verb. The grant check runs
+first (section 7).
+
+| Verb | What it does |
+|---|---|
+| `orca channels` | Lists every link (integration, place, level, repos), every subscription and the pending pairing codes. |
+| `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
+| `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
+| `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |
+
+`publish(envelope, now, extra)` takes explicit deliveries (`extra`) beside the subscriptions'. Use
+it from the core for a delivery to one known target.
+
+## 12. Digest subscriptions
+
+A subscription with `digest_seconds` set collects its deliveries into fixed windows of that many
+seconds. At the window's end, the dispatcher sends ONE message for the window.
+
+- The message has the title `N events` and one line per event, oldest first.
+- A window with one event sends that event as it is.
+- The delivery id of the first member is the idempotency key. Every member gets the same result,
+  retry time and dead state.
+- A digest does not apply to `web` targets. The web already shows each event.
+- A digest over more than one workstream starts no thread.

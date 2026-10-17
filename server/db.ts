@@ -873,6 +873,27 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE queued_message ADD COLUMN IF NOT EXISTS grant_scope JSONB;
     `,
   },
+  {
+    name: "20261017-integrations-pairing",
+    idempotent: true,
+    // Pairing codes (server/integrations/router.ts): an unknown sender on a linked place gets a
+    // one-time code; you approve it in Orca and that binds the sender (adapter, external_id) to a
+    // principal. Digests (§3.8): a digest subscription's deliveries share `digest_key` (subscription +
+    // window) and the dispatcher sends them as ONE message at the window's end.
+    sql: `
+      CREATE TABLE IF NOT EXISTS pairing_code (
+        user_id TEXT NOT NULL, code TEXT NOT NULL,
+        integration_id TEXT NOT NULL, adapter TEXT NOT NULL, external_id TEXT NOT NULL, name TEXT,
+        link_id TEXT, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','approved','denied')),
+        principal_id TEXT, decided_at BIGINT,
+        PRIMARY KEY (user_id, code)
+      );
+      CREATE INDEX IF NOT EXISTS pairing_code_sender ON pairing_code (user_id, adapter, external_id) WHERE state = 'pending';
+      ALTER TABLE delivery ADD COLUMN IF NOT EXISTS digest_key TEXT;
+      CREATE INDEX IF NOT EXISTS delivery_digest ON delivery (digest_key) WHERE digest_key IS NOT NULL AND state IN ('pending','sending','failed');
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

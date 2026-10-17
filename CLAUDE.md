@@ -192,7 +192,11 @@ notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only o
 of `integration.instance`. Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
-verbs outside it (`grantRefusal`), and such a wake has no shell. `/api/slack` still posts at once as
+verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
+gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
+has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
+its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
 

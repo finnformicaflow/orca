@@ -14,11 +14,14 @@ export function webNotification(e: Pick<Envelope, "key" | "topic" | "scope" | "t
   const sender = e.actor?.external.name ?? e.actor?.external.id;
   return {
     key: e.key,
-    kind: e.topic === "orca.integration.failed" ? "integration_failed" : "external_message",
+    kind: e.topic === "orca.integration.failed" ? "integration_failed"
+      : e.topic === "orca.pairing.requested" ? "pairing_requested"
+      : e.topic === "orca.question" ? "needs_input"
+      : "external_message",
     repo: e.scope?.repo ?? "", ...(e.scope?.branch ? { branch: e.scope.branch } : {}),
     title: e.title ?? (sender ? `${sender} via ${e.source.adapter}` : e.source.adapter),
     body: e.text.replace(/\s+/g, " ").trim().slice(0, 140),
-    ...(e.link ? { link: e.link } : {}),
+    ...(e.link ? { link: e.link } : e.topic === "orca.question" ? { link: { orchestrator: true } } : {}),
   };
 }
 

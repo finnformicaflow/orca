@@ -186,7 +186,7 @@ describe("with Postgres", () => {
       inboundEnvelope({ adapter: "slack", channel, eventId, from: { adapter: "slack", id: from, name: "x" }, text: "status?", mentioned });
     expect(await router.ingest("slack-work", msg("e0", "C9"))).toBe("rejected"); // no link
     expect(await router.ingest("slack-work", msg("e1", "C2"))).toBe("rejected"); // notify link
-    expect(await router.ingest("slack-work", msg("e2", "C1", "U-stranger"))).toBe("rejected"); // not paired
+    expect(await router.ingest("slack-work", msg("e2", "C1", "U-stranger"))).toBe("rejected"); // not paired (gets a pairing code, below)
     expect(await router.ingest("slack-work", msg("e3", "C1", "U1", false))).toBe("rejected"); // no mention
     expect(await router.ingest("slack-work", msg("e4", "C1"))).toBe("new");
     expect(await router.ingest("slack-work", msg("e4", "C1"))).toBe("duplicate"); // a platform retry
@@ -194,7 +194,8 @@ describe("with Postgres", () => {
     const ev = await store.event("slack:e4");
     expect(ev?.grant).toEqual({ level: "ask", repos: ["r"], linkId: "L1", principalId: "saajan" });
     expect(ev?.actor?.principalId).toBe("saajan");
-    expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "orchestrator" }]);
+    const accepted = (await store.deliveries()).filter((d) => d.envelope.key === "slack:e4").map((d) => d.target);
+    expect(accepted).toEqual([{ kind: "orchestrator" }]);
     for (let i = 0; i < 19; i++) await router.ingest("slack-work", msg(`flood${i}`, "C1"));
     expect(await router.ingest("slack-work", msg("flood-over", "C1"))).toBe("rejected"); // 21st in 10 min
   });

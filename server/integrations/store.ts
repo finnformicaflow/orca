@@ -2,7 +2,7 @@
 // Through db.withRetry like every other query, so a dropped connection is retried and an outage is
 // db.DbUnavailable. Every row carries user_id (db.currentUser()).
 import * as db from "../db";
-import type { DeliveryState, DeliveryTarget, Envelope, Level, Subscription, TargetKind } from "../../shared/integrations";
+import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
 
 const user = () => db.currentUser();
@@ -197,7 +197,7 @@ export async function setCursor(integrationId: string, value: string): Promise<v
 
 // ── event + delivery ─────────────────────────────────────────────────────────────────────────────
 
-export type PlannedDelivery = { subscriptionId: number | null; target: DeliveryTarget };
+export type { PlannedDelivery } from "../../shared/integrations";
 
 /** Record one event and its deliveries in ONE transaction (§3.5 rules 1-2). A known key inserts
  *  nothing and returns "duplicate", so a platform retry, a Gateway resume or a poll overlap is one
@@ -212,8 +212,10 @@ export async function recordEvent(e: Envelope, planned: PlannedDelivery[], now =
       if (!ins.length) { out = { status: "duplicate", deliveries: [] }; return; }
       const ids: number[] = [];
       for (const d of planned) {
-        const rows = await tx`INSERT INTO delivery (user_id, event_id, subscription_id, target, next_at, created_at)
-          VALUES (${user()}, ${e.id}, ${d.subscriptionId}, ${d.target as unknown as Record<string, unknown>}, ${now}, ${now})
+        // A digest subscription's delivery waits for its window's end, keyed with its siblings.
+        const digest = d.digestSeconds && d.subscriptionId != null ? digestWindow(d.subscriptionId, d.digestSeconds, now) : undefined;
+        const rows = await tx`INSERT INTO delivery (user_id, event_id, subscription_id, target, next_at, created_at, digest_key)
+          VALUES (${user()}, ${e.id}, ${d.subscriptionId}, ${d.target as unknown as Record<string, unknown>}, ${digest?.nextAt ?? now}, ${now}, ${digest?.key ?? null})
           ON CONFLICT (event_id, subscription_id) DO NOTHING RETURNING id`;
         if (rows.length) ids.push(Number(rows[0].id));
       }
@@ -233,12 +235,14 @@ export async function event(key: string): Promise<Envelope | undefined> {
 export type Delivery = {
   id: number; eventId: string; subscriptionId?: number; target: DeliveryTarget; state: DeliveryState;
   attempts: number; nextAt: number; lastError?: string; externalMsgId?: string; envelope: Envelope;
+  digestKey?: string;
 };
-type DeliveryRow = { id: number; event_id: string; subscription_id: number | null; target: DeliveryTarget; state: DeliveryState; attempts: number; next_at: number; last_error: string | null; external_msg_id: string | null; envelope: Envelope };
+type DeliveryRow = { id: number; event_id: string; subscription_id: number | null; target: DeliveryTarget; state: DeliveryState; attempts: number; next_at: number; last_error: string | null; external_msg_id: string | null; envelope: Envelope; digest_key?: string | null };
 const toDelivery = (r: DeliveryRow): Delivery => ({
   id: Number(r.id), eventId: r.event_id, ...(r.subscription_id != null ? { subscriptionId: Number(r.subscription_id) } : {}),
   target: r.target, state: r.state, attempts: Number(r.attempts), nextAt: Number(r.next_at),
   ...(r.last_error ? { lastError: r.last_error } : {}), ...(r.external_msg_id ? { externalMsgId: r.external_msg_id } : {}), envelope: r.envelope,
+  ...(r.digest_key ? { digestKey: r.digest_key } : {}),
 });
 
 /** Claim due deliveries (§3.5 rule 3): FOR UPDATE SKIP LOCKED, so two dispatchers never take one
@@ -259,7 +263,23 @@ export async function claimDeliveries(opts: { now: number; limit: number; leaseM
         ORDER BY next_at, id LIMIT ${opts.limit}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, e.envelope`;
+      RETURNING d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, d.digest_key, e.envelope`;
+    return (rows as DeliveryRow[]).map(toDelivery);
+  });
+}
+
+/** The rest of a digest (same key) not yet claimed: claimed now, so its window goes out as ONE send
+ *  even when the batch limit split it. */
+export async function claimDigest(key: string, now: number, leaseMs: number): Promise<Delivery[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`
+      UPDATE delivery d SET state = 'sending', attempts = d.attempts + 1, next_at = ${now + leaseMs}
+      FROM event e
+      WHERE e.id = d.event_id AND d.id IN (
+        SELECT id FROM delivery WHERE user_id = ${user()} AND digest_key = ${key} AND state IN ('pending', 'failed')
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, d.digest_key, e.envelope`;
     return (rows as DeliveryRow[]).map(toDelivery);
   });
 }
@@ -285,9 +305,9 @@ export async function deliveries(opts: { state?: DeliveryState; limit?: number }
   return db.withRetry(async (sql) => {
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
     const rows = opts.state
-      ? await sql`SELECT d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, e.envelope
+      ? await sql`SELECT d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, d.digest_key, e.envelope
           FROM delivery d JOIN event e ON e.id = d.event_id WHERE d.user_id = ${user()} AND d.state = ${opts.state} ORDER BY d.id DESC LIMIT ${limit}`
-      : await sql`SELECT d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, e.envelope
+      : await sql`SELECT d.id, d.event_id, d.subscription_id, d.target, d.state, d.attempts, d.next_at, d.last_error, d.external_msg_id, d.digest_key, e.envelope
           FROM delivery d JOIN event e ON e.id = d.event_id WHERE d.user_id = ${user()} ORDER BY d.id DESC LIMIT ${limit}`;
     return (rows as DeliveryRow[]).map(toDelivery);
   });
@@ -307,5 +327,82 @@ export async function pruneEvents(now = Date.now()): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`DELETE FROM event WHERE user_id = ${user()} AND created_at < ${now - EVENT_RETENTION_MS}
       AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = event.id AND d.state IN ('pending', 'sending', 'failed'))`;
+  });
+}
+
+// ── pairing_code ─────────────────────────────────────────────────────────────────────────────────
+
+export type Pairing = {
+  code: string; integrationId: string; adapter: string; externalId: string; name?: string; linkId?: string;
+  createdAt: number; expiresAt: number; state: "pending" | "approved" | "denied"; principalId?: string;
+};
+type PairingRow = { code: string; integration_id: string; adapter: string; external_id: string; name: string | null; link_id: string | null; created_at: number; expires_at: number; state: Pairing["state"]; principal_id: string | null };
+const toPairing = (r: PairingRow): Pairing => ({
+  code: r.code, integrationId: r.integration_id, adapter: r.adapter, externalId: r.external_id,
+  ...(r.name ? { name: r.name } : {}), ...(r.link_id ? { linkId: r.link_id } : {}),
+  createdAt: Number(r.created_at), expiresAt: Number(r.expires_at), state: r.state, ...(r.principal_id ? { principalId: r.principal_id } : {}),
+});
+
+/** The sender's live pending code, or a new one. `fresh` says whether it was just made (only a new
+ *  code is sent to the sender, so a chatty stranger gets one reply per hour, not one per message). */
+export async function pairingFor(p: { integrationId: string; adapter: string; externalId: string; name?: string; linkId?: string }, newCode: () => string, now = Date.now()): Promise<{ pairing: Pairing; fresh: boolean }> {
+  return db.withRetry(async (sql) => {
+    const live = await sql`SELECT code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id FROM pairing_code
+      WHERE user_id = ${user()} AND adapter = ${p.adapter} AND external_id = ${p.externalId} AND state = 'pending' AND expires_at > ${now}
+      ORDER BY created_at DESC LIMIT 1`;
+    if (live.length) return { pairing: toPairing((live as PairingRow[])[0]!), fresh: false };
+    for (let i = 0; i < 5; i++) {
+      const rows = await sql`INSERT INTO pairing_code (user_id, code, integration_id, adapter, external_id, name, link_id, created_at, expires_at)
+        VALUES (${user()}, ${newCode()}, ${p.integrationId}, ${p.adapter}, ${p.externalId}, ${p.name ?? null}, ${p.linkId ?? null}, ${now}, ${now + PAIRING_TTL_MS})
+        ON CONFLICT (user_id, code) DO NOTHING
+        RETURNING code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id`;
+      if (rows.length) return { pairing: toPairing((rows as PairingRow[])[0]!), fresh: true };
+    }
+    throw new Error("could not make a unique pairing code");
+  });
+}
+
+/** Pending, unexpired codes, newest first (the API now, the Settings page later). */
+export async function pendingPairings(now = Date.now()): Promise<Pairing[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id FROM pairing_code
+      WHERE user_id = ${user()} AND state = 'pending' AND expires_at > ${now} ORDER BY created_at DESC`;
+    return (rows as PairingRow[]).map(toPairing);
+  });
+}
+
+/** Approve a code: in one transaction, make the principal (or reuse one: an id that exists keeps its
+ *  name and level unless given) and bind the sender's identity to it. A new principal defaults to
+ *  the sender's display name and "ask". Refuses an unknown, used or expired code. */
+export async function approvePairing(code: string, principal: { id: string; name?: string; maxLevel?: Exclude<Level, "full"> }, now = Date.now()): Promise<Pairing> {
+  return db.withRetry(async (sql) => {
+    let out: Pairing | undefined;
+    await sql.begin(async (tx: Bun.SQL) => {
+      const rows = await tx`SELECT code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id FROM pairing_code
+        WHERE user_id = ${user()} AND code = ${code.trim().toUpperCase()} FOR UPDATE`;
+      const p = (rows as PairingRow[])[0];
+      if (!p) throw new Error(`no pairing code ${code}`);
+      if (p.state !== "pending") throw new Error(`pairing code ${code} is already ${p.state}`);
+      if (Number(p.expires_at) <= now) throw new Error(`pairing code ${code} has expired; ask the sender to write again for a new one`);
+      await tx`INSERT INTO principal (id, user_id, name, max_level)
+        VALUES (${principal.id}, ${user()}, ${principal.name ?? p.name ?? p.external_id}, ${principal.maxLevel ?? "ask"})
+        ON CONFLICT (user_id, id) DO UPDATE SET name = COALESCE(${principal.name ?? null}::text, principal.name),
+          max_level = COALESCE(${principal.maxLevel ?? null}::text, principal.max_level)`;
+      await tx`INSERT INTO identity (user_id, adapter, external_id, principal_id) VALUES (${user()}, ${p.adapter}, ${p.external_id}, ${principal.id})
+        ON CONFLICT (user_id, adapter, external_id) DO UPDATE SET principal_id = EXCLUDED.principal_id`;
+      const done = await tx`UPDATE pairing_code SET state = 'approved', principal_id = ${principal.id}, decided_at = ${now}
+        WHERE user_id = ${user()} AND code = ${p.code}
+        RETURNING code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id`;
+      out = toPairing((done as PairingRow[])[0]!);
+    });
+    return out!;
+  });
+}
+
+export async function denyPairing(code: string, now = Date.now()): Promise<boolean> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`UPDATE pairing_code SET state = 'denied', decided_at = ${now}
+      WHERE user_id = ${user()} AND code = ${code.trim().toUpperCase()} AND state = 'pending' RETURNING code`;
+    return rows.length > 0;
   });
 }

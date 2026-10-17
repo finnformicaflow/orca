@@ -1073,7 +1073,7 @@ export function wakeStoppedLine(input: { reason: string; toolCalls: number; cost
 }
 /** Commands that change something — what a wake that died must not repeat. `orca` verbs and the
  *  `gh pr` writes the orchestrator runs with its shell. */
-const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
+const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set|post|ask-user|thread\s+link)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
 /** What a wake that was cut off had already done, condensed for the next wake's prompt: each acting
  *  command it ran with the first line of what it printed, then the reply it had started (its text,
  *  tail-clipped). Built from the steps the run recorded as it went, so it survives the process. Empty
@@ -1616,6 +1616,13 @@ const ORCA_COMMANDS = [
   "                                  board doesn't have, then spawn on it",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
+  "  orca channels                   the channel links (Slack, Discord, email…), subscriptions and pairing codes",
+  "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
+  "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
+  "                                  Answer an outside sender on the link their message came from",
+  "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
+  "                                  external thread to the workstream",
+  "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",
 ].join("\n");
 
 const ORCHESTRATOR_ROLE = [
@@ -1650,7 +1657,7 @@ const ORCHESTRATOR_ROLE = [
   "  when it matters. A code fault in the log goes to the workstream; a machine fault goes to the user.",
   "- `--push-to-template` replaces what every future preview starts from, so run it only when the user",
   "  asks: first without --confirm, show them the plan, then with it. Relay its restore instructions.",
-  "- You cannot promote or post to Slack, and you merge only through `orca merge --when-green` — never",
+  "- You cannot promote or post to Slack as the user (only through a link with `orca post`), and you merge only through `orca merge --when-green` — never",
   "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
   "- Keep open PRs mergeable without being asked. On every wake, scan the board for PRs with failing",
   "  CI, merge conflicts, or unresolved review comments or threads, and run `orca address` on each",
