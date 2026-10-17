@@ -254,7 +254,7 @@ describe("agents list view", () => {
     await pointerdown(row.querySelector('button[aria-label="Actions"]')!);
     const dots = menuItems(document.body);
     // Address PR and Add preview live in the PR submenu, as on the ⋯.
-    expect(dots).toEqual(["Open", "Open PR #8", "Copy branch", "Follow up…", "Rename…", "PR", "Agent", "Slack", "Close PR"]);
+    expect(dots).toEqual(["Open", "Open PR #8", "Copy branch", "Follow up…", "Rename…", "Hand off…", "PR", "Agent", "Slack", "Close PR"]);
     await key(document.body.querySelector('[role="menu"]')!, "Escape");
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
 

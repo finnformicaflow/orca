@@ -14,7 +14,7 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Users,
+  Package, Users,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -53,6 +53,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
   { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
+  { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
   { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];

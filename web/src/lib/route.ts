@@ -5,7 +5,7 @@ import { useSyncExternalStore } from "react";
 export type PrTab = "overview" | "chat" | "files" | "checks" | "preview";
 export type LocalTab = "overview" | "chat" | "files" | "preview";
 /** The console's top-level pages, in the sidebar's order. "board" is the Overview at "/". */
-export const PAGES = ["agents", "previews", "repos", "github", "usage", "settings"] as const;
+export const PAGES = ["agents", "previews", "repos", "github", "handoffs", "usage", "settings"] as const;
 export type Page = (typeof PAGES)[number];
 export type Route =
   | { name: "board" }

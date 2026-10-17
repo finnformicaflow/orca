@@ -800,6 +800,30 @@ export const MIGRATIONS: MigrationStep[] = [
       );
     `,
   },
+  {
+    name: "20261017-handoff",
+    idempotent: true,
+    // Handoff packs (server/handoff.ts): context one Orca server hands to another through the user's
+    // browser. `out` is a pack made here and waiting for a click; `in` records a pack imported here,
+    // by the source's id, so a second click of Send does not queue the message twice. The file
+    // bytes are rows of `attachment`; `files` lists them.
+    sql: `
+      CREATE TABLE IF NOT EXISTS handoff (
+        user_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        target TEXT NOT NULL,
+        source TEXT NOT NULL,
+        files JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at BIGINT NOT NULL,
+        sent_at BIGINT,
+        sent_to TEXT,
+        PRIMARY KEY (user_id, direction, id)
+      );
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1841,5 +1865,57 @@ export async function attachment(id: string): Promise<{ filename: string; mimeTy
     const rows = await sql`SELECT filename, mime_type, bytes FROM attachment WHERE user_id = ${currentUser()} AND id = ${id}`;
     const r = (rows as { filename: string; mime_type: string; bytes: Uint8Array }[])[0];
     return r ? { filename: r.filename, mimeType: r.mime_type, bytes: new Uint8Array(r.bytes) } : undefined;
+  });
+}
+
+// ---- handoff packs (server/handoff.ts) ----
+export type HandoffFile = { name: string; kind: "file" | "chat" | "attachment"; attachmentId: string; size: number; mimeType: string };
+export type HandoffRow = {
+  id: string; direction: "out" | "in"; title: string; message: string; target: string; source: string;
+  files: HandoffFile[]; createdAt: number; sentAt?: number; sentTo?: string;
+};
+
+const toHandoff = (r: Record<string, unknown>): HandoffRow => ({
+  id: String(r.id), direction: r.direction === "in" ? "in" : "out", title: String(r.title), message: String(r.message),
+  target: String(r.target), source: String(r.source), files: (typeof r.files === "string" ? JSON.parse(r.files) : r.files) as HandoffFile[] ?? [],
+  createdAt: Number(r.created_at), sentAt: r.sent_at === null ? undefined : Number(r.sent_at), sentTo: (r.sent_to as string | null) ?? undefined,
+});
+
+/** Insert a pack. False when a row with this id and direction exists (an import sent twice). */
+export async function addHandoff(h: HandoffRow): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      INSERT INTO handoff (user_id, id, direction, title, message, target, source, files, created_at, sent_at, sent_to)
+      VALUES (${currentUser()}, ${h.id}, ${h.direction}, ${h.title}, ${h.message}, ${h.target}, ${h.source}, ${JSON.stringify(h.files)}::jsonb, ${h.createdAt}, ${h.sentAt ?? null}, ${h.sentTo ?? null})
+      ON CONFLICT DO NOTHING RETURNING id`;
+    return (rows as unknown[]).length > 0;
+  });
+}
+
+/** Every pack, newest first. */
+export async function handoffs(limit = 100): Promise<HandoffRow[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM handoff WHERE user_id = ${currentUser()} ORDER BY created_at DESC LIMIT ${limit}`;
+    return (rows as Record<string, unknown>[]).map(toHandoff);
+  });
+}
+
+export async function handoff(id: string, direction: "out" | "in" = "out"): Promise<HandoffRow | undefined> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM handoff WHERE user_id = ${currentUser()} AND direction = ${direction} AND id = ${id}`;
+    const r = (rows as Record<string, unknown>[])[0];
+    return r ? toHandoff(r) : undefined;
+  });
+}
+
+export async function markHandoffSent(id: string, to: string, at = Date.now()): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE handoff SET sent_at = ${at}, sent_to = ${to} WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
+  });
+}
+
+export async function deleteHandoff(id: string): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`DELETE FROM handoff WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
   });
 }

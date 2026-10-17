@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
-  Link, Loader2, MessageSquarePlus, MoreVertical, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
+  Link, Loader2, MessageSquarePlus, MoreVertical, Package, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
 } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
 } from "../store";
-import { firstLine, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, type QuickActionId } from "../workstream";
+import { firstLine, handoffDraftPath, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, type QuickActionId } from "../workstream";
 import { reviewSig } from "./Review";
 import { ActionButton } from "@/components/ActionButton";
 import { Tip } from "@/components/ui/tip";
@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
 import { BottomSheet } from "@/components/BottomSheet";
 import { useNarrow } from "@/lib/viewport";
+import { navigate } from "@/lib/route";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -224,6 +225,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       )}
       {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
       <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
+      {/* Pack this chat for another Orca server (the Handoffs page; nothing is sent until Send). */}
+      <Item icon={Package} onSelect={() => navigate(handoffDraftPath(row))}>Hand off…</Item>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
       {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => {
         const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;

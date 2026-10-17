@@ -3,6 +3,7 @@ import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
+import type { PackView, WirePack } from "../../server/handoff";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
 import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
@@ -93,6 +94,15 @@ export const api = {
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
+  // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
+  // absolute URL from this browser — the boxes never call each other.
+  handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
+  createHandoff: (body: { to: string; title: string; message?: string; repo?: string; branch?: string; chats?: number[] }): Promise<{ pack: PackView }> => post("/api/handoffs", body),
+  exportHandoff: (id: string): Promise<WirePack> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}/export`, { cache: "no-store" }).then(res),
+  markHandoffSent: (id: string, to: string): Promise<{ ok: boolean }> => post(`/api/handoffs/${encodeURIComponent(id)}/sent`, { to }),
+  deleteHandoff: (id: string): Promise<{ ok: boolean }> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}`, { method: "DELETE" }).then(res),
+  importHandoff: (targetUrl: string, pack: WirePack): Promise<{ duplicate: boolean; files: number }> =>
+    fetch(`${targetUrl}/api/handoff/import`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) }).then(res),
   setGithubAccount: (login: string, fields: { name?: string; email?: string }): Promise<{ accounts: GithubAccount[] }> => post("/api/github/accounts", { login, ...fields }),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.

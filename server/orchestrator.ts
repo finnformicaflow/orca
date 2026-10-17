@@ -27,6 +27,8 @@ import * as preview from "./preview";
 import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
 import * as repos from "./repos";
+import * as handoff from "./handoff";
+import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
@@ -718,6 +720,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       }
       throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");
     }
+    case "handoff": return handoffVerb(cfg, words, args);
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -725,8 +728,38 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
   }
+}
+
+const HANDOFF_USAGE = "orca handoff create --to <server> --title <title> [--message <text>] [--file <path|attachment id>]… [--chat <chat id>]…  |  orca handoff list";
+const many = (v: unknown): string[] => (v === undefined ? [] : (Array.isArray(v) ? v : [v]).map(String).filter((x) => x.trim()));
+
+/** `orca handoff`: a pack of context for another Orca server (server/handoff.ts). It only PREPARES:
+ *  the user sends it from the Handoffs page with a click; nothing here sends anything. */
+async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Promise<string> {
+  const sub = words[0];
+  if (sub === "list") {
+    const packs = await handoff.list();
+    return packs.filter((p) => p.direction === "out").map((p) => `${p.id.slice(0, 8)} → ${p.target} "${p.title}" — ${p.files.length} file${p.files.length === 1 ? "" : "s"}, ${p.sentAt ? `sent ${when(p.sentAt)}` : p.problems.length ? `BLOCKED: ${p.problems[0]}` : "ready, waiting for the user's click"}`).join("\n") || "(no handoff packs)";
+  }
+  if (sub !== "create") throw new Error(HANDOFF_USAGE);
+  const chats = many(args.chat).map((c) => Number(c.replace(/^#/, "")));
+  if (chats.some((c) => !(c > 0))) throw new Error("--chat takes a chat id from `orca chats` (a number)");
+  const { pack, problems } = await handoff.createPack({
+    to: typeof args.to === "string" ? args.to : "", title: typeof args.title === "string" ? args.title : "",
+    message: typeof args.message === "string" ? args.message : words.slice(1).join(" "),
+    files: many(args.file), chats, cwd: typeof args._cwd === "string" ? args._cwd : undefined,
+    source: (await selfServer(cfg.serverSwitcher ?? {})).name,
+  }).catch((e) => { throw new Error(e instanceof Error ? e.message : String(e)); });
+  const files = pack.files.map((f) => `  - ${f.name} (${f.kind}, ${f.size} bytes)`);
+  return [
+    `Pack ${pack.id.slice(0, 8)} "${pack.title}" for ${pack.target}: ${pack.files.length} file${pack.files.length === 1 ? "" : "s"}.`,
+    ...files,
+    problems.length
+      ? `Send is BLOCKED until this is fixed (make a new pack): ${problems.join("; ")}`
+      : "It is NOT sent. Tell the user to open Handoffs in Orca and click Send; only their click sends it.",
+  ].join("\n");
 }
 
 /** `orca merge --repo r (--pr N | --branch b) --when-green [--small]` (or `--cancel`): the merge

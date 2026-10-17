@@ -26,7 +26,7 @@ for (let i = 0; i < rest.length; i++) {
 const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/orchestrator/tool`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ verb, args: { ...args, _: words } }),
+  body: JSON.stringify({ verb, args: { ...args, _: words, _cwd: process.cwd() } }),
 });
 const out = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { text?: string; error?: string };
 if (!res.ok) {

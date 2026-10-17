@@ -511,7 +511,7 @@ test("O12: the orca command reads a flag followed by another flag as a switch", 
       env: { ...process.env, ORCA_URL: `http://127.0.0.1:${(bridge.address() as AddressInfo).port}` }, stdout: "pipe",
     });
     expect((await new Response(run.stdout).text()).trim()).toBe("ok");
-    expect(got).toEqual({ verb: "preview", args: { "push-to-template": "", status: "", repo: "r", branch: "b", _: ["word"] } });
+    expect(got).toEqual({ verb: "preview", args: { "push-to-template": "", status: "", repo: "r", branch: "b", _: ["word"], _cwd: process.cwd() } });
   } finally {
     bridge.close();
   }

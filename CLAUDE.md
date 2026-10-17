@@ -259,6 +259,26 @@ Rules:
 - At most 2 shells per instance. No input for 30 minutes closes the shell. The PTY closes with its socket.
 - Start and end are logged (who, instance, time). Keystrokes and output are never logged.
 
+## Handoff packs (one Orca server to another, by the browser)
+
+The boxes cannot reach each other (the ACL blocks box-to-box traffic). The user's browser talks to
+both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `handoff`, named step
+`20261017-handoff`).
+- A pack is a title, a message for the target's orchestrator and files. The file bytes are rows of
+  `attachment`. Chats become markdown transcripts.
+- Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
+  [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
+- The Handoffs page (`/handoffs`, nav item after GitHub, `G K`) shows each pack in full: the exact message and every file.
+- Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
+  here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
+- The import stores the files as attachments and queues ONE message to the target's orchestrator:
+  `[handoff from <source>] <title>`, the message, the file list. A pack id seen before is a no-op.
+- Safety: 10 MB a file, 25 MB a pack. The secret scan (`scanSecrets`: Slack, Anthropic, GitHub, AWS
+  keys, private key blocks, `PASSWORD=`) blocks the export AND the import, and names the line only.
+- The import route needs an Origin header, and loopback or a Tailscale user device (the switcher's
+  whois, `importCallerVerdict`). It runs that whois even for a same-origin call.
+- The word "handoff" also names the cross-provider seed file (`writeHandoffFile`). They are different things.
+
 ## The one board & model
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
