@@ -82,7 +82,7 @@ export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: strin
   const host = preview.ownerHost(cfg.instances, db.instanceName());
   if (branch) {
     await db.patchEnrichment(repo.name, branch, { previewInstance: { instance: db.instanceName(), key, startedAt: new Date().toISOString() } })
-      .catch((e) => console.error("orca: preview placement write failed", e)); // advisory — never fail the start
+      .catch(db.logUnlessDown("orca: preview placement write failed")); // advisory — never fail the start
   }
   // Tell the centre when it comes up (with the URL) or doesn't — headed by the card's title.
   const title = branch ? (await db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>))[branch]?.title : undefined;

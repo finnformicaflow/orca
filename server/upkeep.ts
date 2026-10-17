@@ -65,7 +65,7 @@ export async function tick(cfg: OrcaConfig, now = Date.now()): Promise<Array<{ r
     const out: Array<{ repo: string; branch: string; decision: UpkeepDecision }> = [];
     for (const c of candidates) {
       const decision = await look(cfg, c, active, cap, now).catch((err) => {
-        console.error(`orca: upkeep ${c.repo.name}#${c.pr.number} failed`, err);
+        db.logUnlessDown(`orca: upkeep ${c.repo.name}#${c.pr.number} failed`)(err);
         return { action: "skip", why: String(err) } as UpkeepDecision;
       });
       if (decision.action === "address") active++;

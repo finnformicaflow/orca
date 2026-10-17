@@ -109,7 +109,7 @@ db.onFatal(refuse);
 void db.open().catch((e) => {
   if (e instanceof db.MigrationRefused) refuse(e);
   // DbUnavailable: db.ts has said so in its one "database unreachable … running degraded" line.
-  else if (!(e instanceof db.DbUnavailable)) console.error("orca: database open failed", e);
+  else db.logUnlessDown("orca: database open failed")(e);
 });
 // Background duties belong to ONE bridge per instance (server/primary.ts): whoever holds the instance's
 // advisory lock. Everything below that acts on this instance's runs, previews, PRs or inventory waits
@@ -235,7 +235,7 @@ primary.onPrimary(() => { startMetricsSampler(); });
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
 if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
-  const renew = () => void renewStaleLogins(primary.held).catch((e) => console.error("orca: stale-login renew failed", e));
+  const renew = () => void renewStaleLogins(primary.held).catch(db.logUnlessDown("orca: stale-login renew failed"));
   renew();
   setInterval(renew, RENEW_POLL_MS).unref();
 });
@@ -339,7 +339,7 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
       .filter((r) => r.instance !== (exclude ?? db.instanceName()))
       .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
   } catch (e) {
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory read failed", e);
+    db.logUnlessDown("orca: inventory read failed")(e);
     return [];
   }
 }
