@@ -86,11 +86,29 @@ export class DbUnavailable extends Error {
   constructor(readonly since: number) { super(`database unreachable since ${new Date(since).toISOString()}`); }
 }
 
-/** A catch handler for a periodic tick: silent while the database is known to be down (the outage
- *  is announced once in `markDown` and once when it returns — logging it again on every 10s publish
- *  filled the console with the same stack), the error with `label` otherwise. */
+/** Whether `err` is the DATABASE failing — unreachable, refused, timed out, a connection dropped
+ *  under a query — rather than a query it rejected or a bug of ours. Only Bun SQL's own errors (or
+ *  `DbUnavailable`) qualify, so a `fetch`'s ECONNRESET is never mistaken for one. */
+export function isDbError(err: unknown): boolean {
+  if (err instanceof DbUnavailable) return true;
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: string }).code ?? "";
+  if (/FailedToOpenSocket/.test(`${code} ${err.name} ${err.message}`)) return true;
+  if (err.name !== "PostgresError" && !code.startsWith("ERR_POSTGRES_")) return false;
+  return isConnectFailure(err) || isDroppedConnection(err);
+}
+
+/** An error as one short line: its message, never the stack (Bun prints an Error object with its
+ *  source frame, which is what filled the console). */
+export const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** THE catch handler for a background duty (a publish, the merge queue, upkeep, a heartbeat…). A
+ *  database error logs nothing — the outage is announced once in `markDown` and once when it returns
+ *  (a line per duty per tick, each with a stack, filled the console when the tailnet moved). Anything
+ *  else logs `label: message`, one line. Duties also skip their work while the database is down
+ *  (`primary.held()`, or `unavailableSince()` directly) and run on their next tick once it is back. */
 export const logUnlessDown = (label: string) => (e: unknown): void => {
-  if (!(e instanceof DbUnavailable)) console.error(label, e);
+  if (!isDbError(e)) console.error(`${label}: ${errorText(e)}`);
 };
 
 let downSince: number | null = null;
@@ -100,6 +118,7 @@ let retryDelay = 0;
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = Number(process.env.ORCA_DB_RETRY_MAX_MS) || 30_000;
 const availableListeners = new Set<() => unknown>();
+const unavailableListeners = new Set<() => unknown>();
 let fatal: (e: Error) => void = (e) => console.error(e.message);
 
 /** Whether `err` means "could not reach the database at all" (refused, timed out, DNS) — as opposed
@@ -109,8 +128,10 @@ export function isConnectFailure(err: unknown): boolean {
   if (err instanceof DbUnavailable) return true;
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: string }).code ?? "";
-  return /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT)$/.test(code)
-    || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|Failed to connect/.test(err.message);
+  // CONNECTION_FAILED: the socket closed before the connection was established (a tailnet route that
+  // went away mid-handshake). FailedToOpenSocket: Bun could not even open one (no route to the host).
+  return /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT|FAILED)$/.test(code) || /FailedToOpenSocket/.test(`${code} ${err.name}`)
+    || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|Failed to connect|FailedToOpenSocket/.test(err.message);
 }
 
 /** When the database went away, or null while it is reachable. */
@@ -130,6 +151,13 @@ export function onAvailable(fn: () => unknown): () => void {
   return () => availableListeners.delete(fn);
 }
 
+/** Run `fn` each time the database goes from reachable to unreachable (primary.ts gives up its
+ *  duties at once, not at its next lock heartbeat). Returns an unsubscribe. */
+export function onUnavailable(fn: () => unknown): () => void {
+  unavailableListeners.add(fn);
+  return () => unavailableListeners.delete(fn);
+}
+
 /** What to do when a background reconnect finds a migration ledger this code refuses (the boot
  *  path exits; tests leave the default, which logs). */
 export function onFatal(fn: (e: Error) => void): void { fatal = fn; }
@@ -145,7 +173,8 @@ function markDown(err: unknown): DbUnavailable {
   if (downSince === null || downUrl !== url) {
     downSince = Date.now();
     downUrl = url;
-    console.error(`orca: database unreachable (${err instanceof Error ? err.message : String(err)}) — running degraded; retrying in the background`);
+    console.error(`orca: database unreachable (${errorText(err)}) — running degraded; retrying in the background`);
+    for (const fn of [...unavailableListeners]) void Promise.resolve().then(fn).catch(() => {});
   }
   // Drop the pool: its migrate promise is rejected for good, and the next probe needs a fresh one.
   const closing = handle;
@@ -196,7 +225,10 @@ export async function open(): Promise<Bun.SQL> {
   if (downSince !== null || !announced) {
     // Reachable — for the first time, or again. Clear the state first, so a listener's own queries
     // (the replay) go straight through; the listeners run beside this query, never in front of it.
-    if (downSince !== null) console.log(`orca: database reachable again (down since ${new Date(downSince).toISOString()}, for ${downFor(Date.now() - downSince)})`);
+    if (downSince !== null) {
+      console.log(`orca: database reachable again (down since ${new Date(downSince).toISOString()}, for ${downFor(Date.now() - downSince)})`);
+      dropLoggedAt = 0; // a new outage may say "connection dropped" again
+    }
     downSince = null; downUrl = null; retryDelay = 0; announced = true;
     announcing = announceAvailable();
   }
@@ -217,8 +249,15 @@ export function downFor(ms: number): string {
  *  written next to journaled history (server/outbox.ts replays only into the database it was for). */
 export const databaseKey = (): string => new Bun.CryptoHasher("sha256").update(databaseUrl()).digest("hex").slice(0, 16);
 
-/** Close the pool (tests, so a repointed database opens cleanly). */
+/** Close the pool (tests, so a repointed database opens cleanly), and forget the outage and the
+ *  "connection dropped" line. */
 export async function close(): Promise<void> {
+  dropLoggedAt = 0;
+  await resetPool();
+}
+
+/** Drop the pool and the outage state — what `withRetry` does on a dropped connection. */
+async function resetPool(): Promise<void> {
   const closing = handle;
   handle = null;
   handleUrl = null;
@@ -273,21 +312,39 @@ export function isDroppedConnection(err: unknown): boolean {
  *  Exported so a test can drive it directly with a real dropped connection (`tests/pg.ts`), rather
  *  than only through whichever exported function happens to run one query. */
 export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T> {
+  let sql: Bun.SQL | null = null;
   try {
-    return await fn(await open());
+    sql = await open();
+    return await fn(sql);
   } catch (err) {
     if (err instanceof DbUnavailable) throw err;
     if (isConnectFailure(err)) throw markDown(err);
     if (!isDroppedConnection(err)) throw err;
-    console.error("[db] connection dropped, reopening pool:", err instanceof Error ? err.message : err);
-    await close();
+    noteDropped(err);
+    // Only the pool this query used: ten duties dropped together must not each close the fresh pool
+    // the first one just opened (each retry then failed on a pool a sibling had closed under it).
+    if (sql === null || handle === sql) await resetPool();
     try {
       return await fn(await open());
     } catch (again) {
-      if (isConnectFailure(again) && !(again instanceof DbUnavailable)) throw markDown(again);
+      if (again instanceof DbUnavailable) throw again;
+      // The FRESH pool failed too: the database is going away, not one stale connection. Say so once
+      // (`markDown`) and go degraded, rather than hand every caller a "Connection closed" stack.
+      if (isConnectFailure(again) || isDroppedConnection(again)) throw markDown(again);
       throw again;
     }
   }
+}
+
+/** The "[db] connection dropped" line, at most once per outage: once, then not again until the
+ *  database has come back from an outage or `DROP_LOG_QUIET_MS` passed with no drop (a laptop that
+ *  sleeps again tomorrow still gets its line). */
+let dropLoggedAt = 0;
+const DROP_LOG_QUIET_MS = 10 * 60_000;
+function noteDropped(err: unknown): void {
+  const now = Date.now();
+  if (now - dropLoggedAt >= DROP_LOG_QUIET_MS) console.error(`[db] connection dropped, reopening pool: ${errorText(err)}`);
+  dropLoggedAt = now;
 }
 
 // Append-only steps. Never change what an applied step DOES — add another. (SQLite's `PRAGMA

@@ -113,7 +113,7 @@ test("a dropped connection is reopened and the query retried once, logged a sing
   expect(lines.filter((l) => l.includes("[db] connection dropped"))).toHaveLength(1);
 });
 
-test("a second drop on the retry is not retried again — it surfaces to the caller", async () => {
+test("a second drop on the retry is not retried again — the database is declared down, once", async () => {
   const appName = `orca-test-dbreconnect-double-${process.pid}`;
   useTaggedSchema(appName);
   await db.close();
@@ -135,8 +135,13 @@ test("a second drop on the retry is not retried again — it surfaces to the cal
   await killLoop;
   await killer.end();
 
-  expect(caught).toBeInstanceOf(Error); // the retry's own failure propagates…
-  expect(lines).toHaveLength(1); // …without a second "reconnecting" line for a retry that wasn't attempted
+  // The FRESH pool failed too, so the database is going away: the caller gets `DbUnavailable` (a
+  // duty's catch stays quiet on it), and the log gets the drop line and the one down line — no third.
+  expect(caught).toBeInstanceOf(db.DbUnavailable);
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toContain("[db] connection dropped");
+  expect(lines[1]).toContain("orca: database unreachable (");
+  expect(db.unavailableSince()).not.toBeNull();
 });
 
 // 2026-10-13: the chat composer bounced a message with "cached plan must not change result type" —
@@ -168,15 +173,44 @@ test("the pool's own idle/lifetime closes and a stale plan count as a dropped co
   expect(db.isDroppedConnection(as("duplicate key value violates unique constraint", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" }))).toBe(false);
 });
 
-test("a periodic tick that hits the known outage logs nothing — the outage was announced once already", () => {
+test("a duty's catch logs nothing for any database error, and one short line for anything else", () => {
   const seen: unknown[][] = [];
   const orig = console.error;
   console.error = (...a: unknown[]) => { seen.push(a); };
+  const pgError = (message: string, code: string) => Object.assign(new Error(message), { name: "PostgresError", code });
   try {
-    db.logUnlessDown("orca: preview publish failed")(new db.DbUnavailable(Date.now()));
+    const log = db.logUnlessDown("orca: preview publish failed");
+    log(new db.DbUnavailable(Date.now()));
+    log(pgError("Connection closed", "ERR_POSTGRES_CONNECTION_CLOSED"));
+    log(pgError("Failed to connect", "ERR_POSTGRES_CONNECTION_REFUSED"));
+    log(pgError("Connection closed before the connection was established", "ERR_POSTGRES_CONNECTION_FAILED"));
+    log(pgError("Connection timeout after 5s", "ERR_POSTGRES_CONNECTION_TIMEOUT"));
+    log(Object.assign(new Error("Failed to open socket"), { code: "FailedToOpenSocket" }));
     expect(seen).toEqual([]);
-    db.logUnlessDown("orca: preview publish failed")(new Error("boom"));
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.[0]).toBe("orca: preview publish failed");
+    log(pgError("duplicate key value violates unique constraint", "ERR_POSTGRES_SERVER_ERROR")); // a real query error
+    log(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })); // not the database's
+    log(new Error("boom"));
+    expect(seen).toEqual([
+      ["orca: preview publish failed: duplicate key value violates unique constraint"],
+      ["orca: preview publish failed: read ECONNRESET"],
+      ["orca: preview publish failed: boom"],
+    ]); // one string each: never the Error object, whose stack and source frame Bun prints
   } finally { console.error = orig; }
+});
+
+test("the 'connection dropped' line prints at most once per outage, however many queries drop", async () => {
+  useTaggedSchema(`orca-test-dbreconnect-once-${process.pid}`);
+  await db.close();
+  await warmUp();
+  const dropOnce = () => {
+    let first = true;
+    return async (sql: Bun.SQL) => {
+      if (first) { first = false; throw Object.assign(new Error("Connection closed"), { name: "PostgresError", code: "ERR_POSTGRES_CONNECTION_CLOSED" }); }
+      return sql`select 1 as one`;
+    };
+  };
+  const { lines } = await captureErrors(async () => {
+    for (let i = 0; i < 5; i++) expect((await db.withRetry(dropOnce()))[0]?.one).toBe(1);
+  });
+  expect(lines.filter((l) => l.includes("[db] connection dropped"))).toHaveLength(1);
 });

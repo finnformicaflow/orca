@@ -238,3 +238,44 @@ export async function forRepo(cwd: string): Promise<{
     gql: (query, variables = {}) => graphql(query, variables, token),
   };
 }
+
+// ---- conditional pages (pollers) ----
+
+/** One page of a polled GET, with the ETag the CALLER keeps (a poller stores it in its cursor, so a
+ *  restart still sends If-None-Match). `notModified` is a 304: nothing changed, and GitHub did not
+ *  count the call against the rate limit. `next` is the `Link: rel="next"` URL, for pagination. */
+export type Page<T> = { notModified: true } | { notModified: false; body: T; etag?: string; next?: string };
+
+/** The `rel="next"` URL of a `Link` header, else undefined. */
+export function nextLink(link: string | null): string | undefined {
+  return link ? /<([^>]+)>\s*;\s*rel="next"/.exec(link)?.[1] : undefined;
+}
+
+/** A GET with an explicit ETag. Same rate-limit rules and typed errors as `request`. */
+export async function conditionalGet<T = any>(path: string, opts: { token: string; etag?: string }): Promise<Page<T>> {
+  const key = tokenKey(opts.token);
+  const now = Date.now();
+  const wait = rateLimitedFor(opts.token, now);
+  if (wait > 0) throw new GitHubRateLimitError(`GitHub rate limit: retry in ${Math.ceil(wait / 1000)}s (${path})`, 429, path, now + wait);
+  const url = /^https?:/.test(path) ? path : `${apiRoot()}/${path.replace(/^\//, "")}`;
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "orca",
+    ...(opts.etag ? { "If-None-Match": opts.etag } : {}),
+  };
+  countGhCall();
+  let res: Response;
+  try { res = await doFetch(url, { headers }); } catch (e) { throw new GitHubError(`GitHub request failed: ${e instanceof Error ? e.message : String(e)} (${path})`, 0, path); }
+  const after = Date.now();
+  if (res.status === 304) return { notModified: true };
+  const text = await res.text();
+  if (!res.ok) {
+    const err = errorFor(res, path, text, after);
+    if (err instanceof GitHubRateLimitError) blockedUntil.set(key, err.resetAt);
+    throw err;
+  }
+  const reset = rateLimitReset(res, after);
+  if (res.headers.get("x-ratelimit-remaining") === "0" && reset) blockedUntil.set(key, reset);
+  const etag = res.headers.get("etag") ?? undefined;
+  const next = nextLink(res.headers.get("link"));
+  return { notModified: false, body: (text ? JSON.parse(text) : undefined) as T, ...(etag ? { etag } : {}), ...(next ? { next } : {}) };
+}

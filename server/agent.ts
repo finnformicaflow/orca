@@ -735,7 +735,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
         await db.queueMessage({
           repo: options.repo, branch: options.branch, worktreePath: cwd, provider,
           instruction: autofixInstruction(check), attachments: [],
-        }).catch((e) => console.error("orca: autofix queue failed", e));
+        }).catch(db.logUnlessDown("orca: autofix queue failed"));
       }
     }
     const handled = afterRunStarted();
@@ -755,7 +755,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
         exit: { code, timedOut, budgetReached, stderr: err.trim().slice(-300) },
       });
     } catch (e) {
-      console.error("orca: run-finished hook failed", e); // a listener must never break the run it heard about
+      db.logUnlessDown("orca: run-finished hook failed")(e); // a listener must never break the run it heard about
     }
     handled();
   })();
@@ -876,7 +876,7 @@ async function dispatchQueued(repo: string, branch: string, options: LaunchOptio
   } catch (e) {
     // Never let a queued send break the run that just finished; the message stays claimed rather
     // than retrying forever against a worktree that may be gone.
-    console.error("orca: queued message dispatch failed", e);
+    db.logUnlessDown("orca: queued message dispatch failed")(e);
     return false;
   }
 }
@@ -902,7 +902,7 @@ export function adoptLeases(
     const poll = setInterval(() => {
       if (lease.leased(l.key) && lease.current(l.key)?.runId === l.runId) return; // still going
       clearInterval(poll);
-      void finishAdopted(l, recover).catch((e) => console.error("orca: adopted run could not be finished", e));
+      void finishAdopted(l, recover).catch(db.logUnlessDown("orca: adopted run could not be finished"));
     }, adoptPoll.ms);
     poll.unref();
   }
@@ -938,7 +938,7 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
         exit: { code: ok ? 0 : 1, timedOut: false, budgetReached: false, stderr: "" },
       });
     } catch (e) {
-      console.error("orca: run-finished hook failed", e);
+      db.logUnlessDown("orca: run-finished hook failed")(e);
     }
   } finally {
     handled();

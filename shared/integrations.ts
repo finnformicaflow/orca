@@ -8,7 +8,7 @@
 
 export type Topic =
   | `orca.run.${"finished" | "failed" | "needs_input" | "stopped" | "check_failed"}`
-  | `orca.pr.${"opened" | "ci_failed" | "conflicts" | "merged" | "merge_refused"}`
+  | `orca.pr.${"opened" | "ci_failed" | "ci_passed" | "conflicts" | "review_requested" | "review_comment" | "merged" | "merge_refused"}`
   | `orca.preview.${"ready" | "failed"}`
   | `orca.upkeep.${"address" | "gave_up"}`
   | "orca.question" // the orchestrator asks the user (`orca ask-user`)
@@ -272,7 +272,9 @@ export function paceWait(recent: number[], now: number, limit: number, windowMs:
   return live.length < limit ? 0 : (live[live.length - limit] ?? now) + windowMs - now;
 }
 
-/** §3.8: an outside sender gets at most 20 messages in 10 minutes. */
+/** §3.8: an outside sender (an envelope with an `actor`) gets at most 20 messages in 10 minutes. A
+ *  machine sender (a poller, a webhook) is not paced: its integration authenticates it, and a poller
+ *  that is refused loses the event, because its cursor has already moved past it. */
 export const INBOUND_LIMIT = { count: 20, windowMs: 10 * 60_000 };
 
 // ── Permissions (§3.7) ───────────────────────────────────────────────────────────────────────────

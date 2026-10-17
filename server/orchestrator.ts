@@ -168,7 +168,7 @@ export async function stop(cfg: OrcaConfig): Promise<string | undefined> {
   await serial(async () => {
     if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, wakeGrant: null, died: null });
     // Only the primary drains (as the run-finished hook does), and a failed drain never fails Stop.
-    if (primary.held()) await drain(cfg).catch((e) => console.error("orca: orchestrator drain after stop failed", e));
+    if (primary.held()) await drain(cfg).catch(db.logUnlessDown("orca: orchestrator drain after stop failed"));
   });
   return runId;
 }
@@ -319,7 +319,7 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
   if (!handling || (opts.runId ? handling.runId !== opts.runId : handling.instance !== db.instanceName())) return;
   if (agent.isRunning(dir())) {
     // Still going under its lease, and its `orca` calls reach this bridge — let it finish, look again.
-    setTimeout(() => void recover(cfg, reconcile, opts).catch((e) => console.error("orca: orchestrator recovery failed", e)), RECOVER_POLL_MS).unref();
+    setTimeout(() => void recover(cfg, reconcile, opts).catch(db.logUnlessDown("orca: orchestrator recovery failed")), RECOVER_POLL_MS).unref();
     return;
   }
   await reconcile();
@@ -364,7 +364,7 @@ export async function evictForeignWake(cfg: OrcaConfig, reconcile: () => Promise
   suspect = undefined;
   console.error(`orca: another bridge (pid ${claimant.pid}: ${claimant.command.slice(0, 120)}) launched the orchestrator's wake (pid ${l.pid}, run ${l.runId}) — only this instance's primary may; stopping both`);
   for (const pid of [claimant.pid, l.pid]) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
-  void recover(cfg, reconcile, { runId: l.runId }).catch((e) => console.error("orca: orchestrator recovery failed", e));
+  void recover(cfg, reconcile, { runId: l.runId }).catch(db.logUnlessDown("orca: orchestrator recovery failed"));
   return { bridge: claimant.pid, run: l.pid, runId: l.runId };
 }
 

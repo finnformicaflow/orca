@@ -78,7 +78,10 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   `db.DbUnavailable`, and one background probe retries with exponential backoff (capped at
   `ORCA_DB_RETRY_MAX_MS`, 30s). Migrations, the boot-time reconcile and orchestrator recovery run on the
   first successful connect (`db.onAvailable`); a refused migration ledger still exits (`db.onFatal`).
-  A dropped connection (`ERR_POSTGRES_CONNECTION_CLOSED`) is still `withRetry`'s retry, not an outage.
+  A dropped connection (`ERR_POSTGRES_CONNECTION_CLOSED`) is still `withRetry`'s retry, not an outage. If the reopened pool fails too, the database is marked down. **Every background duty catches
+  through ONE helper, `db.logUnlessDown(label)`:** a database error (`db.isDbError`) logs nothing, and
+  any other error logs one `label: message` line with no stack. The `[db] connection dropped` line
+  prints at most once per outage. Duties skip their work while the database is down (`primary.held()`).
   While down: the config is the last good one (`server/config.ts`: memory, else
   `~/.orca/config.cache.json` — tagged with a hash of the database URL, written only when it changed —
   else the checked-in file); reads degrade to empty plus a marker (`x-orca-database` header on every
