@@ -131,3 +131,74 @@ test("Q1 database down: one line, duties skip quietly, no lock flapping; back: o
     fwd?.stop(true);
   }
 }, 40_000);
+
+// 2026-10-17: `bun run dev` on the laptop while the tailnet moved. The database went away UNDER a
+// primary bridge with queries in flight: each duty logged "… failed" with a Bun Postgres stack, the
+// pool logged "[db] connection dropped" again and again, and the bridge still said it was primary.
+test("Q2 connections cut under a primary bridge's duties: one down line, no per-duty line; back: one up line, the duties run again", async () => {
+  pg = await freshSchema("quietcut");
+  state = await mkdtemp(join(tmpdir(), "orca-quietcut-"));
+  const port = freePort();
+  const url = new URL(pg.url);
+  const via = new URL(pg.url);
+  via.hostname = "127.0.0.1";
+  via.port = String(port);
+  const target = { hostname: url.hostname === "localhost" ? "127.0.0.1" : url.hostname, port: Number(url.port || 5432) };
+  let fwd: ReturnType<typeof forwarder> | undefined = forwarder(port, target);
+  const proc = Bun.spawn(["bun", "--env-file=/dev/null", "tests/fixtures/quietDb.ts"], {
+    cwd: ROOT, stdout: "pipe", stderr: "pipe",
+    env: {
+      PATH: process.env.PATH!, HOME: process.env.HOME!, NODE_ENV: "test", TMPDIR: process.env.TMPDIR!,
+      ORCA_DATABASE_URL: via.toString(), ORCA_STATE_DIR: state, ORCA_PRIMARY: "1", QUIET_DUTIES: "1",
+      ORCA_INSTANCE: `quietcut-${process.pid}`, ORCA_PRIMARY_RETRY_MS: "50", ORCA_DB_RETRY_MAX_MS: "200",
+      ORCA_DB_CONNECT_TIMEOUT_S: "1",
+    },
+  });
+  let out = "";
+  const read = async (s: ReadableStream<Uint8Array>) => {
+    const r = s.getReader();
+    for (let c = await r.read(); !c.done; c = await r.read()) out += new TextDecoder().decode(c.value);
+  };
+  void read(proc.stdout);
+  void read(proc.stderr);
+  const until = async (ok: () => boolean, ms = 15_000) => {
+    for (const end = Date.now() + ms; !ok() && Date.now() < end;) await Bun.sleep(25);
+    expect(ok()).toBe(true);
+  };
+  const noDutyLines = (text: string) => {
+    expect(text).not.toMatch(/ failed|PostgresError|\n\s+at |\n\s*\d+ \| /); // no per-duty line, no stack, no source frame
+  };
+  try {
+    // Up and primary, every duty ticking.
+    await until(() => out.includes("primary for instance") && out.includes("TICK upkeep pass") && out.includes("TICK preview publish"));
+    // The tailnet moves: every live connection is cut mid-query, and the port refuses new ones.
+    fwd.stop(true);
+    fwd = undefined;
+    const cutAt = out.length;
+    await until(() => out.includes("database unreachable ("));
+    await Bun.sleep(1_500);
+    const down = out.slice(cutAt);
+    expect(down.match(/database unreachable \(/g)).toHaveLength(1);
+    expect((down.match(/\[db\] connection dropped/g) ?? []).length).toBeLessThanOrEqual(1);
+    noDutyLines(out);
+    expect(down).toContain("secondary bridge (database unreachable)"); // no longer claims "primary … running background duties"
+    expect(down.slice(-300)).toContain("STATE held=false");
+    expect(down.slice(-300)).not.toContain("TICK"); // the duties skip their work while it is down
+
+    // Back: one up line, the lock taken again, the duties tick again.
+    fwd = forwarder(port, target);
+    const backAt = out.length;
+    await until(() => out.slice(backAt).includes("TICK upkeep pass"), 20_000);
+    await Bun.sleep(500);
+    const back = out.slice(backAt);
+    expect(out.match(/database reachable again \(down since \S+, for \d+s\)/g)).toHaveLength(1);
+    expect(out.match(/database unreachable \(/g)).toHaveLength(1);
+    expect(back).toContain("primary for instance");
+    expect(back).toContain("TICK merge queue pass");
+    noDutyLines(out);
+  } finally {
+    proc.kill();
+    await proc.exited;
+    fwd?.stop(true);
+  }
+}, 40_000);

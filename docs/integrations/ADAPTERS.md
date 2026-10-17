@@ -35,7 +35,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`. Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `email.ts` (setup: [email.md](email.md)). Put a new adapter here. |
 
 ## 3. The interface
 

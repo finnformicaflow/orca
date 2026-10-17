@@ -16,7 +16,7 @@
 // (idleTimeout/maxLifetime) and a session lock dies with its connection.
 import { existsSync, readFileSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { DbUnavailable, instanceName, logUnlessDown, onAvailable, previewBridge, unavailableSince } from "./db";
+import { errorText, instanceName, isDbError, logUnlessDown, onAvailable, onUnavailable, previewBridge, unavailableSince } from "./db";
 import { processCwd } from "./proc";
 
 /** How often a secondary retries the lock, and a primary re-asserts it (a dropped connection loses it). */
@@ -78,8 +78,8 @@ function become(next: boolean, why: string): void {
 }
 
 /** Run `fn` ONCE, the first time this process is primary with the database up — now, at a takeover,
- *  or when the database comes back after an outage. A run that meets `DbUnavailable` (the database
- *  went away again) is not counted and runs again at the next of those; any other error is logged and
+ *  or when the database comes back after an outage. A run that meets a database error (`isDbError`:
+ *  the database went away again) is not counted and runs again at the next of those; any other error is logged and
  *  counted, as before. (The boot-time reconcile set its flag first and so never ran after an outage.) */
 export function whenUp(fn: () => Promise<unknown>, label: string): () => Promise<void> {
   let done = false;
@@ -88,7 +88,7 @@ export function whenUp(fn: () => Promise<unknown>, label: string): () => Promise
     if (done || !held() || unavailableSince() !== null) return Promise.resolve();
     running ??= (async () => {
       try { await fn(); done = true; }
-      catch (e) { if (!(e instanceof DbUnavailable)) { done = true; console.error(label, e); } }
+      catch (e) { if (!isDbError(e)) { done = true; console.error(`${label}: ${errorText(e)}`); } }
       finally { running = null; }
     })();
     return running;
@@ -152,6 +152,9 @@ export function elect(): void {
   // Registered before index.ts's own listeners, so the lock is decided before a `whenUp` duty asks `held()`.
   // An attempt still in flight may have started while it was down: let it end, then decide afresh.
   onAvailable(async () => { await attempting; await attempt(); });
+  // And the moment db.ts declares it down, step down: "primary … running background duties" must not
+  // stand while the database is going away (it did, until the next 30s lock heartbeat).
+  onUnavailable(async () => { await attempting; await attempt(); });
   void attempt();
 }
 
