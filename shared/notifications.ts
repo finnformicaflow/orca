@@ -5,7 +5,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
-  "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent",
+  "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent", "integration_failed", "external_message", "pairing_requested",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -75,6 +75,12 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
   // The New-draft box's own toast (Shell.tsx AddNew): a draft was sent, with Undo while it's fresh.
   draft_sent: { label: "Sent", persistent: false, urgent: false, tone: "ready" },
+  // The integrations layer (server/integrations/): a delivery to Slack, a webhook… gave up after its
+  // retries, or a message from outside reached the web.
+  integration_failed: { label: "Delivery failed", persistent: true, urgent: false, tone: "error" },
+  external_message: { label: "Message", persistent: false, urgent: false, tone: "neutral" },
+  // An unknown sender on Slack, Discord… got a pairing code; approve it to let them talk to Orca.
+  pairing_requested: { label: "Pairing request", persistent: true, urgent: false, tone: "queued" },
 };
 
 /** How long a non-persistent toast stays. */

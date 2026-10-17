@@ -181,6 +181,25 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   clipboard so it can be pasted by hand. The message is the linked `#7 Title` (Slack mrkdwn for the
   post, rich HTML for the copy).
 
+## Integrations (one path in, one path out)
+
+`server/integrations/` is the channel layer (design: `docs/research/integrations.md`; how to write an
+adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `event` (`notify.emit`
+writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
+same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
+1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
+notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on the primary bridge
+of `integration.instance`. Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
+row holds only the name. An outside sender's message gets a grant (min of link level and person) that
+rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
+verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
+gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
+has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
+its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
+you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
+reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
+
 ## Multi-repo (aggregated)
 
 **Two GitHub accounts on one board** (a work account and a personal one for weekend repos): no
