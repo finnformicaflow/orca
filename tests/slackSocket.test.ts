@@ -3,15 +3,18 @@
 // Slack's socket, and a stubbed fetch for its Web API (auth.test, apps.connections.open,
 // chat.postMessage) — nothing here talks to a real Slack. The last case runs the real router on a
 // fresh schema: a mention in a linked channel is one event with its thread, and the reply goes back
-// into that thread.
+// into that thread — a pairing code for an unknown sender, and `orca post --thread` for an answer.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import * as db from "../server/db";
 import * as router from "../server/integrations/router";
+import * as dispatcher from "../server/integrations/dispatcher";
+import * as orchestrator from "../server/orchestrator";
 import * as store from "../server/integrations/store";
 import { DM_LINK, reconnectDelay, slackAdapter, slackInbound, threadChannel, USER_CONNECTION, type SlackEvent } from "../server/integrations/adapters/slack";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
-import type { InboundEnvelope } from "../shared/integrations";
+import { pairingReply, type InboundEnvelope } from "../shared/integrations";
+import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -256,6 +259,10 @@ describe("through the core (real router, fresh schema)", () => {
     process.env.ORCA_DATABASE_URL = pg.url;
     await db.close();
     router.resetPace();
+    await store.addIntegration(BOT);
+    await store.addLink({ id: "L1", integrationId: "slack-work", externalId: "C1", level: "ask", repos: [], requireMention: true });
+    await store.addLink({ id: "DM", integrationId: "slack-work", externalId: DM_LINK, level: "ask", repos: [], requireMention: false });
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "ask" }, [{ adapter: "slack", externalId: "U1" }]);
   });
   afterAll(async () => {
     await db.close();
@@ -265,10 +272,6 @@ describe("through the core (real router, fresh schema)", () => {
   });
 
   test("a paired person's mention is one event with its thread; a stranger and an unmentioned line are dropped", async () => {
-    await store.addIntegration(BOT);
-    await store.addLink({ id: "L1", integrationId: "slack-work", externalId: "C1", level: "ask", repos: [], requireMention: true });
-    await store.addLink({ id: "DM", integrationId: "slack-work", externalId: DM_LINK, level: "ask", repos: [], requireMention: false });
-    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "ask" }, [{ adapter: "slack", externalId: "U1" }]);
     process.env.ORCA_SECRET_SLACK_BOT = "xoxb-test"; process.env.ORCA_SECRET_SLACK_APP = "xapp-test";
     const slack = fakeSocketMode();
     const api = fakeWebApi(() => slack.url);
@@ -299,5 +302,51 @@ describe("through the core (real router, fresh schema)", () => {
       await a.send({ linkId: "L1", externalId: "C1", threadId: ev.thread!.externalId }, { text: "yes, at 10:02" }, "1");
       expect(api.calls.at(-1)).toMatchObject({ method: "chat.postMessage", body: { channel: "C1", text: "yes, at 10:02", thread_ts: "1.2" } });
     } finally { abort.abort(); await a.stop(); api.restore(); slack.stop(); }
+  }, 15_000);
+
+  test("an unknown sender's pairing code and orca post --thread both land in the sender's own thread", async () => {
+    process.env.ORCA_SECRET_SLACK_BOT = "xoxb-test"; process.env.ORCA_SECRET_SLACK_APP = "xapp-test";
+    const slack = fakeSocketMode();
+    const api = fakeWebApi(() => slack.url);
+    const results: string[] = [];
+    const { ctx, abort } = fakeCtx(async (e) => { const r = await router.ingest("slack-work", e); results.push(r); return r; });
+    const a = slackAdapter(BOT);
+    dispatcher.resetPace();
+    dispatcher.configure({ adapter: (id) => (id === "slack-work" ? a : undefined), web: async () => ({ ok: true }) });
+    dispatcher.setRunning(() => ["slack-work"]);
+    const posts = () => api.calls.filter((c) => c.method === "chat.postMessage").map((c) => c.body);
+    try {
+      await a.start(ctx);
+      // (1) Strangers: a mention in a channel and a DM. Each gets its code in its own thread.
+      slack.event({ type: "app_mention", user: "U-new", text: "<@UBOT> hi", ts: "3.1", channel: "C1", channel_type: "channel" });
+      await waitFor(() => results.length === 1);
+      slack.event({ type: "message", user: "U-dm", text: "hello?", ts: "4.1", channel: "D5", channel_type: "im" });
+      await waitFor(() => results.length === 2);
+      expect(results).toEqual(["rejected", "rejected"]);
+      const codes = new Map((await store.pendingPairings()).map((p) => [p.externalId, p.code]));
+      expect(codes.has("U-new") && codes.has("U-dm")).toBe(true); // (the first test's stranger has one too)
+      // Slack's pace is one post per second per channel: a second C1 reply waits for the next second.
+      const t0 = Date.now();
+      await dispatcher.dispatchOnce(t0);
+      await dispatcher.dispatchOnce(t0 + 1_500);
+      expect(posts().filter((b) => ["3.1", "4.1"].includes(b.thread_ts)).sort((x, y) => x.thread_ts.localeCompare(y.thread_ts))).toEqual([
+        { channel: "C1", text: pairingReply(codes.get("U-new")!), thread_ts: "3.1" },
+        { channel: "D5", text: pairingReply(codes.get("U-dm")!), thread_ts: "4.1" }, // the DM itself, not the "im" link
+      ]);
+
+      // (2) A paired person asks; the orchestrator answers with the thread id from the fenced message.
+      slack.event({ type: "app_mention", user: "U1", text: "<@UBOT> is #12 merged?", ts: "5.1", channel: "C1", channel_type: "channel" });
+      await waitFor(() => results.length === 3);
+      expect(results[2]).toBe("new");
+      const thread = (await store.event("slack:T1:C1:5.1"))!.thread!.externalId;
+      expect(thread).toBe("C1:5.1");
+      expect(await orchestrator.tool({ repos: [] } as unknown as OrcaConfig, "post", { link: "L1", thread, _: ["Yes,", "at", "10:02."] })).toContain("(thread C1:5.1)");
+      await dispatcher.dispatchOnce(t0 + 3_000);
+      expect(posts().at(-1)).toEqual({ channel: "C1", text: "Yes, at 10:02.", thread_ts: "5.1" });
+      expect((await store.deliveries()).every((d) => d.state === "sent" || d.target.kind !== "link")).toBe(true);
+    } finally {
+      abort.abort(); await a.stop(); api.restore(); slack.stop();
+      dispatcher.configure({ adapter: () => undefined }); dispatcher.setRunning(() => []);
+    }
   }, 15_000);
 });
