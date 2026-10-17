@@ -29,10 +29,10 @@ const waitFor = async (ok: () => boolean, ms = 3_000): Promise<void> => {
 
 /** A fake Socket Mode server: says hello on each connection, records acks, pushes envelopes. */
 function fakeSocketMode() {
-  const socks: ServerWebSocket<unknown>[] = [];
+  const socks: ServerWebSocket<undefined>[] = [];
   const acks: string[] = [];
   let hello = true;
-  const server: Server<unknown> = Bun.serve({
+  const server: Server<undefined> = Bun.serve({
     port: 0, hostname: "127.0.0.1",
     fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
     websocket: {
