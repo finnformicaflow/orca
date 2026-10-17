@@ -2,7 +2,8 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
+import { effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
@@ -31,6 +32,40 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   const r = await store.recordEvent(e, planned, now);
   if (r.status === "new" && r.deliveries.length) kick();
   return { ...r, id: e.id };
+}
+
+/** `orca post`: one `orca.message` with one explicit delivery to a link, so the dispatcher sends it
+ *  through the link's adapter and retries a failure. `reply` answers an inbound event where it came
+ *  from: its place (a catch-all link's DM, not "*") and its thread. `thread` rides the envelope, so an
+ *  email answer is an `In-Reply-To`. Used by `orca post [--reply]` and the inbox's Reply. */
+export async function post(link: store.Link, text: string, opts: {
+  reply?: ReplyTo; threadId?: string; scope?: { repo: string; branch?: string }; thread?: ConversationRef; key?: string;
+} = {}, now = Date.now()): Promise<{ id: string; delivery?: number; externalId: string; threadId?: string }> {
+  const conn = await store.integration(link.integrationId);
+  const threadId = opts.reply ? opts.reply.threadId : opts.threadId;
+  const externalId = opts.reply?.channel ?? link.externalId;
+  const r = await publish({
+    key: opts.key ?? `post:${randomUUID()}`, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id },
+    ...(opts.scope ? { scope: opts.scope } : {}), ...(opts.thread ? { thread: opts.thread } : {}), text,
+  }, now, [{ subscriptionId: null, target: {
+    kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
+  } }]);
+  return { id: r.id, ...(r.deliveries[0] !== undefined ? { delivery: r.deliveries[0] } : {}), externalId, ...(threadId ? { threadId } : {}) };
+}
+
+/** The inbox's Reply (docs/research/integrations.md §6.2): `post` with the event's own `replyToOf`,
+ *  the place and thread `orca post --reply` uses. The refusals are pure (shared/inbox.ts). */
+export async function replyToEvent(eventId: string, text: string, now = Date.now()): Promise<{ eventId: string; delivery?: number }> {
+  const e = await store.eventById(eventId);
+  if (!e) throw new Error(`no event ${eventId}`);
+  const link = e.source.linkId ? await store.link(e.source.linkId) : undefined;
+  const refusal = replyRefusal(e, text, link);
+  if (refusal) throw new Error(refusal);
+  const r = await post(link!, text.trim(), {
+    reply: replyToOf(e), ...(e.scope?.repo ? { scope: { repo: e.scope.repo, ...(e.scope.branch ? { branch: e.scope.branch } : {}) } } : {}),
+    ...(e.thread ? { thread: e.thread } : {}), key: `reply:${eventId}:${randomUUID()}`,
+  }, now);
+  return { eventId: r.id, ...(r.delivery !== undefined ? { delivery: r.delivery } : {}) };
 }
 
 // Inbound pace per sender (§3.8): in memory, per process — one primary runs the adapters.

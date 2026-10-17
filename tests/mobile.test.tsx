@@ -266,8 +266,8 @@ describe("the phone layout (390px, touch)", () => {
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Previews", "Repos", "GitHub", "Usage"]);
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Repos
+    expect(links).toEqual(["Inbox", "Previews", "Repos", "GitHub", "Usage"]);
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Repos
     expect(location.pathname).toBe("/repos");
   });
 

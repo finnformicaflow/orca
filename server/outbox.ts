@@ -303,7 +303,7 @@ export function replay(): Promise<{ turns: number; enrichment: number }> {
       }
       if (turnsLanded || patches) console.log(`orca: outbox replayed ${turnsLanded} turn(s), ${patches} enrichment patch(es)`);
     } catch (e) {
-      console.error("orca: outbox replay stopped (will retry when the database is next reachable)", e);
+      db.logUnlessDown("orca: outbox replay stopped (will retry when the database is next reachable)")(e);
     }
     return { turns: turnsLanded, enrichment: patches };
   })().finally(() => { replaying = null; });

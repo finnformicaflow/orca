@@ -26,6 +26,8 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { replyToEvent } from "./integrations/router";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -109,7 +111,7 @@ db.onFatal(refuse);
 void db.open().catch((e) => {
   if (e instanceof db.MigrationRefused) refuse(e);
   // DbUnavailable: db.ts has said so in its one "database unreachable … running degraded" line.
-  else if (!(e instanceof db.DbUnavailable)) console.error("orca: database open failed", e);
+  else db.logUnlessDown("orca: database open failed")(e);
 });
 // Background duties belong to ONE bridge per instance (server/primary.ts): whoever holds the instance's
 // advisory lock. Everything below that acts on this instance's runs, previews, PRs or inventory waits
@@ -235,7 +237,7 @@ primary.onPrimary(() => { startMetricsSampler(); });
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
 if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
-  const renew = () => void renewStaleLogins(primary.held).catch((e) => console.error("orca: stale-login renew failed", e));
+  const renew = () => void renewStaleLogins(primary.held).catch(db.logUnlessDown("orca: stale-login renew failed"));
   renew();
   setInterval(renew, RENEW_POLL_MS).unref();
 });
@@ -339,7 +341,7 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
       .filter((r) => r.instance !== (exclude ?? db.instanceName()))
       .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
   } catch (e) {
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory read failed", e);
+    db.logUnlessDown("orca: inventory read failed")(e);
     return [];
   }
 }
@@ -348,6 +350,9 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
  *  tab must not be able to post to Slack or start a preview a repo has since turned off. */
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
+
+/** How many inbox events one /api/inbox answer reads (a window; `older` pages past it). */
+const INBOX_WINDOW = 300;
 
 // Routes served by ANY instance because they read only Postgres — history stays readable even when
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
@@ -370,6 +375,9 @@ const DATABASE_ONLY = new Set([
   "/api/previews",
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
+  // The unified inbox: the integrations' event, delivery and thread_link rows.
+  "/api/inbox", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -611,6 +619,69 @@ async function api(req: Request, url: URL): Promise<Response> {
   // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
   // binds their platform identity to a principal (new, or an existing id). The Settings page calls
   // the same routes later. Body: { code, principal?, name?, maxLevel? ("notify" | "ask" | "work") }.
+  // The unified inbox (shared/inbox.ts): the newest INBOX_WINDOW inbox events before `?before=`, as
+  // rows with their reply's delivery state, filtered by `?source=` / `?person=`; the facets are over
+  // the whole window, so a chip never hides its siblings. `older` is the cursor for the next window.
+  if (req.method === "GET" && p === "/api/inbox") {
+    const before = url.searchParams.get("before") || undefined;
+    const events = await integrationStore.inboxEvents({ before, limit: INBOX_WINDOW });
+    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
+    const [outbound, links, principals, read, muted] = await Promise.all([
+      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
+      integrationStore.readEvents(events.map((e) => e.id)), integrationStore.mutedSenders(),
+    ]);
+    const all = inboxRows(events, outbound, links, principals, { read, muted });
+    const flag = (k: string) => url.searchParams.get(k) === "1";
+    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
+    return json({ rows, facets: inboxFacets(all), older: events.length === INBOX_WINDOW ? events[events.length - 1]!.id : null });
+  }
+  if (req.method === "GET" && p === "/api/inbox/thread") {
+    const c = parseConversation(url.searchParams.get("c"));
+    if (!c) return json({ error: "c=<adapter>|<id> required" }, 400);
+    const [conv, principals, allLinks] = await Promise.all([integrationStore.conversation(c), integrationStore.principalNames(), integrationStore.links()]);
+    const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
+    const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
+    const [read, muted] = await Promise.all([integrationStore.readEvents(conv.events.map((e) => e.id)), integrationStore.mutedSenders()]);
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }, principals) });
+  }
+  // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
+  // server/integrations/router.ts replyToEvent), read state and mute (per user), and Link its conversation to a
+  // workstream (a thread_link, so later replies there reach that workstream).
+  if (req.method === "POST" && p === "/api/inbox/reply") {
+    if (typeof body.eventId !== "string" || typeof body.text !== "string") return json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await replyToEvent(body.eventId, body.text);
+      await integrationStore.setRead([body.eventId], true);
+      return json(r);
+    } catch (e) {
+      if (e instanceof db.DbUnavailable) throw e;
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/inbox/read") {
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+    if (!ids.length) return json({ error: "ids required" }, 400);
+    await integrationStore.setRead(ids, body.read !== false);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && (p === "/api/inbox/mute" || p === "/api/inbox/link")) {
+    const e = typeof body.eventId === "string" ? await integrationStore.eventById(body.eventId) : undefined;
+    if (!e) return json({ error: "eventId must name an event" }, 400);
+    if (p === "/api/inbox/mute") {
+      if (!e.actor) return json({ error: "this event has no sender to mute" }, 400);
+      await integrationStore.setMuted(e.actor.external.adapter, e.actor.external.id, body.muted !== false, e.actor.external.name);
+      return json({ ok: true });
+    }
+    const repo = typeof body.repo === "string" ? body.repo : "", branch = typeof body.branch === "string" ? body.branch : "";
+    if (!cfg.repos.some((r) => r.name === repo) || !branch) return json({ error: "repo (a configured repo) and branch required" }, 400);
+    const c = inboundConversation(e);
+    if (c.id.startsWith(OWN_EVENT)) return json({ error: "this event has no thread or place to link" }, 400);
+    await integrationStore.setThreadLink({ adapter: c.adapter, externalThreadId: c.id, repo, branch, ...(e.source.linkId ? { linkId: e.source.linkId } : {}) });
+    const linked = await integrationStore.threadLink(c.adapter, c.id);
+    return json({ link: linked });
+  }
+  // The workstream cards' source chips: every thread link (repo, branch, adapter).
+  if (req.method === "GET" && p === "/api/inbox/threads") return json({ links: await integrationStore.threadLinks() });
   if (req.method === "GET" && p === "/api/integrations/pairing") return json({ pairings: await integrationStore.pendingPairings() });
   if (req.method === "POST" && p === "/api/integrations/pairing/approve") {
     const level = body.maxLevel;

@@ -171,7 +171,7 @@ export async function stop(cfg: OrcaConfig): Promise<string | undefined> {
   await serial(async () => {
     if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, died: null });
     // Only the primary drains (as the run-finished hook does), and a failed drain never fails Stop.
-    if (primary.held()) await drain(cfg).catch((e) => console.error("orca: orchestrator drain after stop failed", e));
+    if (primary.held()) await drain(cfg).catch(db.logUnlessDown("orca: orchestrator drain after stop failed"));
   });
   return runId;
 }
@@ -322,7 +322,7 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
   if (!handling || (opts.runId ? handling.runId !== opts.runId : handling.instance !== db.instanceName())) return;
   if (agent.isRunning(dir())) {
     // Still going under its lease, and its `orca` calls reach this bridge — let it finish, look again.
-    setTimeout(() => void recover(cfg, reconcile, opts).catch((e) => console.error("orca: orchestrator recovery failed", e)), RECOVER_POLL_MS).unref();
+    setTimeout(() => void recover(cfg, reconcile, opts).catch(db.logUnlessDown("orca: orchestrator recovery failed")), RECOVER_POLL_MS).unref();
     return;
   }
   await reconcile();
@@ -367,7 +367,7 @@ export async function evictForeignWake(cfg: OrcaConfig, reconcile: () => Promise
   suspect = undefined;
   console.error(`orca: another bridge (pid ${claimant.pid}: ${claimant.command.slice(0, 120)}) launched the orchestrator's wake (pid ${l.pid}, run ${l.runId}) — only this instance's primary may; stopping both`);
   for (const pid of [claimant.pid, l.pid]) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
-  void recover(cfg, reconcile, { runId: l.runId }).catch((e) => console.error("orca: orchestrator recovery failed", e));
+  void recover(cfg, reconcile, { runId: l.runId }).catch(db.logUnlessDown("orca: orchestrator recovery failed"));
   return { bridge: claimant.pid, run: l.pid, runId: l.runId };
 }
 
@@ -590,21 +590,14 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
-      const conn = await integrationStore.integration(link.integrationId);
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
-      const threadId = reply ? reply.threadId
-        : typeof args.thread === "string" && args.thread ? args.thread
+      const threadId = typeof args.thread === "string" && args.thread ? args.thread
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
-      // A reply goes to the place it came from: a catch-all link's DM, not "*".
-      const externalId = reply?.channel ?? link.externalId;
-      const r = await integrationRouter.publish({
-        key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
-        ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}), text,
-      }, Date.now(), [{ subscriptionId: null, target: {
-        kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
-      } }]);
-      return `Queued for ${link.label ?? link.id}${externalId !== link.externalId ? ` ${externalId}` : ""}${threadId ? ` (thread ${threadId})` : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
+      const r = await integrationRouter.post(link, text, {
+        ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
+      });
+      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that

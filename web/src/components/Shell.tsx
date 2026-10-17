@@ -14,7 +14,7 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Users,
+  Users, Inbox,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -50,6 +50,8 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
+  // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
+  { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox" },
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
   { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },

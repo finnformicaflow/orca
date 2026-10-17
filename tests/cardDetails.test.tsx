@@ -35,6 +35,10 @@ Object.defineProperty(globalThis.navigator, "clipboard", {
 let root: Root | undefined;
 let container: HTMLElement | undefined;
 async function mount(row: Row) {
+  // A second mount in one test unmounts the first: a root left mounted keeps shared polls (the
+  // thread chips' /api/inbox/threads) subscribed into the next test file.
+  act(() => root?.unmount());
+  container?.remove();
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<WorkstreamCard row={row} />); await flush(); await flush(); });

@@ -129,9 +129,9 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Previews", "Repos", "GitHub", "Usage", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Repos", "GitHub", "Usage", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
-    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Repos", "/repos", "repos-list"], ["GitHub", "/github", "github-accounts"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
+    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Repos", "/repos", "repos-list"], ["GitHub", "/github", "github-accounts"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
       expect(location.pathname).toBe(path);
       expect(navItem(label).getAttribute("aria-current")).toBe("page");

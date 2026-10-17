@@ -20,7 +20,7 @@ export async function emit(input: NotificationInput): Promise<Notification | und
     n = await db.addNotification(input);
     if (n) bus.publish({ kind: "notification", notification: n });
   } catch (e) {
-    console.error("orca: notification write failed", e);
+    db.logUnlessDown("orca: notification write failed")(e);
     return undefined;
   }
   // The same event as a durable, keyed envelope (server/integrations/, phase 0), with the same key, so
@@ -102,7 +102,7 @@ export function watchPreview(p: { key: string; repo: string; branch?: string; ti
         await new Promise((r) => setTimeout(r, previewWatch.everyMs));
       }
     } catch (e) {
-      console.error("orca: preview watch failed", e);
+      db.logUnlessDown("orca: preview watch failed")(e);
     }
   })();
 }

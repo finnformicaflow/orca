@@ -4,6 +4,7 @@
 import * as db from "../db";
 import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
+import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
 
 const user = () => db.currentUser();
 
@@ -404,5 +405,145 @@ export async function denyPairing(code: string, now = Date.now()): Promise<boole
     const rows = await sql`UPDATE pairing_code SET state = 'denied', decided_at = ${now}
       WHERE user_id = ${user()} AND code = ${code.trim().toUpperCase()} AND state = 'pending' RETURNING code`;
     return rows.length > 0;
+  });
+}
+
+// ── the unified inbox (shared/inbox.ts) ─────────────────────────────────────────────────────────
+// Read-only. The inbox topics are `ext.*` and `orca.question` (shared/inbox.ts `isInboxTopic`).
+
+/** The newest inbox events, before an event id (ids are time-ordered), newest first. */
+export async function inboxEvents(opts: { before?: string; limit: number }): Promise<Envelope[]> {
+  return db.withRetry(async (sql) => {
+    const rows = opts.before
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND id < ${opts.before}
+          ORDER BY id DESC LIMIT ${opts.limit}`
+      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question')
+          ORDER BY id DESC LIMIT ${opts.limit}`;
+    return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
+  });
+}
+
+type OutboundRow = { id: number; event_id: string; subscription_id: number | null; created_at: number; state: DeliveryState; attempts: number; last_error: string | null; target: DeliveryTarget; envelope: Envelope };
+const toOutbound = (r: OutboundRow): OutboundRecord => ({
+  deliveryId: Number(r.id), eventId: r.event_id, ...(r.subscription_id != null ? { subscriptionId: Number(r.subscription_id) } : {}), at: Number(r.created_at), state: r.state, attempts: Number(r.attempts),
+  ...(r.last_error ? { lastError: r.last_error } : {}), target: r.target,
+  envelope: { key: r.envelope.key, topic: r.envelope.topic, text: r.envelope.text, ...(r.envelope.title ? { title: r.envelope.title } : {}), ...(r.envelope.scope ? { scope: r.envelope.scope } : {}) },
+});
+
+/** Every delivery to a link planned since `since`, newest first: the replies the inbox rows show. */
+export async function linkDeliveries(since: number, limit = 1000): Promise<OutboundRecord[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+      FROM delivery d JOIN event e ON e.id = d.event_id
+      WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.created_at >= ${since}
+      ORDER BY d.id DESC LIMIT ${limit}`;
+    return (rows as OutboundRow[]).map(toOutbound);
+  });
+}
+
+/** Every thread link (a small table: one row per external thread bound to a workstream). */
+export async function threadLinks(): Promise<ThreadLinkRecord[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT adapter, external_thread_id, link_id, repo, branch FROM thread_link WHERE user_id = ${user()} ORDER BY created_at`;
+    return (rows as { adapter: string; external_thread_id: string; link_id: string | null; repo: string; branch: string }[])
+      .map((r) => ({ adapter: r.adapter, externalThreadId: r.external_thread_id, ...(r.link_id ? { linkId: r.link_id } : {}), repo: r.repo, branch: r.branch }));
+  });
+}
+
+/** principal id → name. */
+export async function principalNames(): Promise<Map<string, string>> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT id, name FROM principal WHERE user_id = ${user()}`;
+    return new Map((rows as { id: string; name: string }[]).map((r) => [r.id, r.name]));
+  });
+}
+
+/** One conversation (shared/inbox.ts `Conversation`): the inbox events in it, oldest first, and the
+ *  link deliveries that went to it (at the place itself, only explicit posts: a subscription's
+ *  broadcast to a channel is not part of one person's conversation there). A thread linked to a workstream also takes the post that started
+ *  it: the newest delivery to that link about that workstream, with no thread, before the bind. */
+export async function conversation(c: Conversation, limit = 500): Promise<{ events: Envelope[]; outbound: OutboundRecord[]; link?: ThreadLinkRecord }> {
+  return db.withRetry(async (sql) => {
+    const own = c.id.startsWith(OWN_EVENT) ? c.id.slice(OWN_EVENT.length) : null;
+    const evRows = own
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND id = ${own}`
+      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND (
+          (envelope->'thread'->>'adapter' = ${c.adapter} AND envelope->'thread'->>'externalId' = ${c.id})
+          OR (envelope->'thread' IS NULL AND envelope->'source'->>'adapter' = ${c.adapter} AND envelope->'source'->>'channel' = ${c.id}))
+          ORDER BY id LIMIT ${limit}`;
+    const events = (evRows as { envelope: Envelope }[]).map((r) => r.envelope);
+    const ids = events.map((e) => e.id);
+    const outRows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+      FROM delivery d JOIN event e ON e.id = d.event_id
+      WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND (
+        (d.target->>'adapter' = ${c.adapter} AND (d.target->>'threadId' = ${c.id} OR (d.target->>'threadId' IS NULL AND d.target->>'externalId' = ${c.id} AND d.subscription_id IS NULL AND e.key NOT LIKE 'pairing:%')))
+        OR d.event_id = ANY(${sql.array(ids, "TEXT")}))
+      ORDER BY d.id LIMIT ${limit}`;
+    const outbound = (outRows as OutboundRow[]).map(toOutbound);
+    const tlRows = await sql`SELECT adapter, external_thread_id, link_id, repo, branch, created_at FROM thread_link
+      WHERE user_id = ${user()} AND adapter = ${c.adapter} AND external_thread_id = ${c.id}`;
+    const tl = (tlRows as { adapter: string; external_thread_id: string; link_id: string | null; repo: string; branch: string; created_at: number }[])[0];
+    if (!tl) return { events, outbound };
+    const link: ThreadLinkRecord = { adapter: tl.adapter, externalThreadId: tl.external_thread_id, ...(tl.link_id ? { linkId: tl.link_id } : {}), repo: tl.repo, branch: tl.branch };
+    if (tl.link_id) {
+      const start = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+        FROM delivery d JOIN event e ON e.id = d.event_id
+        WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.target->>'linkId' = ${tl.link_id} AND d.target->>'threadId' IS NULL
+          AND e.envelope->'scope'->>'repo' = ${tl.repo} AND e.envelope->'scope'->>'branch' = ${tl.branch} AND d.created_at <= ${Number(tl.created_at)}
+        ORDER BY d.id DESC LIMIT 1`;
+      const first = (start as OutboundRow[]).map(toOutbound)[0];
+      if (first && !outbound.some((d) => d.deliveryId === first.deliveryId)) outbound.unshift(first);
+    }
+    return { events, outbound, link };
+  });
+}
+
+/** One event by Orca's id. */
+export async function eventById(id: string): Promise<Envelope | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND id = ${id}`;
+    return (rows as { envelope: Envelope }[])[0]?.envelope;
+  });
+}
+
+/** Which of these events you have read. */
+export async function readEvents(ids: string[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT event_id FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+    return new Set((rows as { event_id: string }[]).map((r) => r.event_id));
+  });
+}
+
+/** Mark events read (or unread again). An id with no event is skipped. */
+export async function setRead(ids: string[], read: boolean, now = Date.now()): Promise<void> {
+  if (!ids.length) return;
+  return db.withRetry(async (sql) => {
+    if (read) {
+      await sql`INSERT INTO inbox_read (user_id, event_id, read_at)
+        SELECT ${user()}, id, ${now} FROM event WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "TEXT")})
+        ON CONFLICT (user_id, event_id) DO NOTHING`;
+    } else {
+      await sql`DELETE FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+    }
+  });
+}
+
+/** Every muted sender, as shared/inbox.ts `muteKey`s. */
+export async function mutedSenders(): Promise<Set<string>> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT adapter, external_id FROM inbox_mute WHERE user_id = ${user()}`;
+    return new Set((rows as { adapter: string; external_id: string }[]).map((r) => muteKey(r.adapter, r.external_id)));
+  });
+}
+
+export async function setMuted(adapter: string, externalId: string, muted: boolean, name?: string, now = Date.now()): Promise<void> {
+  return db.withRetry(async (sql) => {
+    if (muted) {
+      await sql`INSERT INTO inbox_mute (user_id, adapter, external_id, name, created_at) VALUES (${user()}, ${adapter}, ${externalId}, ${name ?? null}, ${now})
+        ON CONFLICT (user_id, adapter, external_id) DO NOTHING`;
+    } else {
+      await sql`DELETE FROM inbox_mute WHERE user_id = ${user()} AND adapter = ${adapter} AND external_id = ${externalId}`;
+    }
   });
 }

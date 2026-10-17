@@ -85,7 +85,7 @@ export async function numbered(runId: string, opts: { tail?: number; afterSeq?: 
   try {
     rows = await db.steps(runId, opts);
   } catch (e) {
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: transcript read failed", e);
+    db.logUnlessDown("orca: transcript read failed")(e);
   }
   // Steps journaled while the database was down (server/outbox.ts), until the replay lands them.
   const journaled = outbox.steps(runId, opts.afterSeq ?? 0).filter((j) => !rows.some((r) => r.seq === j.seq));

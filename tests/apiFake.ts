@@ -180,7 +180,15 @@ export const apiFake = {
   setInstanceTerminalCalls: [] as { instance: string; on: boolean }[],
   githubAccounts: [] as import("../web/src/api").GithubAccount[],
   setGithubAccountCalls: [] as { login: string; name?: string; email?: string }[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.githubAccounts = []; this.setGithubAccountCalls = []; },
+  // The unified inbox: the page /api/inbox answers (filtered here like the server does), each
+  // conversation's thread, and the thread links behind the cards' source chips.
+  inboxData: null as import("../web/src/api").InboxPage | null,
+  inboxCalls: [] as { before?: string; source?: string; person?: string }[],
+  inboxThreads: new Map<string, import("../web/src/api").InboxThread>(),
+  threadLinksData: [] as import("../shared/inbox").ThreadLinkRecord[],
+  inboxActions: [] as unknown[][],
+  inboxReplyError: null as string | null,
+  reset() { this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.githubAccounts = []; this.setGithubAccountCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -190,6 +198,32 @@ mock.module("@/api", () => ({
     // in tests) reads as previews-disabled, since there's no config entry to say otherwise.
     config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false, features: { previews: true } }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"], instanceUrls: { cloud: "http://100.64.0.5:8787" }, instanceHourlyUsd: { ...apiFake.instanceRates } }); },
     githubAccounts: async () => ({ accounts: apiFake.githubAccounts }),
+    inbox: async (q: { before?: string; source?: string; person?: string; unread?: boolean; muted?: boolean } = {}) => {
+      apiFake.inboxCalls.push(q);
+      const page = apiFake.inboxData ?? { rows: [], facets: { sources: [], people: [], unread: 0, muted: 0 }, older: null };
+      const { filterInbox } = await import("../shared/inbox");
+      return { ...page, rows: filterInbox(page.rows, q) };
+    },
+    inboxThread: async (c: string) => {
+      const t = apiFake.inboxThreads.get(c);
+      if (!t) throw new Error("no such conversation");
+      return t;
+    },
+    threadLinks: async () => ({ links: apiFake.threadLinksData }),
+    // The inbox's actions mutate inboxData the way the bridge's tables would.
+    inboxReply: async (eventId: string, text: string) => {
+      apiFake.inboxActions.push(["reply", eventId, text]);
+      if (apiFake.inboxReplyError) throw new Error(apiFake.inboxReplyError);
+      return { eventId: "reply-1", delivery: 1 };
+    },
+    inboxRead: async (ids: string[], read = true) => {
+      apiFake.inboxActions.push(["read", ids, read]);
+      if (apiFake.inboxData) apiFake.inboxData = { ...apiFake.inboxData, rows: apiFake.inboxData.rows.map((r) => ids.includes(r.id) ? { ...r, read } : r) };
+      for (const [k, t] of apiFake.inboxThreads) apiFake.inboxThreads.set(k, { ...t, unread: read ? t.unread.filter((id) => !ids.includes(id)) : t.unread });
+      return { ok: true as const };
+    },
+    inboxMute: async (eventId: string, muted: boolean) => { apiFake.inboxActions.push(["mute", eventId, muted]); return { ok: true as const }; },
+    inboxLink: async (eventId: string, repo: string, branch: string) => { apiFake.inboxActions.push(["link", eventId, repo, branch]); return {}; },
     setGithubAccount: async (login: string, fields: { name?: string; email?: string }) => {
       apiFake.setGithubAccountCalls.push({ login, ...fields });
       apiFake.githubAccounts = apiFake.githubAccounts.map((a) => a.login === login ? { ...a, configured: { ...a.configured, ...fields }, name: fields.name || a.name, email: fields.email || a.email } : a);
