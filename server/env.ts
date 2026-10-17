@@ -7,6 +7,9 @@
 /** Orca's secrets. Add one here and every spawn drops it. */
 export const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET"] as const;
 
+/** Every variable with this prefix is a secret too: an integration's token lives in one. */
+export const SECRET_PREFIX = "ORCA_SECRET_";
+
 export type Env = Record<string, string | undefined>;
 
 /** The bridge's LIVE environment (Bun.spawn otherwise snapshots PATH at startup, which defeats a
@@ -15,6 +18,8 @@ export type Env = Record<string, string | undefined>;
 export function scrubbedEnv(extra: Env = {}, opts: { keep?: readonly string[] } = {}): Record<string, string> {
   const env: Env = { ...process.env };
   for (const key of ORCA_SECRETS) if (!opts.keep?.includes(key)) delete env[key];
+  // An integration's token (its row names the variable, shared/integrations.ts secretRefRefusal).
+  for (const key of Object.keys(env)) if (key.startsWith(SECRET_PREFIX) && !opts.keep?.includes(key)) delete env[key];
   Object.assign(env, extra);
   for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
   return env as Record<string, string>;

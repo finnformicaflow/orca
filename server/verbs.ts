@@ -33,11 +33,17 @@ export const runModel = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvi
 export const checkGate = (repo: RepoConfig): { command: string; autofix: boolean } | undefined =>
   repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
 
-/** What every run in a repo is launched with, whoever asked for it. */
-export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvider, pinned?: string): agent.LaunchOptions => ({
+/** The permission mode for a workstream's runs: the repo's, but always "ask" for one an outside
+ *  sender's wake started or steered (`grantScope` on its enrichment, server/integrations §3.7). */
+export const permissionFor = (repo: RepoConfig, fields?: Record<string, unknown>): agent.LaunchOptions["permissionMode"] =>
+  fields?.grantScope ? "ask" : repo.agentPermissionMode ?? "ask";
+
+/** What every run in a repo is launched with, whoever asked for it. `fields` is the branch's
+ *  enrichment, when the run is for a branch. */
+export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvider, pinned?: string, fields?: Record<string, unknown>): agent.LaunchOptions => ({
   provider, repo: repo.name,
   model: runModel(cfg, repo, provider, pinned),
-  permissionMode: repo.agentPermissionMode ?? "ask",
+  permissionMode: permissionFor(repo, fields),
   maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
   timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight,
@@ -154,7 +160,7 @@ export async function createWorkstream(
     prompt: input.prompt, title, agentProvider: provider, preferredModel: model, createdAt: new Date().toISOString(), ...input.fields,
   });
   const receipt = await agent.runAgent(wt.worktreePath, launchPrompt({ title, branch: wt.branch, prompt: input.prompt }, repo.baseBranch), {
-    ...launchOptions(cfg, repo, provider, model), branch: wt.branch, action: "launch", instruction: input.prompt,
+    ...launchOptions(cfg, repo, provider, model, input.fields), branch: wt.branch, action: "launch", instruction: input.prompt,
   });
   await db.patchEnrichment(repo.name, wt.branch, { sessionId: receipt.sessionId });
   return { ...wt, title, runId: receipt.runId };
@@ -181,7 +187,7 @@ export async function followUp(
     transcript: await db.turns(repo.name, branch),
   });
   const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
-    ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined), ...next,
+    ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined, e), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars,
   });
   await db.patchEnrichment(repo.name, branch, { agentProvider: provider, sessionId: receipt.sessionId });

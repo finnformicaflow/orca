@@ -9,18 +9,26 @@ import * as bus from "./bus";
 import * as preview from "./preview";
 import type { RunFinished } from "./agent";
 import { ORCHESTRATOR_REPO } from "../web/src/workstream";
+import * as router from "./integrations/router";
+import { notificationEnvelope } from "../shared/integrations";
 import { checkNotification, prNotifications, previewNotification, runNotification, type Notification, type NotificationInput } from "../shared/notifications";
 
 /** Record and push one event. Returns the row, or undefined when it had already been recorded. */
 export async function emit(input: NotificationInput): Promise<Notification | undefined> {
+  let n: Notification | undefined;
   try {
-    const n = await db.addNotification(input);
+    n = await db.addNotification(input);
     if (n) bus.publish({ kind: "notification", notification: n });
-    return n;
   } catch (e) {
     db.logUnlessDown("orca: notification write failed")(e);
     return undefined;
   }
+  // The same event as a durable, keyed envelope (server/integrations/, phase 0), with the same key, so
+  // subscriptions decide who else hears it. Only for a NEW row: a repeat (the PR list re-answering)
+  // costs no queries. Never breaks the notification.
+  const envelope = n && notificationEnvelope(input, n.createdAt);
+  if (envelope) await router.publish(envelope).catch((e) => console.error("orca: integration event write failed", e));
+  return n;
 }
 
 /** The workstream's title, as the card shows it — the toast is headed with it. */
