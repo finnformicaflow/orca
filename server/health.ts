@@ -147,7 +147,7 @@ export async function sampleMetrics(): Promise<void> {
     }, h.at);
   } catch (e) {
     oomKills += kills; // not recorded — carry them to the next sample
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
+    db.logUnlessDown("orca: metrics sample failed")(e);
   }
 }
 
@@ -177,7 +177,7 @@ export async function heartbeat(now = Date.now()): Promise<void> {
     const b = await currentBoot(now);
     await db.recordBoots([{ ...b, lastSeen: now }]);
   } catch (e) {
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: uptime heartbeat failed", e instanceof Error ? e.message : e);
+    db.logUnlessDown("orca: uptime heartbeat failed")(e);
   }
 }
 

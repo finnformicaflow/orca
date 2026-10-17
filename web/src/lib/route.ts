@@ -11,6 +11,7 @@ export type Route =
   | { name: "board" }
   | { name: Page }
   | { name: "orchestrator" }
+  | { name: "integrations" }
   | { name: "pr"; repo: string; number: number; sub: PrTab }
   | { name: "local"; repo: string; branch: string; sub: LocalTab };
 
@@ -26,6 +27,7 @@ function parse(): Route {
     return { name: "local", repo: parts[0]!, branch: decodeURIComponent(parts[2]), sub: (parts[3] as LocalTab) ?? "overview" };
   }
   if (parts[0] === "orchestrator" && parts.length === 1) return { name: "orchestrator" };
+  if (parts[0] === "settings" && parts[1] === "integrations" && parts.length === 2) return { name: "integrations" };
   if ((PAGES as readonly string[]).includes(parts[0] ?? "") && parts.length === 1) return { name: parts[0] as Page };
   return { name: "board" };
 }

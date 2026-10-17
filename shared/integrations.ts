@@ -15,6 +15,7 @@ export type Topic =
   | "orca.message" // the orchestrator posts to a link or thread (`orca post`)
   | "orca.pairing.requested" // an unknown sender got a pairing code
   | "orca.integration.failed" // a delivery went dead
+  | "orca.integration.test" // Settings > Integrations: the Test button on a link
   | `ext.${string}.message` // a chat or email message from outside
   | `ext.${string}.${string}`; // any other external event: ext.github.push, ext.linear.issue
 
@@ -68,6 +69,19 @@ export type Envelope = {
 export type InboundEnvelope = Omit<Envelope, "id" | "grant">;
 
 // ── The adapter contract's data shapes (the interface itself is server/integrations/adapter.ts) ──
+
+/** What the Settings page shows for one registered kind, so a new adapter's card and its "Connect"
+ *  form appear with no page change. `place` names an external place ("channel", "mailbox"); `config`
+ *  lists the non-secret settings the form asks for; `secretExample` suggests the variable name. */
+export type AdapterMeta = {
+  kind: AdapterKind;
+  label: string;
+  caps: Capabilities;
+  place?: string;
+  secretExample?: string;
+  config?: { key: string; label: string; placeholder?: string }[];
+  help?: string;
+};
 
 export type Capabilities = {
   /** How events come in: a long-lived socket, a poll loop with a cursor, an HTTP route (relay), or none. */

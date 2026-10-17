@@ -26,6 +26,7 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
+import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -109,7 +110,7 @@ db.onFatal(refuse);
 void db.open().catch((e) => {
   if (e instanceof db.MigrationRefused) refuse(e);
   // DbUnavailable: db.ts has said so in its one "database unreachable … running degraded" line.
-  else if (!(e instanceof db.DbUnavailable)) console.error("orca: database open failed", e);
+  else db.logUnlessDown("orca: database open failed")(e);
 });
 // Background duties belong to ONE bridge per instance (server/primary.ts): whoever holds the instance's
 // advisory lock. Everything below that acts on this instance's runs, previews, PRs or inventory waits
@@ -235,7 +236,7 @@ primary.onPrimary(() => { startMetricsSampler(); });
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
 if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
-  const renew = () => void renewStaleLogins(primary.held).catch((e) => console.error("orca: stale-login renew failed", e));
+  const renew = () => void renewStaleLogins(primary.held).catch(db.logUnlessDown("orca: stale-login renew failed"));
   renew();
   setInterval(renew, RENEW_POLL_MS).unref();
 });
@@ -339,7 +340,7 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
       .filter((r) => r.instance !== (exclude ?? db.instanceName()))
       .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
   } catch (e) {
-    if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory read failed", e);
+    db.logUnlessDown("orca: inventory read failed")(e);
     return [];
   }
 }
@@ -603,10 +604,29 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ error: `this is a secondary bridge (${primary.state().reason}); the orchestrator is driven by the instance's primary bridge` }, 503);
   }
   if (req.method === "GET" && p === "/api/integrations") {
-    // The integrations this database knows, what runs on this bridge and its health, and the outbox's
-    // dead letters — for diagnostics now and the Settings > Integrations page later.
-    const [rows, dead] = await Promise.all([integrationStore.integrations(), integrationStore.deliveries({ state: "dead", limit: 50 })]);
-    return json({ instance: db.instanceName(), integrations: rows, running: await integrations.health(), dead: dead.map(({ envelope, ...d }) => ({ ...d, topic: envelope.topic, key: envelope.key })) });
+    // Settings > Integrations in one read (server/integrations/admin.ts): the kinds the registry
+    // knows, every integration with its health and last event, links, people, pending pairing codes,
+    // subscriptions and the dead deliveries. `running` keeps the diagnostics' map of this bridge.
+    return json({ ...(await integrationAdmin.overview()), running: await integrations.health() });
+  }
+  if (req.method === "POST" && p === "/api/integrations/test") {
+    // The card's Test: the adapter's own health check, on the instance that runs it.
+    const row = await integrationStore.integration(String(body.id ?? ""));
+    if (!row) return json({ error: `no integration ${String(body.id ?? "")}` }, 404);
+    if (row.instance !== db.instanceName()) {
+      try { return json(await orchestrator.viaInstance(cfg, row.instance, "/api/integrations/test", { id: row.id })); }
+      catch (e) { return json({ ok: false, detail: e instanceof Error ? e.message : String(e) }); }
+    }
+    return json(await integrationAdmin.testIntegration(row.id));
+  }
+  if (req.method === "POST" && p.startsWith("/api/integrations/")) {
+    try {
+      const out = await integrationAdmin.route(p, body);
+      if (out !== undefined) return json(out);
+    } catch (e) {
+      if (e instanceof integrationAdmin.AdminError) return json({ error: e.message }, 400);
+      throw e;
+    }
   }
   // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
   // binds their platform identity to a principal (new, or an existing id). The Settings page calls

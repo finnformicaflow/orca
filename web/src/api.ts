@@ -74,6 +74,9 @@ async function res(r: Response) {
   return data;
 }
 
+import type { IntegrationsOverview } from "../../shared/integrationSettings";
+export type { IntegrationsOverview } from "../../shared/integrationSettings";
+
 export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl?: string };
 
 export type RepoInfo = {
@@ -93,6 +96,9 @@ export const api = {
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
+  /** Settings > Integrations: everything the page shows, in one read; each write is one POST. */
+  integrations: (): Promise<IntegrationsOverview> => get("/api/integrations").then(res),
+  integrationPost: (path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> => post(`/api/integrations/${path}`, body),
   setGithubAccount: (login: string, fields: { name?: string; email?: string }): Promise<{ accounts: GithubAccount[] }> => post("/api/github/accounts", { login, ...fields }),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.

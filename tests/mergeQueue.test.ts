@@ -149,7 +149,10 @@ test("M4: a branch marked before its PR exists is merged once the PR is open and
 });
 
 test("M5: auto-PR opens a finished worker's branch as a ready PR, titled from the card, bodied from its outcome", async () => {
-  const remote = await makeScratchRepo();
+  // A bare clone, so origin/main shares the branch's history. A second scratch repo shared it only
+  // when both "init" commits fell in the same second (same SHA): flaky on a slow CI runner.
+  const remote = join(await mkdtemp(join(tmpdir(), "orca-origin-")), "origin.git");
+  await run(["git", "clone", "-q", "--bare", repoPath, remote]);
   await run(["git", "-C", repoPath, "remote", "add", "origin", remote]);
   await run(["git", "-C", repoPath, "fetch", "origin"]);
   const r = repo({ autoPr: true });

@@ -6,7 +6,7 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
+import { ChevronRight, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
@@ -108,6 +108,15 @@ export function Settings() {
         <Setting label="Board density" hint="The Board view's cards: full, or status only.">
           <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
         </Setting>
+      </VCard>
+      <VCard slot="settings-integrations" bodyClass="divide-y">
+        <button type="button" onClick={() => navigate("/settings/integrations")} className="hover:bg-accent/40 flex w-full items-center justify-between gap-4 px-4 py-3 text-left">
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Integrations</span>
+            <span className="text-muted-foreground block text-xs">Slack, webhooks and other channels: links, people, subscriptions and failed sends.</span>
+          </span>
+          <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+        </button>
       </VCard>
       <NotificationSettings />
       <MachineCostSettings />

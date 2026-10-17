@@ -177,7 +177,7 @@ export type InboundMessage = {
 
 ## 6. Configure an integration
 
-Until the Settings page lands, configure an integration with SQL or with `store.ts` from a script.
+Use Settings > Integrations (`/settings/integrations`): Connect, links, people, subscriptions and Retry. A new kind shows there when it registers with `meta` (`register(kind, factory, meta)`). You can also use SQL or `store.ts` from a script:
 
 1. Put the token in the instance's environment (`.env` or the systemd unit). Name it
    `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The

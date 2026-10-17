@@ -54,7 +54,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
   { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
   { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
-  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
+  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" || r.name === "integrations" },
 ];
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
