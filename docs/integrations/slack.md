@@ -127,7 +127,7 @@ VALUES ('slack-work', 'me', 'slack', 'Work Slack', 'cloud', '{}', 'ORCA_SECRET_S
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level, require_mention)
 VALUES ('eng', 'me', 'slack-work', 'C0123456789', 'ask', true);
 
--- Every DM to the bot. The external id is the fixed word 'im'.
+-- Every DM to the bot. The external id is the fixed word 'im'. (Without it, a '*' link catches DMs.)
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level, require_mention)
 VALUES ('slack-dm', 'me', 'slack-work', 'im', 'ask', false);
 
@@ -136,7 +136,15 @@ INSERT INTO principal (id, user_id, name, max_level) VALUES ('finn', 'me', 'Finn
 INSERT INTO identity (user_id, principal_id, adapter, external_id) VALUES ('me', 'finn', 'slack', 'U0123456789');
 ```
 
-A person with no `identity` row gets nothing: the gate drops the message.
+You can also skip the `principal` and `identity` rows and pair a person instead:
+
+1. The person mentions the bot or sends it a DM.
+2. Orca drops the message and replies in the same thread with a 6-character pairing code.
+3. Orca shows a "Pairing request" row in the bell.
+4. Approve the code: `curl -X POST localhost:8787/api/integrations/pairing/approve -d '{"code":"ABC234","maxLevel":"ask"}'`.
+5. Tell the person to send the message again.
+
+`GET /api/integrations/pairing` lists the codes that wait. A code expires after 60 minutes.
 
 The primary bridge reads the rows each minute. You do not need a restart.
 
@@ -153,7 +161,9 @@ Optional `config` keys on the `integration` row:
    `ok: true` and `Socket Mode connected as U...`.
 2. In a linked channel, type `@Orca what is on the board?`.
 3. The orchestrator wakes with the message fenced as an outside message with the `ask` grant.
-4. The answer comes back in a thread under your message.
+4. The answer comes back in a thread under your message. The fenced message names its thread
+   (`thread C…:1234.5678`), and the orchestrator answers with
+   `orca post --link <link id> --thread <that id> "<text>"`.
 
 If the adapter does not start, `integration.status.error` holds the reason. Some examples:
 
