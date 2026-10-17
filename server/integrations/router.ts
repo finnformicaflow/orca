@@ -49,10 +49,12 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     : e.source.channel ? (await store.linkFor(integrationId, e.source.channel)) ?? (await store.linkFor(integrationId, "*")) : undefined;
   if (!link || link.integrationId !== integrationId) return "rejected"; // no link = nobody said Orca may listen here
   if (link.requireMention && e.mentioned === false) return "rejected";
-  const who = `${integrationId}:${e.actor?.external.id ?? link.id}`;
-  const times = recent.get(who) ?? [];
-  if (paceWait(times, now, INBOUND_LIMIT.count, INBOUND_LIMIT.windowMs) > 0) return "rejected";
-  recent.set(who, [...times.filter((t) => now - t < INBOUND_LIMIT.windowMs), now]);
+  if (e.actor) {
+    const who = `${integrationId}:${e.actor.external.id}`;
+    const times = recent.get(who) ?? [];
+    if (paceWait(times, now, INBOUND_LIMIT.count, INBOUND_LIMIT.windowMs) > 0) return "rejected";
+    recent.set(who, [...times.filter((t) => now - t < INBOUND_LIMIT.windowMs), now]);
+  }
   // A person is gated on who they are (an unknown sender gets nothing until paired); a sender with no
   // person behind it (a webhook, a poller) is authenticated by its integration and takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;

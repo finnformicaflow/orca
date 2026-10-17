@@ -11,6 +11,7 @@ import * as router from "./router";
 import * as store from "./store";
 import { slackAdapter } from "./adapters/slack";
 import { webhookAdapter } from "./adapters/webhook";
+import { githubAdapter } from "./adapters/github";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
@@ -19,6 +20,7 @@ const running = new Map<string, { adapter: Adapter; connection: Connection; abor
 export function register(kind: AdapterKind, factory: AdapterFactory): void { factories.set(kind, factory); }
 register("slack", slackAdapter);
 register("webhook", webhookAdapter);
+register("github", githubAdapter);
 
 /** Whether this process may run `c` now: enabled, on this instance, this process primary. */
 export const runsHere = (c: Pick<Connection, "instance" | "enabled">, here = db.instanceName(), isPrimary = primary.held()): boolean =>
